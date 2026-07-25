@@ -432,3 +432,8 @@ The following are deliberately deferred to adjacent specifications:
 Gauge-factor presentation metadata, factorized-generator shorthands, and
 noncanonical gauge kinetic terms are possible later source features, not missing
 parts of the canonical version 0.1 field format.
+
+For Milestone 1, the implemented source slice is restricted to four-dimensional
+models whose Weyl-fermion and gauge-vector arrays are empty. Non-empty arrays
+are recognized schema content and produce an explicit unsupported-sector
+diagnostic. The five scalar-potential tensor kinds in section 6 are supported.

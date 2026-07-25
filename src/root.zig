@@ -4,6 +4,7 @@
 //! this module defines a stable C ABI or persisted binary layout.
 
 pub const foundation = @import("foundation/root.zig");
+pub const model = @import("model/root.zig");
 
 pub const Context = foundation.Context;
 pub const Limits = foundation.Limits;
@@ -23,7 +24,9 @@ pub const Diagnostic = foundation.Diagnostic;
 pub const Diagnostics = foundation.Diagnostics;
 pub const DiagnosticBuilder = foundation.DiagnosticBuilder;
 pub const allocationFailure = foundation.allocationFailure;
+pub const ModelLimits = model.ModelLimits;
 
 test {
     _ = foundation;
+    _ = model;
 }

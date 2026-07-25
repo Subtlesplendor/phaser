@@ -305,10 +305,26 @@ An implementation MUST impose documented limits on at least:
 Limits MUST be checked before or during parsing and exact arithmetic so malformed
 or adversarial input cannot cause unbounded allocation or computation.
 
-The concrete numerical limits and whether any may be lowered by a caller are
-deferred until the parser implementation is designed. They MUST be documented
-and enforced before Milestone 1 is complete. A caller MUST NOT be able to raise a
-limit beyond the implementation's tested hard maximum.
+Milestone 1 defines a standard profile and immutable tested hard ceilings.
+Callers MAY select lower limits or values between the standard profile and the
+hard ceiling, but MUST NOT exceed a hard ceiling. The expression-specific
+standard/hard pairs are:
+
+| Resource | Standard | Hard ceiling |
+|---|---:|---:|
+| decoded expression bytes | 8 KiB | 64 KiB |
+| tokens | 2,048 | 16,384 |
+| AST or value nodes per expression | 2,048 | 16,384 |
+| nesting depth | 64 | 256 |
+| digits in one integer literal | 256 | 4,096 |
+| exponent magnitude | 64 | 1,024 |
+| exact intermediate integer magnitude | 16,384 bits | 1,048,576 bits |
+
+Exact integers use Zig's pinned standard-library arbitrary-precision
+implementation behind a Phaser-owned adapter. The adapter checks the configured
+digit, exponent, bit, work, and byte budgets before publication. Exhausting one
+of these limits is an ordinary structured diagnostic and never changes the
+expression's meaning.
 
 ## 13. Validation and testing
 

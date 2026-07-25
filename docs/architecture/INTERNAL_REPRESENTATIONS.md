@@ -356,6 +356,12 @@ construction.
 Initial implementations MAY support only the subset of value types required by
 their declared calculation support.
 
+Milestone 1 implements real scalar values with exact mass dimension. Its node
+subset consists of reduced rationals, parameter inputs, `pi`, exact square roots
+of positive rationals, negation, ordered addition and multiplication, division,
+and non-negative integer powers. Source-expression normalization preserves
+operand order and does not introduce general algebraic equivalence.
+
 ### 5.3 Node capabilities
 
 The IR is expected to support categories including:

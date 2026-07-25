@@ -11,6 +11,27 @@ pub const Code = enum(u32) {
     invalid_alignment = 0x0002_0003,
     allocation_failed = 0x0002_0004,
     invalid_limit = 0x0002_0005,
+    invalid_json = 0x0010_0001,
+    invalid_model_schema = 0x0010_0002,
+    missing_property = 0x0010_0003,
+    unknown_property = 0x0010_0004,
+    duplicate_property = 0x0010_0005,
+    invalid_property_type = 0x0010_0006,
+    invalid_identifier = 0x0011_0001,
+    reserved_identifier = 0x0011_0002,
+    unsupported_sector = 0x0011_0003,
+    invalid_convention = 0x0011_0004,
+    invalid_expression = 0x0012_0001,
+    expression_limit_exceeded = 0x0012_0002,
+    unknown_parameter = 0x0012_0003,
+    dimension_mismatch = 0x0012_0004,
+    static_division_by_zero = 0x0012_0005,
+    invalid_square_root = 0x0012_0006,
+    exact_value_too_large = 0x0012_0007,
+    invalid_tensor_component = 0x0013_0001,
+    duplicate_tensor_orbit = 0x0013_0002,
+    noncanonical_tensor_indices = 0x0013_0003,
+    explicit_zero_component = 0x0013_0004,
 };
 
 pub const Category = enum {
@@ -18,6 +39,9 @@ pub const Category = enum {
     capacity,
     allocation,
     configuration,
+    json,
+    expression,
+    model,
 };
 
 pub const Severity = enum {
@@ -33,11 +57,40 @@ pub const Resource = enum {
     persistent_bytes,
     scratch_bytes,
     workspace_bytes,
+    json_tokens,
+    json_nesting,
+    parameters,
+    real_scalars,
+    tensor_components,
+    expression_bytes,
+    expression_tokens,
+    expression_nodes,
+    expression_depth,
+    integer_digits,
+    exponent_magnitude,
+    exact_integer_bits,
+    value_nodes,
 };
 
 pub const LimitName = enum {
     max_diagnostics,
     max_related_locations,
+    source_bytes,
+    json_nesting,
+    json_tokens,
+    parameters,
+    real_scalars,
+    tensor_components,
+    expression_bytes,
+    expression_tokens,
+    expression_nodes,
+    expression_depth,
+    integer_digits,
+    exponent_magnitude,
+    exact_integer_bits,
+    value_nodes,
+    scratch_bytes,
+    persistent_bytes,
 };
 
 pub const Detail = union(enum) {
@@ -62,6 +115,13 @@ pub const Detail = union(enum) {
     invalid_limit: struct {
         name: LimitName,
         value: usize,
+    },
+    text: struct {
+        value: []const u8,
+    },
+    dimension: struct {
+        expected: i32,
+        actual: i32,
     },
 };
 
@@ -106,6 +166,14 @@ pub const Diagnostic = struct {
             .invalid_limit => |detail| try writer.print(
                 " limit={s} value={d}",
                 .{ @tagName(detail.name), detail.value },
+            ),
+            .text => |detail| try writer.print(
+                " value={s}",
+                .{detail.value},
+            ),
+            .dimension => |detail| try writer.print(
+                " expected={d} actual={d}",
+                .{ detail.expected, detail.actual },
             ),
         }
 
