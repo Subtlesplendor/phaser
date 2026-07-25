@@ -189,10 +189,13 @@ expand the kernel's capability set dynamically.
 
 ### 6.1 Initial production type
 
-`f64` is the only numerical scalar type for which Phaser 0.1 initially promises
-a complete production Potential Kernel.
+`f64` is the initial real input and real-result scalar type. Calculations whose
+mathematical value is complex MAY additionally provide a complete
+`Complex64 { re: f64, im: f64 }` result capability while retaining real `f64`
+parameters, scales, environments, and backgrounds.
 
-Every operation used by such a kernel MUST support `f64` consistently,
+Every operation used by such a kernel MUST support its declared real or complex
+result domain consistently,
 including:
 
 - exact-constant conversion;
@@ -216,7 +219,8 @@ Future complete kernel types may include:
 - `f32`;
 - `f128` or another extended real type;
 - externally provided multiprecision real types; or
-- complex types.
+- complex types beyond the paired binary64 result capability required by the
+  initial scalar one-loop effective potential.
 
 Each requires an explicit support matrix covering all operations reachable by
 the kernel.

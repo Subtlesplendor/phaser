@@ -678,7 +678,8 @@ explicit imports or injected options so dependencies remain visible.
 `foundation/`
 : Small domain-independent building blocks such as distinct IDs, bounds, source
   spans, diagnostics, and arena utilities. This must not become a miscellaneous
-  dumping ground.
+  dumping ground. Their normative shared contract is specified in
+  [Foundation Types and Failure Reporting](docs/architecture/FOUNDATION.md).
 
 `expression/`
 : Exact values, source expressions, the canonical Typed Value IR, interning,

@@ -326,6 +326,9 @@ Capacity accounting MUST:
 - remain valid when a requested size is zero or near the integer limit; and
 - distinguish required calculation memory from optional cache admission.
 
+The shared checked-arithmetic and transactional-budget primitives are specified
+in [Foundation Types and Failure Reporting](FOUNDATION.md).
+
 Default limits and named capacity profiles remain to be chosen. Defaults are
 ergonomic policy, not scientific constants.
 

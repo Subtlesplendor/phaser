@@ -126,8 +126,9 @@ renormalization scale, gauge parameters, and numerical parameter-point values
 are not in scope.
 
 The lexical form of a parameter identifier is
-`[A-Za-z_][A-Za-z0-9_]*`. Parameter-schema rules may impose additional
-restrictions.
+`[A-Za-z_][A-Za-z0-9_]*`. Declaration, reserved-name, ordering, and source
+version rules are specified in
+[QFT Model Format: Parameters and Source Versioning](QFT_MODEL_PARAMETERS.md).
 
 `pi` is a reserved built-in constant. It denotes the exact mathematical constant
 \(\pi\), not a pre-rounded floating-point value.

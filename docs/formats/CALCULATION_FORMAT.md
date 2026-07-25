@@ -290,7 +290,9 @@ The intended progression is:
 2. Background expansion.
 3. Quadratic operators and field-dependent mass matrices.
 4. Interaction vertices.
-5. Tree-level and zero-temperature one-loop effective potential.
+5. Tree-level and zero-temperature one-loop effective potential. The initial
+   scalar formula, complex branch, and zero-mode behavior are specified in
+   [Zero-Temperature One-Loop Scalar Effective Potential](../calculations/SCALAR_ONE_LOOP_EFFECTIVE_POTENTIAL.md).
 6. Fermion and gauge contributions with explicit gauge fixing.
 7. RG functions and RG-consistency calculations.
 8. Higher-loop effective potentials and explicit RG evolution.

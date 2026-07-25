@@ -71,6 +71,10 @@ and lowering produce a view or a distinct artifact.
 
 ### 2.2 Typed local identifiers
 
+The concrete foundation contract for opaque representation, checked conversion,
+and owner locality is specified in
+[Foundation Types and Failure Reporting](FOUNDATION.md).
+
 References within an artifact use semantically distinct identifier types, such
 as:
 

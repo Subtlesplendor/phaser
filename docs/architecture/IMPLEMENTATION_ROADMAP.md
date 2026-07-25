@@ -116,6 +116,13 @@ scalar vertical slice.
 - Establish allocation-failure injection and initial fuzz-target infrastructure.
 - Select the first exact conformance fixtures.
 
+The shared implementation substrate is specified in
+[Foundation Types and Failure Reporting](FOUNDATION.md). The initial model
+parameter/version and scalar one-loop conventions are specified in
+[QFT Model Format: Parameters and Source Versioning](../formats/QFT_MODEL_PARAMETERS.md)
+and
+[Zero-Temperature One-Loop Scalar Effective Potential](../calculations/SCALAR_ONE_LOOP_EFFECTIVE_POTENTIAL.md).
+
 ### Exit criteria
 
 - The repository builds and runs meaningful bounded tests in Debug and
@@ -229,6 +236,10 @@ gauge fixing or a general diagram engine.
 - Loop-order-separated contributions and provenance.
 - Domain and negative-mass policies.
 - Value, gradient, and Hessian capabilities where scientifically supported.
+
+The initial numerical result preserves the full principal-branch complex value
+for negative scalar mass-squared eigenvalues. Such points are successful complex
+results rather than unsupported-domain failures.
 
 ### Exit criteria
 

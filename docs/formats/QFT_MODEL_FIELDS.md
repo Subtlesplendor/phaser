@@ -62,8 +62,9 @@ For schema version `phaser.qft-model/0.1`:
 - Unknown properties are rejected unless the schema explicitly identifies them
   as extension or metadata properties.
 
-The complete model schema will additionally specify parameters, gauge algebras,
-and conventions that are outside this document.
+Symbolic parameters and strict source-schema version handling are specified in
+[QFT Model Format: Parameters and Source Versioning](QFT_MODEL_PARAMETERS.md).
+Gauge algebras and additional conventions remain outside this document.
 
 ## 3. Field declarations
 
@@ -425,9 +426,7 @@ removing unselected components from the fluctuation sector.
 
 The following are deliberately deferred to adjacent specifications:
 
-- the full model-parameter declaration schema;
 - whole-model source resource limits and their configuration policy;
-- source-schema versioning, compatibility, and migration policy;
 - the public canonical JSON representation, if one is needed.
 
 Gauge-factor presentation metadata, factorized-generator shorthands, and

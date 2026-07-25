@@ -1,0 +1,70 @@
+{
+  "schema": "phaser.conformance-fixture/0.1",
+  "fixture_id": "scalar.multi_scalar",
+  "model_file": "model.json",
+  "model_schema": "phaser.qft-model/0.1",
+  "applicable_milestones": [1, 2, 3],
+  "conventions": {
+    "spacetime_dimension": 4,
+    "renormalization_scheme": "MSbar",
+    "one_loop_formula_version": "scalar-vacuum-msbar/1",
+    "complex_log_branch": "arg(-pi,pi]",
+    "resummation": "none"
+  },
+  "exact_identities": {
+    "tree_potential": "omega + t_h*h + t_s*s + (m_h2*h^2 + 2*m_hs2*h*s + m_s2*s^2)/2 + (a*h^3 + 3*b*h^2*s + 3*c*h*s^2 + d*s^3)/6 + (lh*h^4 + 4*l3*h^3*s + 6*l2*h^2*s^2 + 4*l1*h*s^3 + ls*s^4)/24",
+    "mass_hh": "m_h2 + a*h + b*s + (lh/2)*h^2 + l3*h*s + (l2/2)*s^2",
+    "mass_hs": "m_hs2 + b*h + c*s + (l3/2)*h^2 + l2*h*s + (l1/2)*s^2",
+    "mass_ss": "m_s2 + c*h + d*s + (l2/2)*h^2 + l1*h*s + (ls/2)*s^2"
+  },
+  "reference_points": [
+    {
+      "id": "positive_definite",
+      "mass_matrix": [["1", "0"], ["0", "4"]],
+      "eigenvalues": ["1", "4"],
+      "renormalization_scale": "1",
+      "one_loop": {
+        "re": "-3/(128*pi^2) + (Log(4) - 3/2)/(4*pi^2)",
+        "im": "0"
+      },
+      "status": "ok_real"
+    },
+    {
+      "id": "exact_degeneracy",
+      "mass_matrix": [["2", "0"], ["0", "2"]],
+      "eigenvalues": ["2", "2"],
+      "renormalization_scale": "1",
+      "one_loop": {
+        "re": "(Log(2) - 3/2)/(8*pi^2)",
+        "im": "0"
+      },
+      "status": "ok_real"
+    },
+    {
+      "id": "indefinite",
+      "mass_matrix": [["1", "0"], ["0", "-1"]],
+      "eigenvalues": ["1", "-1"],
+      "renormalization_scale": "1",
+      "one_loop": {
+        "re": "-3/(64*pi^2)",
+        "im": "1/(64*pi)"
+      },
+      "status": "ok_complex"
+    }
+  ],
+  "metamorphic_obligations": [
+    "swapping h and s permutes the matrix and preserves its complex spectral sum",
+    "an exact orthogonal basis transformation preserves eigenvalue multiplicity and the complex spectral sum",
+    "two identical negative eigenvalues double both real and imaginary contributions"
+  ],
+  "provenance": {
+    "kind": "hand_derived",
+    "derivation_file": "README.md"
+  },
+  "deliberately_unsupported": [
+    "fermion contributions",
+    "gauge and ghost contributions",
+    "thermal contributions",
+    "Goldstone or instability resummation"
+  ]
+}
