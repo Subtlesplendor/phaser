@@ -69,6 +69,8 @@ The initial language-neutral manifest uses schema identifier
 - the applicable roadmap milestones;
 - the scientific conventions needed to interpret the expected results;
 - exact identities and named reference points;
+- structured metamorphic cases with their transformations, expected relations,
+  and exact common results;
 - derivation or external provenance; and
 - deliberately unsupported obligations.
 
@@ -358,7 +360,8 @@ complex one-loop values live under
 This fixture contains at least two real scalars, a non-diagonal quadratic tensor,
 cubic interactions, and mixed quartics. It verifies tensor orbit handling,
 field-dependent mixing, multiple background choices, and covariance comparisons
-against a separately supplied transformed model. Its version 0.1 source,
+against explicitly recorded permutation and orthogonal transformations. Its
+version 0.1 source,
 symmetric-orbit multiplicities, definite/degenerate/indefinite matrices, and
 complex spectral references live under
 `test/fixtures/conformance/multi_scalar/`.
