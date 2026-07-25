@@ -1,8 +1,12 @@
-# Foundation capacity fuzz target
+# Foundation and parser fuzz targets
 
-Stable target identifier: `foundation_capacity`.
+The active target identifiers are:
 
-The target uses `std.testing.Smith` to generate bounded state-machine sequences
+- `foundation_capacity`;
+- `expression_parser`; and
+- `scalar_model_parser`.
+
+`foundation_capacity` uses `std.testing.Smith` to generate bounded state-machine sequences
 of at most 64 operations containing:
 
 - checked `usize` addition;
@@ -17,9 +21,13 @@ after every operation. Rejected arithmetic and reservation operations are
 immediately repeated; they must return identical structured failures and
 preserve all prior state.
 
-The permanent seed corpus is under
-`test/corpus/foundation_capacity/`. Ordinary `zig build test` and
-`zig build fuzz` replay it. A bounded live campaign is:
+The parser targets feed bounded arbitrary bytes into the expression and JSON
+trust boundaries, repeat each operation, and compare diagnostics, canonical
+expression output, or model fingerprints. Their permanent corpora are under
+`test/corpus/expression_parser/` and `test/corpus/scalar_model_parser/`.
+
+Ordinary `zig build test` and `zig build fuzz` replay every corpus. A bounded
+live campaign is:
 
 ```text
 zig build fuzz -Doptimize=ReleaseSafe --fuzz=1000

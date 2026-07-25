@@ -1,0 +1,42 @@
+model multi_scalar
+schema phaser.qft-model/0.1
+fingerprint 3c040a24cb2308feecbff00e7c6d734146eedd6548b48294713cd99ff3123d68
+parameters 15
+  0 a dimension=1
+  1 b dimension=1
+  2 c dimension=1
+  3 d dimension=1
+  4 l1 dimension=0
+  5 l2 dimension=0
+  6 l3 dimension=0
+  7 lh dimension=0
+  8 ls dimension=0
+  9 m_h2 dimension=2
+  10 m_hs2 dimension=2
+  11 m_s2 dimension=2
+  12 omega dimension=4
+  13 t_h dimension=3
+  14 t_s dimension=3
+real_scalars 2
+  0 h
+  1 s
+tensor vacuum_energy components=1
+  [] = omega
+tensor scalar_tadpole components=2
+  [h] = t_h
+  [s] = t_s
+tensor scalar_mass_squared components=3
+  [h,h] = m_h2
+  [h,s] = m_hs2
+  [s,s] = m_s2
+tensor scalar_cubic components=4
+  [h,h,h] = a
+  [h,h,s] = b
+  [h,s,s] = c
+  [s,s,s] = d
+tensor scalar_quartic components=5
+  [h,h,h,h] = lh
+  [h,h,h,s] = l3
+  [h,h,s,s] = l2
+  [h,s,s,s] = l1
+  [s,s,s,s] = ls
