@@ -101,6 +101,14 @@ or kernel. In particular, it need not remap and hash every arena-local reference
 after derivation. Implementations MAY expose opaque process-local object IDs for
 logs and handles.
 
+Milestone 2 fingerprints the normalized calculation request with SHA-256 over
+the private domain `calculation-request-canonical/1`, mirroring the model
+fingerprint construction of section 3. The encoding covers the calculation kind,
+background mode and complete coordinate-to-scalar map in declared order,
+environment kind, loop truncation, and renormalization scheme when present. It
+excludes presentation metadata. The normalization rules are specified in
+[Effective-Potential Calculation Request §10](../formats/EFFECTIVE_POTENTIAL_REQUEST.md).
+
 ## 5. Parameter points
 
 Parameter points are validated semantic values associated with a model. Version

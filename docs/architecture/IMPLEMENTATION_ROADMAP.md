@@ -208,6 +208,16 @@ Implement:
 - human-readable Phaser and MathJax-compatible LaTeX export; and
 - a minimal Zig CLI.
 
+The request schema is specified in
+[Effective-Potential Calculation Request](../formats/EFFECTIVE_POTENTIAL_REQUEST.md),
+the derived artifact in
+[Classical Scalar Potential](../calculations/CLASSICAL_SCALAR_POTENTIAL.md), and
+the reference backend's opcodes in
+[Kernel Instruction Set](KERNEL_INSTRUCTION_SET.md). The Typed Value IR
+boundary and the derivative method are recorded in
+[Decision 0002](../decisions/0002-typed-value-ir-scope.md) and
+[Decision 0003](../decisions/0003-derivative-method.md).
+
 ### Exit criteria
 
 - \(\phi^4\) and multi-scalar examples run end to end.
