@@ -120,6 +120,7 @@ pub fn build(b: *std.Build) void {
         "scalar_model_parser",
         "value_ir_builder",
         "calculation_request_parser",
+        "symbolic_exporter",
     };
     for (fuzz_target_names) |target_name| {
         const filtered_tests = b.addTest(.{

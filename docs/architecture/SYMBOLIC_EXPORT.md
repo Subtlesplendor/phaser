@@ -145,8 +145,22 @@ The renderer MAY apply presentation-only rewrites such as:
 - omission of multiplication signs where unambiguous;
 - redundant-parenthesis removal;
 - fraction layout;
-- canonical spacing; and
-- line breaking.
+- canonical spacing;
+- line breaking; and
+- reading order within a commutative sum or product.
+
+The last deserves comment. Canonical operand order in the Typed Value IR is
+content-derived and deterministic, but it encodes no reading convention. A
+renderer MAY therefore order the terms of a sum and the factors of a product for
+legibility, provided the chosen order is itself derived from structure and is
+deterministic.
+
+The Milestone 2 renderers order sum terms by ascending total background degree
+and then by descending degree in each coordinate in turn, and order the factors
+of a term as coefficient, symbolic constants, parameters, then background
+coordinates. This reproduces how the same polynomial is written by hand. It
+changes no scientific content: reordering a commutative operand list is not a
+simplification, cancellation, or truncation.
 
 It MUST NOT perform target-dependent algebraic simplification, cancellation,
 factorization, numerical evaluation, resummation, or contribution removal.
@@ -239,6 +253,13 @@ label, descriptive label, or typography preference does not.
 
 The default renderer MUST safely escape arbitrary semantic identifiers. It MUST
 NOT interpret ordinary identifier text as raw LaTeX or target-language source.
+
+Milestone 2 renders every semantic identifier through the escaping default and
+uses no target-specific label. In particular it does not consume the `latex`
+presentation property that the QFT model format allows on parameters and fields,
+because that property has no validation or trust policy yet. The consequence is
+that a scalar named `phi` renders as `\mathrm{phi}` rather than as `\varphi`.
+Adopting declared labels is the subject of the deferred decision below.
 
 Optional target-specific labels MAY be supported later. If supported, they must:
 

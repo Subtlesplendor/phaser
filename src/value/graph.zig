@@ -946,7 +946,7 @@ pub const Builder = struct {
     /// so the result depends on structure alone. Children are already interned
     /// when this runs, so their keys are available.
     fn orderKey(self: *const Builder, node: Node, dimension: i32) u64 {
-        var hasher = std.hash.Wyhash.init(0x7068617365722d76);
+        var hasher = OrderHasher{};
         hasher.update(&.{@intFromEnum(std.meta.activeTag(node))});
         hasher.update(std.mem.asBytes(&dimension));
         switch (node) {
@@ -985,6 +985,27 @@ pub const Builder = struct {
         try self.appendDimension(dimension);
         if (self.intern.get(self.key.items)) |existing| return existing;
         return self.internPrepared(node, dimension);
+    }
+};
+
+/// FNV-1a over 64 bits.
+///
+/// Owned rather than taken from the standard library because canonical operand
+/// order feeds rendered output and committed golden files. A standard-library
+/// hash could in principle change between toolchain versions and silently
+/// reorder every exported equation; this cannot.
+const OrderHasher = struct {
+    state: u64 = 0xcbf29ce484222325,
+
+    fn update(self: *OrderHasher, bytes: []const u8) void {
+        for (bytes) |byte| {
+            self.state ^= byte;
+            self.state = self.state *% 0x100000001b3;
+        }
+    }
+
+    fn final(self: *const OrderHasher) u64 {
+        return self.state;
     }
 };
 
