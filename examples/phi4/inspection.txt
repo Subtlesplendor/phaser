@@ -1,0 +1,15 @@
+model phi4
+schema phaser.qft-model/0.1
+fingerprint 7da4db3f31600b5a61b31b4e1408d41cdb9b3f42936cf4f0a5f894ba444e0eb5
+parameters 3
+  0 lambda dimension=0
+  1 m2 dimension=2
+  2 omega dimension=4
+real_scalars 1
+  0 phi
+tensor vacuum_energy components=1
+  [] = omega
+tensor scalar_mass_squared components=1
+  [phi,phi] = m2
+tensor scalar_quartic components=1
+  [phi,phi,phi,phi] = lambda
