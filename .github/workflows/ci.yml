@@ -89,8 +89,12 @@ jobs:
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseSafe'
 
+      - name: Run public examples
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build examples -Doptimize=ReleaseSafe'
+
   fuzz-smoke:
-    name: Foundation fuzz smoke
+    name: Parser and foundation fuzz smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -104,6 +108,6 @@ jobs:
         shell: bash
         run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
 
-      - name: Run bounded foundation fuzz campaign
+      - name: Run bounded foundation and parser fuzz campaign
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build fuzz -Doptimize=ReleaseSafe --fuzz=1000'

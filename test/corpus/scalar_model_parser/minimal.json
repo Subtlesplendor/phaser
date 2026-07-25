@@ -1,0 +1,1 @@
+{"schema":"phaser.qft-model/0.1","spacetime_dimension":4,"conventions":{"metric":"mostly_plus","scalar_representation":"real_components","fermions":"two_component_weyl"},"parameters":{},"fields":{"real_scalars":[],"weyl_fermions":[],"gauge_vectors":[]},"tensors":{}}

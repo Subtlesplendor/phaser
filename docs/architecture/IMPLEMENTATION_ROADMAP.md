@@ -133,6 +133,8 @@ and
 
 ## 5. Milestone 1: scalar model and expression foundation
 
+Status: implemented
+
 ### Objective
 
 Parse and canonicalize real scalar theories with exact structural expressions.

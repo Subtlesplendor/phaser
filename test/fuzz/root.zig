@@ -1,5 +1,6 @@
 const std = @import("std");
-const foundation = @import("phaser").foundation;
+const phaser = @import("phaser");
+const foundation = phaser.foundation;
 
 const max_sequence_length = 64;
 
@@ -23,6 +24,175 @@ test "foundation_capacity" {
             @embedFile("../corpus/foundation_capacity/repeated-rejection.txt"),
         },
     });
+}
+
+test "expression_parser" {
+    try std.testing.fuzz({}, fuzzExpression, .{
+        .corpus = &.{
+            @embedFile("../corpus/expression_parser/empty.txt"),
+            @embedFile("../corpus/expression_parser/rational.txt"),
+            @embedFile("../corpus/expression_parser/radical.txt"),
+            @embedFile("../corpus/expression_parser/invalid.txt"),
+        },
+    });
+}
+
+fn fuzzExpression(_: void, smith: *std.testing.Smith) !void {
+    const length = smith.valueRangeLessThan(u16, 0, 1025);
+    var bytes: [1024]u8 = undefined;
+    for (bytes[0..length]) |*byte| byte.* = smith.value(u8);
+    const source_id = try foundation.SourceId.fromUsize(0);
+    const parameters = [_]phaser.expression.Parameter{
+        .{ .name = "a", .id = 0, .mass_dimension = 0 },
+        .{ .name = "m2", .id = 1, .mass_dimension = 2 },
+    };
+    const options = phaser.expression.ParseOptions{
+        .limits = .{
+            .expression_bytes = 1024,
+            .expression_tokens = 256,
+            .expression_nodes = 256,
+            .expression_depth = 32,
+            .integer_digits = 64,
+            .exponent_magnitude = 32,
+            .exact_integer_bits = 2048,
+        },
+    };
+    const first = try phaser.expression.parse(
+        std.testing.allocator,
+        source_id,
+        bytes[0..length],
+        &parameters,
+        options,
+    );
+    const second = try phaser.expression.parse(
+        std.testing.allocator,
+        source_id,
+        bytes[0..length],
+        &parameters,
+        options,
+    );
+    switch (first) {
+        .failure => |first_failure| switch (second) {
+            .failure => |second_failure| {
+                try std.testing.expectEqual(first_failure.kind, second_failure.kind);
+                try std.testing.expectEqual(first_failure.span, second_failure.span);
+            },
+            .expression => |second_expression| {
+                var owned = second_expression;
+                defer owned.deinit();
+                return error.NondeterministicExpressionParse;
+            },
+        },
+        .expression => |first_expression| {
+            var first_owned = first_expression;
+            defer first_owned.deinit();
+            var second_owned = switch (second) {
+                .expression => |expression| expression,
+                .failure => return error.NondeterministicExpressionParse,
+            };
+            defer second_owned.deinit();
+            var first_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+            defer first_output.deinit();
+            var second_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+            defer second_output.deinit();
+            try first_owned.write(&first_output.writer);
+            try second_owned.write(&second_output.writer);
+            try std.testing.expectEqualStrings(
+                first_output.written(),
+                second_output.written(),
+            );
+        },
+    }
+}
+
+test "scalar_model_parser" {
+    try std.testing.fuzz({}, fuzzModel, .{
+        .corpus = &.{
+            @embedFile("../corpus/scalar_model_parser/empty.json"),
+            @embedFile("../corpus/scalar_model_parser/minimal.json"),
+            @embedFile("../corpus/scalar_model_parser/invalid.json"),
+        },
+    });
+}
+
+fn fuzzModel(_: void, smith: *std.testing.Smith) !void {
+    const length = smith.valueRangeLessThan(u16, 0, 2049);
+    var bytes: [2048]u8 = undefined;
+    for (bytes[0..length]) |*byte| byte.* = smith.value(u8);
+    const context = switch (foundation.Context.init(std.testing.allocator, .{
+        .max_diagnostics = 8,
+        .max_related_locations = 8,
+    })) {
+        .context => |value| value,
+        .failure => unreachable,
+    };
+    const source = phaser.ModelSource{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = bytes[0..length],
+    };
+    const options = phaser.ModelLoadOptions{ .limits = .{
+        .source_bytes = 2048,
+        .json_tokens = 512,
+        .parameters = 32,
+        .real_scalars = 32,
+        .tensor_components = 128,
+        .expression_bytes = 256,
+        .expression_tokens = 128,
+        .expression_nodes = 128,
+        .expression_depth = 32,
+        .integer_digits = 64,
+        .exponent_magnitude = 32,
+        .exact_integer_bits = 2048,
+        .value_nodes = 1024,
+        .scratch_bytes = 1024 * 1024,
+        .persistent_bytes = 1024 * 1024,
+    } };
+    const first = try phaser.loadModel(context, source, options);
+    const second = try phaser.loadModel(context, source, options);
+    switch (first) {
+        .diagnostics => |first_diagnostics| {
+            var first_owned = first_diagnostics;
+            defer first_owned.deinit();
+            var second_owned = switch (second) {
+                .diagnostics => |diagnostics| diagnostics,
+                .model => |model| {
+                    var owned = model;
+                    defer owned.deinit();
+                    return error.NondeterministicModelParse;
+                },
+            };
+            defer second_owned.deinit();
+            try std.testing.expectEqual(
+                first_owned.items[0].code,
+                second_owned.items[0].code,
+            );
+            try std.testing.expectEqual(
+                first_owned.items[0].category,
+                second_owned.items[0].category,
+            );
+            try std.testing.expectEqual(
+                first_owned.items[0].primary,
+                second_owned.items[0].primary,
+            );
+        },
+        .model => |first_model| {
+            var first_owned = first_model;
+            defer first_owned.deinit();
+            var second_owned = switch (second) {
+                .model => |model| model,
+                .diagnostics => |diagnostics| {
+                    var owned = diagnostics;
+                    defer owned.deinit();
+                    return error.NondeterministicModelParse;
+                },
+            };
+            defer second_owned.deinit();
+            try std.testing.expectEqual(
+                first_owned.fingerprint().bytes,
+                second_owned.fingerprint().bytes,
+            );
+        },
+    }
 }
 
 fn fuzzCapacity(_: void, smith: *std.testing.Smith) !void {

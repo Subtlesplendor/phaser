@@ -1,3 +1,4 @@
 test {
-    _ = @import("conformance/scalar_one_loop.zig");
+    _ = @import("conformance/root.zig");
+    _ = @import("integration/root.zig");
 }
