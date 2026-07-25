@@ -332,6 +332,14 @@ in [Foundation Types and Failure Reporting](FOUNDATION.md).
 Default limits and named capacity profiles remain to be chosen. Defaults are
 ergonomic policy, not scientific constants.
 
+Milestone 1 selects a standard model-loading profile with 32 MiB of scratch
+storage and 64 MiB of persistent storage. Its tested hard ceilings are 256 MiB
+and 512 MiB respectively. Model loading is transactional: temporary parse and
+normalization state is discarded on failure, and a successful immutable model
+owns independently reclaimable storage. A model retains copied identifiers,
+presentation strings, exact values, and source spans, but does not borrow the
+caller's JSON buffer.
+
 ## 15. Capacity diagnostics
 
 A capacity failure SHOULD identify, where available:

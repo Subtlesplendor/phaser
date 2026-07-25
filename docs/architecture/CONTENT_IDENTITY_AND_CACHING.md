@@ -77,6 +77,12 @@ The fingerprint encoding MUST be domain-separated and versioned. The exact
 digest algorithm and external spelling are implementation choices until a
 public persisted consumer requires a stable contract.
 
+Milestone 1 uses SHA-256 from the pinned Zig standard library over the private
+domain `model-canonical/1`. Exact integers are encoded by sign and minimal
+big-endian magnitude rather than native limbs. `ModelFingerprint` is an opaque
+32-byte diagnostic value; neither its hexadecimal rendering nor the complete
+canonical byte stream is a stable interchange contract.
+
 ## 4. Calculation and kernel metadata
 
 A normalized calculation request plus a `ModelFingerprint` identifies the
