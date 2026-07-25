@@ -26,6 +26,14 @@ pub const Diagnostics = foundation.Diagnostics;
 pub const DiagnosticBuilder = foundation.DiagnosticBuilder;
 pub const allocationFailure = foundation.allocationFailure;
 pub const ModelLimits = model.ModelLimits;
+pub const Model = model.Model;
+pub const ModelSource = model.ModelSource;
+pub const ModelLoadOptions = model.ModelLoadOptions;
+pub const ModelLoadResult = model.ModelLoadResult;
+pub const ModelLoadError = model.ModelLoadError;
+pub const ModelFingerprint = model.ModelFingerprint;
+pub const TensorKind = model.TensorKind;
+pub const loadModel = model.loadModel;
 
 test {
     _ = foundation;
