@@ -89,6 +89,7 @@ pub const LimitName = enum {
     exponent_magnitude,
     exact_integer_bits,
     value_nodes,
+    value_operands,
     scratch_bytes,
     persistent_bytes,
 };
