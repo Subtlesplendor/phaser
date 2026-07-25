@@ -1,0 +1,1 @@
+{"schema":"phaser.calculation/0.1","kind":"effective_potential","background":{"mode":"component_slice","coordinates":[{"id":"h","scalar":"h"}]},"environment":{"kind":"vacuum"},"renormalization":{"scheme":"MSbar"},"orders":{"loop":{"through":0}}}

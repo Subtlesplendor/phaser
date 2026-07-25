@@ -82,7 +82,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("test/conformance/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "phaser", .module = phaser_module }},
+        .imports = &.{
+            .{ .name = "phaser", .module = phaser_module },
+            .{ .name = "example_data", .module = example_data_module },
+        },
     });
     const conformance_tests = b.addTest(.{ .root_module = conformance_module });
     const run_conformance_tests = b.addRunArtifact(conformance_tests);
@@ -116,6 +119,7 @@ pub fn build(b: *std.Build) void {
         "expression_parser",
         "scalar_model_parser",
         "value_ir_builder",
+        "calculation_request_parser",
     };
     for (fuzz_target_names) |target_name| {
         const filtered_tests = b.addTest(.{
