@@ -1,0 +1,13 @@
+.{
+    .name = .phaser,
+    .version = "0.0.0",
+    .fingerprint = 0x600e59735a5c8b4c, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "test",
+    },
+}

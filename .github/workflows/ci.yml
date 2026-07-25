@@ -52,3 +52,58 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/zig/zig" version
           [[ "$("$RUNNER_TEMP/zig/zig" version)" == "$(< .zigversion)" ]]
+
+  build-test:
+    name: Build and test (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86-64
+            runner: ubuntu-24.04
+          - name: macOS ARM64
+            runner: macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Zig toolchain
+        shell: bash
+        run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
+
+      - name: Build library
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build'
+
+      - name: Test Debug
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=Debug'
+
+      - name: Test ReleaseSafe
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseSafe'
+
+  fuzz-smoke:
+    name: Foundation fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Zig toolchain
+        shell: bash
+        run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
+
+      - name: Run bounded foundation fuzz campaign
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build fuzz -Doptimize=ReleaseSafe --fuzz=1000'
