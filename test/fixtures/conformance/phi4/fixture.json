@@ -1,7 +1,7 @@
 {
   "schema": "phaser.conformance-fixture/0.1",
   "fixture_id": "scalar.phi4",
-  "model_file": "model.json",
+  "model_file": "../../../../examples/phi4/model.json",
   "model_schema": "phaser.qft-model/0.1",
   "applicable_milestones": [
     1,

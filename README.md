@@ -1,8 +1,8 @@
 # Phaser
 
 Phaser is a Zig library for deriving and evaluating perturbative quantum field
-theory calculations. The repository is currently implementing Milestone 0: the
-design baseline and correctness substrate for the first scalar vertical slice.
+theory calculations. Milestone 1 provides the exact-expression and canonical
+real-scalar model foundation for the first numerical vertical slice.
 
 ## Toolchain
 
@@ -34,7 +34,7 @@ zig build test -Doptimize=Debug
 zig build test -Doptimize=ReleaseSafe
 ```
 
-Run only colocated foundation unit tests:
+Run colocated library unit tests:
 
 ```text
 zig build test-unit
@@ -44,6 +44,12 @@ Replay the permanent fuzz seeds:
 
 ```text
 zig build fuzz
+```
+
+Run the public scalar-model inspection examples:
+
+```text
+zig build examples
 ```
 
 Run a bounded coverage-guided campaign of 1,000 generated inputs:
@@ -64,24 +70,29 @@ Zig 0.16.0's live fuzzer currently requires ReleaseSafe on the supported macOS
 ARM64 toolchain because its Debug test runner fails to compile before the target
 executes. Ordinary seed replay remains part of both Debug and ReleaseSafe tests.
 
-Milestone 0's scalar one-loop Zig tests are numerical transcription smoke tests
-for the exact hand-derived fixture expressions. The exact strings become
-machine-validated only when the corresponding parser and IR capabilities are
-activated in later milestones; Milestone 0 does not add a fixture parser.
+The expression, JSON, and scalar-model fuzz targets replay permanent seeds in
+the default suite. Live fuzzing remains a separately bounded campaign.
 
 ## Current scope
 
-Milestone 0 provides:
+Milestones 0 and 1 provide:
 
 - explicit allocator and resource-limit plumbing;
 - typed local identifiers and byte source spans;
 - checked capacity arithmetic and transactional budgets;
 - immutable structured diagnostics;
-- exact scalar conformance fixtures; and
+- configurable parser and model hard limits;
+- bounded arbitrary-precision integers and reduced exact rationals;
+- the exact model expression language and initial Typed Value IR;
+- strict real-scalar QFT model loading and semantic validation;
+- immutable canonical scalar models and symmetric tensor lookup;
+- deterministic SHA-256 model fingerprints and inspection output;
+- public phi4 and multi-scalar examples;
+- expression, JSON, scalar-model, and capacity fuzz targets; and
 - Debug, ReleaseSafe, and bounded fuzz CI on the required native platforms.
 
-Model parsing begins in Milestone 1. Numerical potential evaluation, the CLI,
-the C ABI, and language bindings are not implemented yet.
+Numerical potential evaluation begins in Milestone 2. The CLI, C ABI, and
+language bindings are not implemented yet.
 
 The architecture and milestone contracts are documented in
 [DESIGN.md](DESIGN.md) and
