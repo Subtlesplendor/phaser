@@ -372,6 +372,25 @@ source-expression representation is recorded in
 differentiation method in
 [Decision 0003](../decisions/0003-derivative-method.md).
 
+The derived arena applies the stronger canonicalization permitted by section
+5.5. Beyond flattening and ordering commutative operands it:
+
+- folds exact rational constants;
+- collects a sum into distinct terms carrying exact rational coefficients, so
+  that opposite terms cancel exactly;
+- represents negation canonically as multiplication by \(-1\), so the derived
+  arena has no separate negation node; and
+- rewrites division by a nonzero exact rational as multiplication by its
+  reciprocal.
+
+Each rule is an exact structural identity. In particular no common factor is
+cancelled between a numerator and a non-constant denominator, so the derived IR
+still discovers no general mathematical equivalence.
+
+Mass dimension participates in node identity. This lets an exact zero carry the
+dimension of the term it replaces, which keeps a cancelled sum dimensionally
+meaningful.
+
 ### 5.3 Node capabilities
 
 The IR is expected to support categories including:

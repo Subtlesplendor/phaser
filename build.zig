@@ -115,6 +115,7 @@ pub fn build(b: *std.Build) void {
         "foundation_capacity",
         "expression_parser",
         "scalar_model_parser",
+        "value_ir_builder",
     };
     for (fuzz_target_names) |target_name| {
         const filtered_tests = b.addTest(.{

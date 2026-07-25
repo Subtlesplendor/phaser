@@ -463,6 +463,146 @@ fn expectRepeatedArithmeticFailure(
     try expectSameDiagnostic(first, second);
 }
 
+test "value_ir_builder" {
+    try std.testing.fuzz({}, fuzzValueGraph, .{
+        .corpus = &.{
+            @embedFile("../corpus/value_ir_builder/leaves.bin"),
+            @embedFile("../corpus/value_ir_builder/polynomial.bin"),
+            @embedFile("../corpus/value_ir_builder/cancellation.bin"),
+        },
+    });
+}
+
+const max_steps = 48;
+const pool_capacity = max_steps + 4;
+
+const Step = struct {
+    kind: u8,
+    a: u8,
+    b: u8,
+    c: u8,
+};
+
+/// Replays a generated construction script and returns the resulting graph.
+///
+/// Steps whose operands are dimensionally incompatible, or which exhaust a
+/// limit, are skipped: rejecting them is correct behavior, and the property
+/// under test is that whatever is accepted is canonical and deterministic.
+fn replay(steps: []const Step, allocator: std.mem.Allocator) !phaser.value.Graph {
+    var builder = try phaser.value.Builder.init(allocator, .{
+        .value_nodes = 4096,
+        .value_operands = 64,
+        .exponent_magnitude = 8,
+        .exact_integer_bits = 2048,
+    });
+    errdefer builder.deinit();
+
+    var pool: [pool_capacity]phaser.value.ValueId = undefined;
+    var pool_length: usize = 0;
+
+    // Seed the pool so that every script has operands available.
+    pool[pool_length] = try builder.background(0, "h", 1);
+    pool_length += 1;
+    pool[pool_length] = try builder.background(1, "s", 1);
+    pool_length += 1;
+    pool[pool_length] = try builder.parameter(0, "g", 0);
+    pool_length += 1;
+    pool[pool_length] = try builder.integer(1, 0);
+    pool_length += 1;
+
+    for (steps) |step| {
+        const first = pool[step.a % pool_length];
+        const second = pool[step.b % pool_length];
+        const third = pool[step.c % pool_length];
+
+        const produced: ?phaser.value.ValueId = switch (step.kind % 7) {
+            0 => builder.add(&.{ first, second }) catch null,
+            1 => builder.add(&.{ first, second, third }) catch null,
+            2 => builder.multiply(&.{ first, second }) catch null,
+            3 => builder.multiply(&.{ first, second, third }) catch null,
+            4 => builder.power(first, step.b % 6) catch null,
+            5 => builder.divide(first, second) catch null,
+            6 => builder.subtract(first, second) catch null,
+            else => unreachable,
+        };
+        if (produced) |id| {
+            if (pool_length < pool_capacity) {
+                pool[pool_length] = id;
+                pool_length += 1;
+            }
+        }
+    }
+    return builder.finish();
+}
+
+fn fuzzValueGraph(_: void, smith: *std.testing.Smith) !void {
+    const count = smith.valueRangeLessThan(u16, 0, max_steps + 1);
+    var steps: [max_steps]Step = undefined;
+    for (steps[0..count]) |*step| {
+        step.* = .{
+            .kind = smith.value(u8),
+            .a = smith.value(u8),
+            .b = smith.value(u8),
+            .c = smith.value(u8),
+        };
+    }
+
+    var first = try replay(steps[0..count], std.testing.allocator);
+    defer first.deinit();
+    var second = try replay(steps[0..count], std.testing.allocator);
+    defer second.deinit();
+
+    // Construction establishes the published invariants.
+    try std.testing.expect(first.audit());
+    try std.testing.expect(second.audit());
+
+    // Independently built graphs of the same script are byte identical, so
+    // construction depends on no allocation address or iteration order.
+    var first_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer first_output.deinit();
+    var second_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer second_output.deinit();
+    try first.writeCanonical(&first_output.writer);
+    try second.writeCanonical(&second_output.writer);
+    try std.testing.expectEqualStrings(first_output.written(), second_output.written());
+
+    // Interning: no two published nodes share a canonical encoding.
+    try expectDistinctNodes(first);
+}
+
+/// Two nodes with the same canonical line would mean interning missed a
+/// structurally equal node, which is how the `power` and `divide` lookup
+/// omission first showed up.
+fn expectDistinctNodes(graph: phaser.value.Graph) !void {
+    var seen = std.StringHashMap(void).init(std.testing.allocator);
+    defer {
+        var iterator = seen.keyIterator();
+        while (iterator.next()) |key| std.testing.allocator.free(key.*);
+        seen.deinit();
+    }
+
+    var rendered: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer rendered.deinit();
+    try graph.writeCanonical(&rendered.writer);
+
+    var lines = std.mem.splitScalar(u8, rendered.written(), '\n');
+    _ = lines.next();
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        // Drop the leading index, which is the only per-node difference a
+        // duplicate would retain.
+        const space = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
+        const body = line[space + 1 ..];
+        const owned = try std.testing.allocator.dupe(u8, body);
+        errdefer std.testing.allocator.free(owned);
+        if (seen.contains(owned)) {
+            std.testing.allocator.free(owned);
+            return error.DuplicateInternedNode;
+        }
+        try seen.put(owned, {});
+    }
+}
+
 fn expectSameDiagnostic(
     first: foundation.Diagnostic,
     second: foundation.Diagnostic,

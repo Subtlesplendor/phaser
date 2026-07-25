@@ -6,6 +6,7 @@
 pub const foundation = @import("foundation/root.zig");
 pub const model = @import("model/root.zig");
 pub const expression = @import("expression/root.zig");
+pub const value = @import("value/root.zig");
 
 pub const Context = foundation.Context;
 pub const Limits = foundation.Limits;
@@ -34,9 +35,14 @@ pub const ModelLoadError = model.ModelLoadError;
 pub const ModelFingerprint = model.ModelFingerprint;
 pub const TensorKind = model.TensorKind;
 pub const loadModel = model.loadModel;
+pub const ValueLimits = value.ValueLimits;
+pub const ValueGraph = value.Graph;
+pub const ValueGraphBuilder = value.Builder;
+pub const ValueId = value.ValueId;
 
 test {
     _ = foundation;
     _ = model;
     _ = expression;
+    _ = value;
 }
