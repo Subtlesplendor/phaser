@@ -362,6 +362,16 @@ of positive rationals, negation, ordered addition and multiplication, division,
 and non-negative integer powers. Source-expression normalization preserves
 operand order and does not introduce general algebraic equivalence.
 
+Milestone 2 adds a background-coordinate input to that node subset and holds one
+interned graph per calculation artifact in a shared arena, so that contributions
+sharing subexpressions share nodes. It also adds exact symbolic differentiation
+with respect to background coordinates, whose results are ordinary nodes in the
+same arena. The separation between this derived-value arena and the Milestone 1
+source-expression representation is recorded in
+[Decision 0002](../decisions/0002-typed-value-ir-scope.md), and the
+differentiation method in
+[Decision 0003](../decisions/0003-derivative-method.md).
+
 ### 5.3 Node capabilities
 
 The IR is expected to support categories including:
