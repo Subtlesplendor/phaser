@@ -603,6 +603,89 @@ fn expectDistinctNodes(graph: phaser.value.Graph) !void {
     }
 }
 
+test "calculation_request_parser" {
+    try std.testing.fuzz({}, fuzzRequest, .{
+        .corpus = &.{
+            @embedFile("../corpus/calculation_request_parser/full_space.json"),
+            @embedFile("../corpus/calculation_request_parser/component_slice.json"),
+            @embedFile("../corpus/calculation_request_parser/invalid.json"),
+        },
+    });
+}
+
+fn fuzzRequest(_: void, smith: *std.testing.Smith) !void {
+    const length = smith.valueRangeLessThan(u16, 0, 1025);
+    var bytes: [1024]u8 = undefined;
+    for (bytes[0..length]) |*byte| byte.* = smith.value(u8);
+
+    const context = switch (foundation.Context.init(std.testing.allocator, .{
+        .max_diagnostics = 8,
+        .max_related_locations = 8,
+    })) {
+        .context => |value| value,
+        .failure => unreachable,
+    };
+    const source = phaser.RequestSource{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = bytes[0..length],
+    };
+
+    const first = try phaser.parseRequest(context, source, .{});
+    const second = try phaser.parseRequest(context, source, .{});
+
+    switch (first) {
+        .diagnostics => |first_diagnostics| {
+            var first_owned = first_diagnostics;
+            defer first_owned.deinit();
+            var second_owned = switch (second) {
+                .diagnostics => |value| value,
+                .request => |request| {
+                    var owned = request;
+                    owned.deinit();
+                    return error.NondeterministicRequestParse;
+                },
+            };
+            defer second_owned.deinit();
+            try std.testing.expectEqual(
+                first_owned.items.len,
+                second_owned.items.len,
+            );
+            for (first_owned.items, second_owned.items) |expected, actual| {
+                try std.testing.expectEqual(expected.code, actual.code);
+                try std.testing.expectEqual(expected.category, actual.category);
+                try std.testing.expectEqual(expected.primary, actual.primary);
+            }
+        },
+        .request => |first_request| {
+            var first_owned = first_request;
+            defer first_owned.deinit();
+            var second_owned = switch (second) {
+                .request => |request| request,
+                .diagnostics => |diagnostics| {
+                    var owned = diagnostics;
+                    owned.deinit();
+                    return error.NondeterministicRequestParse;
+                },
+            };
+            defer second_owned.deinit();
+
+            // An accepted request normalizes to one identity, and Milestone 2
+            // accepts loop order zero only.
+            try std.testing.expectEqual(
+                phaser.calculation.supported_loop_order,
+                first_owned.loop_order,
+            );
+            const first_fingerprint = try first_owned.fingerprint(std.testing.allocator);
+            const second_fingerprint = try second_owned.fingerprint(std.testing.allocator);
+            try std.testing.expectEqualSlices(
+                u8,
+                &first_fingerprint.bytes,
+                &second_fingerprint.bytes,
+            );
+        },
+    }
+}
+
 fn expectSameDiagnostic(
     first: foundation.Diagnostic,
     second: foundation.Diagnostic,

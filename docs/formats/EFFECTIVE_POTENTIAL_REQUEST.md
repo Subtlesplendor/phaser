@@ -144,6 +144,24 @@ requiring an inert declaration at tree level.
 No other property is permitted under `renormalization` in schema version 0.1.
 The numerical renormalization scale is dynamic and MUST NOT appear here.
 
+### 5.1 Scheme consistency
+
+The scheme of this request governs the *derivation*. It does not describe the
+numerical parameter values, which carry their own scheme and reference scale on
+the parameter point specified by
+[Renormalization Scales, Parameter Points, and RG Evolution §3](RENORMALIZATION_GROUP.md).
+
+Making the request property optional at loop order zero therefore loses no
+scheme information: the tree-level derivation is scheme independent, and the
+scheme of the values remains declared where those values are supplied.
+
+Because the parameters of one evaluation must all be renormalized in one scheme,
+binding MUST reject a parameter point whose declared scheme differs from a
+scheme declared by the artifact. Contributions within one artifact MUST share
+one scheme context; a single potential MUST NOT combine contributions
+renormalized in different schemes. The binding-time check is specified with the
+parameter-point implementation.
+
 ## 6. Gauge fixing
 
 Gauge fixing is required only by calculations that need gauge-fixed propagators
@@ -224,8 +242,15 @@ Normalization MUST:
 - preserve declared coordinate order;
 - encode the background mode and the complete coordinate-to-scalar map;
 - encode the environment kind and loop truncation;
-- encode the renormalization scheme when present; and
+- encode the renormalization scheme only when it can affect the derivation,
+  which is from loop order one onward; and
 - exclude `label`, `latex`, and `description` presentation metadata.
+
+Omitting an inert scheme from the encoding means the two spellings of a tree
+request — with and without a `renormalization` block — share one calculation
+identity, which matches the fact that they derive the same potential. The
+declaration is still retained in artifact metadata for provenance and for the
+binding-time consistency check of section 5.1.
 
 The canonical encoding is domain-separated under
 `calculation-request-canonical/1` and hashed with SHA-256, matching the model

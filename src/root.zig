@@ -7,6 +7,7 @@ pub const foundation = @import("foundation/root.zig");
 pub const model = @import("model/root.zig");
 pub const expression = @import("expression/root.zig");
 pub const value = @import("value/root.zig");
+pub const calculation = @import("calculation/root.zig");
 
 pub const Context = foundation.Context;
 pub const Limits = foundation.Limits;
@@ -39,10 +40,17 @@ pub const ValueLimits = value.ValueLimits;
 pub const ValueGraph = value.Graph;
 pub const ValueGraphBuilder = value.Builder;
 pub const ValueId = value.ValueId;
+pub const CalculationLimits = calculation.CalculationLimits;
+pub const CalculationRequest = calculation.Request;
+pub const RequestSource = calculation.RequestSource;
+pub const parseRequest = calculation.parseRequest;
+pub const PotentialArtifact = calculation.Artifact;
+pub const deriveClassicalPotential = calculation.deriveClassicalPotential;
 
 test {
     _ = foundation;
     _ = model;
     _ = expression;
     _ = value;
+    _ = calculation;
 }

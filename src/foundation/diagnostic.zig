@@ -32,6 +32,14 @@ pub const Code = enum(u32) {
     duplicate_tensor_orbit = 0x0013_0002,
     noncanonical_tensor_indices = 0x0013_0003,
     explicit_zero_component = 0x0013_0004,
+    invalid_calculation_schema = 0x0014_0001,
+    unsupported_calculation_kind = 0x0014_0002,
+    unsupported_environment = 0x0014_0003,
+    unsupported_gauge_fixing = 0x0014_0004,
+    unsupported_loop_order = 0x0014_0005,
+    invalid_background_mode = 0x0014_0006,
+    invalid_background_coordinate = 0x0014_0007,
+    duplicate_background_coordinate = 0x0014_0008,
 };
 
 pub const Category = enum {
@@ -42,6 +50,7 @@ pub const Category = enum {
     json,
     expression,
     model,
+    calculation,
 };
 
 pub const Severity = enum {
@@ -70,6 +79,9 @@ pub const Resource = enum {
     exponent_magnitude,
     exact_integer_bits,
     value_nodes,
+    request_bytes,
+    background_coordinates,
+    contributions,
 };
 
 pub const LimitName = enum {
@@ -90,6 +102,11 @@ pub const LimitName = enum {
     exact_integer_bits,
     value_nodes,
     value_operands,
+    request_bytes,
+    request_json_tokens,
+    request_json_nesting,
+    background_coordinates,
+    contributions,
     scratch_bytes,
     persistent_bytes,
 };

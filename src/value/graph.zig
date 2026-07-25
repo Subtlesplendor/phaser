@@ -80,6 +80,13 @@ pub const Node = union(enum) {
 pub const Value = struct {
     node: Node,
     mass_dimension: i32,
+    /// Hash of this node's content and its operands' order keys.
+    ///
+    /// Derived from structure alone, never from arena position, so the same
+    /// value built by different call sequences receives the same key. This is
+    /// what makes canonical operand order, and therefore rendered output,
+    /// independent of how a graph was constructed.
+    order_key: u64,
 };
 
 /// Immutable published graph. Owns its arena and every string and slice its
@@ -111,13 +118,14 @@ pub const Graph = struct {
             const ok = switch (item.node) {
                 .add, .multiply => |children| blk: {
                     if (children.len < 2) break :blk false;
-                    var previous: ?ValueId = null;
+                    var previous: ?u64 = null;
                     for (children) |child| {
                         if (child.toUsize() >= index) break :blk false;
+                        const key = self.values[child.toUsize()].order_key;
                         if (previous) |earlier| {
-                            if (child.toU32() < earlier.toU32()) break :blk false;
+                            if (key < earlier) break :blk false;
                         }
-                        previous = child;
+                        previous = key;
                     }
                     break :blk true;
                 },
@@ -174,7 +182,116 @@ pub const Graph = struct {
             try writer.print(" dimension={d}\n", .{item.mass_dimension});
         }
     }
+
+    /// Deterministic encoding of the value reachable from `root`, numbered in
+    /// structural traversal order.
+    ///
+    /// Numbering comes from a post-order walk that follows canonical operand
+    /// order, and operand order is itself content-derived, so the bytes depend
+    /// only on the value's structure. Two structurally equal values in
+    /// different arenas therefore encode identically, which makes cross-arena
+    /// structural comparison a byte comparison.
+    pub fn writeValueCanonical(
+        self: *const Graph,
+        root: ValueId,
+        allocator: std.mem.Allocator,
+        writer: *std.Io.Writer,
+    ) (std.Io.Writer.Error || error{OutOfMemory})!void {
+        std.debug.assert(root.toUsize() < self.values.len);
+
+        const count = root.toUsize() + 1;
+        const numbering = try allocator.alloc(?usize, count);
+        defer allocator.free(numbering);
+        @memset(numbering, null);
+        const queued = try allocator.alloc(bool, count);
+        defer allocator.free(queued);
+        @memset(queued, false);
+
+        var sequence = std.ArrayList(ValueId).empty;
+        defer sequence.deinit(allocator);
+
+        const Frame = struct { id: ValueId, next_child: usize };
+        var stack = std.ArrayList(Frame).empty;
+        defer stack.deinit(allocator);
+
+        // Bounded explicit worklist rather than recursion. Operands always
+        // refer to strictly earlier nodes, so the walk terminates.
+        try stack.append(allocator, .{ .id = root, .next_child = 0 });
+        queued[root.toUsize()] = true;
+        while (stack.items.len != 0) {
+            const top = &stack.items[stack.items.len - 1];
+            const node = self.values[top.id.toUsize()].node;
+            if (childAt(node, top.next_child)) |child| {
+                top.next_child += 1;
+                if (!queued[child.toUsize()]) {
+                    queued[child.toUsize()] = true;
+                    try stack.append(allocator, .{ .id = child, .next_child = 0 });
+                }
+                continue;
+            }
+            const finished = top.id;
+            _ = stack.pop();
+            numbering[finished.toUsize()] = sequence.items.len;
+            try sequence.append(allocator, finished);
+        }
+
+        try writer.writeAll("value-canonical/1\n");
+        for (sequence.items, 0..) |id, position| {
+            const item = self.values[id.toUsize()];
+            try writer.print("{d} ", .{position});
+            switch (item.node) {
+                .rational => |rational| {
+                    try writer.writeAll("rational ");
+                    try writeRational(rational, writer);
+                },
+                .pi => try writer.writeAll("pi"),
+                .sqrt_rational => |rational| {
+                    try writer.writeAll("sqrt ");
+                    try writeRational(rational, writer);
+                },
+                .parameter => |input| try writer.print(
+                    "parameter {d} {s}",
+                    .{ input.id, input.name },
+                ),
+                .background => |input| try writer.print(
+                    "background {d} {s}",
+                    .{ input.index, input.name },
+                ),
+                .add, .multiply => |children| {
+                    try writer.writeAll(if (item.node == .add) "add" else "multiply");
+                    for (children) |child| {
+                        try writer.print(" {d}", .{numbering[child.toUsize()].?});
+                    }
+                },
+                .divide => |binary| try writer.print(
+                    "divide {d} {d}",
+                    .{
+                        numbering[binary.numerator.toUsize()].?,
+                        numbering[binary.denominator.toUsize()].?,
+                    },
+                ),
+                .power => |power_node| try writer.print(
+                    "power {d} {d}",
+                    .{ numbering[power_node.base.toUsize()].?, power_node.exponent },
+                ),
+            }
+            try writer.print(" dimension={d}\n", .{item.mass_dimension});
+        }
+    }
 };
+
+fn childAt(node: Node, index: usize) ?ValueId {
+    return switch (node) {
+        .add, .multiply => |children| if (index < children.len) children[index] else null,
+        .divide => |binary| switch (index) {
+            0 => binary.numerator,
+            1 => binary.denominator,
+            else => null,
+        },
+        .power => |power_node| if (index == 0) power_node.base else null,
+        else => null,
+    };
+}
 
 fn writeChildren(
     label: []const u8,
@@ -481,7 +598,7 @@ pub const Builder = struct {
         if (operands.items.len == 0) return self.zero(result_dimension);
         if (operands.items.len == 1) return operands.items[0];
 
-        std.mem.sort(ValueId, operands.items, {}, lessThanId);
+        std.mem.sort(ValueId, operands.items, @as(*const Builder, self), lessThanOrder);
         return self.internSequence(.add, operands.items, result_dimension);
     }
 
@@ -614,7 +731,7 @@ pub const Builder = struct {
         }
         if (operands.items.len == 1) return operands.items[0];
 
-        std.mem.sort(ValueId, operands.items, {}, lessThanId);
+        std.mem.sort(ValueId, operands.items, @as(*const Builder, self), lessThanOrder);
         return self.internSequence(.multiply, operands.items, dimension);
     }
 
@@ -814,12 +931,54 @@ pub const Builder = struct {
         self.values.append(self.allocator, .{
             .node = node,
             .mass_dimension = dimension,
+            .order_key = self.orderKey(node, dimension),
         }) catch return error.OutOfMemory;
 
         const owned_key = self.arena.allocator().dupe(u8, self.key.items) catch
             return error.OutOfMemory;
         self.intern.put(self.allocator, owned_key, id) catch return error.OutOfMemory;
         return id;
+    }
+
+    /// Content hash used to order commutative operands.
+    ///
+    /// Operands contribute their own order keys rather than their identifiers,
+    /// so the result depends on structure alone. Children are already interned
+    /// when this runs, so their keys are available.
+    fn orderKey(self: *const Builder, node: Node, dimension: i32) u64 {
+        var hasher = std.hash.Wyhash.init(0x7068617365722d76);
+        hasher.update(&.{@intFromEnum(std.meta.activeTag(node))});
+        hasher.update(std.mem.asBytes(&dimension));
+        switch (node) {
+            .rational, .sqrt_rational => |rational| {
+                hasher.update(rational.numerator);
+                hasher.update("/");
+                hasher.update(rational.denominator);
+            },
+            .pi => {},
+            .parameter => |input| {
+                hasher.update(std.mem.asBytes(&input.id));
+                hasher.update(input.name);
+            },
+            .background => |input| {
+                hasher.update(std.mem.asBytes(&input.index));
+                hasher.update(input.name);
+            },
+            .add, .multiply => |children| {
+                for (children) |child| {
+                    hasher.update(std.mem.asBytes(&self.value(child).order_key));
+                }
+            },
+            .divide => |binary| {
+                hasher.update(std.mem.asBytes(&self.value(binary.numerator).order_key));
+                hasher.update(std.mem.asBytes(&self.value(binary.denominator).order_key));
+            },
+            .power => |power_node| {
+                hasher.update(std.mem.asBytes(&self.value(power_node.base).order_key));
+                hasher.update(std.mem.asBytes(&power_node.exponent));
+            },
+        }
+        return hasher.final();
     }
 
     fn internCurrent(self: *Builder, node: Node, dimension: i32) BuildError!ValueId {
@@ -829,7 +988,12 @@ pub const Builder = struct {
     }
 };
 
-fn lessThanId(_: void, left: ValueId, right: ValueId) bool {
+/// Orders operands by content. The identifier tiebreak keeps the order total
+/// and deterministic within one arena if two keys ever collide.
+fn lessThanOrder(builder: *const Builder, left: ValueId, right: ValueId) bool {
+    const left_key = builder.value(left).order_key;
+    const right_key = builder.value(right).order_key;
+    if (left_key != right_key) return left_key < right_key;
     return left.toU32() < right.toU32();
 }
 
@@ -1129,6 +1293,83 @@ test "published graphs audit and encode deterministically" {
 
     try std.testing.expectEqualStrings(first.written(), second.written());
     try std.testing.expect(std.mem.startsWith(u8, first.written(), "graph-canonical/1\n"));
+}
+
+test "structurally equal values encode identically across arenas" {
+    // Build the same sum in two builders whose creation orders differ, so the
+    // arena positions of every node differ between them. Operand order is
+    // content-derived, and the value encoding is numbered by structural
+    // traversal, so the bytes must still agree.
+    var first = try testBuilder();
+    const first_phi = try first.background(0, "phi", 1);
+    const first_mass = try first.parameter(1, "m2", 2);
+    const first_lambda = try first.parameter(0, "lambda", 0);
+    const first_root = try first.add(&.{
+        try first.multiply(&.{ first_mass, try first.power(first_phi, 2) }),
+        try first.multiply(&.{ first_lambda, try first.power(first_phi, 4) }),
+    });
+    var first_graph = try first.finish();
+    defer first_graph.deinit();
+
+    var second = try testBuilder();
+    // Unrelated nodes first, so every shared node lands at a different arena
+    // position than it did in the first builder.
+    _ = try second.parameter(7, "decoy", 0);
+    _ = try second.integer(99, 0);
+    _ = try second.background(5, "unused", 1);
+    const second_lambda = try second.parameter(0, "lambda", 0);
+    const second_quartic = try second.multiply(&.{
+        second_lambda,
+        try second.power(try second.background(0, "phi", 1), 4),
+    });
+    const second_mass = try second.parameter(1, "m2", 2);
+    const second_root = try second.add(&.{
+        second_quartic,
+        try second.multiply(&.{
+            second_mass,
+            try second.power(try second.background(0, "phi", 1), 2),
+        }),
+    });
+    var second_graph = try second.finish();
+    defer second_graph.deinit();
+
+    // The arenas genuinely differ in layout, so agreement below is evidence
+    // about structure rather than a coincidence of identical construction.
+    try std.testing.expect(first_root.toU32() != second_root.toU32());
+    try std.testing.expect(first_graph.values.len != second_graph.values.len);
+
+    var first_text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer first_text.deinit();
+    var second_text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer second_text.deinit();
+    try first_graph.writeValueCanonical(
+        first_root,
+        std.testing.allocator,
+        &first_text.writer,
+    );
+    try second_graph.writeValueCanonical(
+        second_root,
+        std.testing.allocator,
+        &second_text.writer,
+    );
+    try std.testing.expectEqualStrings(first_text.written(), second_text.written());
+}
+
+test "the order key depends on content rather than arena position" {
+    var builder = try testBuilder();
+    defer builder.deinit();
+
+    const late = try builder.parameter(9, "z", 0);
+    const early = try builder.parameter(0, "a", 0);
+
+    // Creation order is late-then-early; canonical operand order is decided by
+    // the content keys, not by which was built first.
+    const sum = try builder.add(&.{ late, early });
+    const children = builder.value(sum).node.add;
+    try std.testing.expectEqual(@as(usize, 2), children.len);
+    try std.testing.expect(
+        builder.value(children[0]).order_key <= builder.value(children[1]).order_key,
+    );
 }
 
 test "representative allocation failures never publish a partial graph" {
