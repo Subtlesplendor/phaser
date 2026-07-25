@@ -264,6 +264,10 @@ numerical point. Relevant metadata may include:
 - Optional assumptions or allowed ranges.
 - Documentation and convention notes.
 
+The version 0.1 declaration schema, canonical ordering, and strict source
+version policy are specified in
+[QFT Model Format: Parameters and Source Versioning](docs/formats/QFT_MODEL_PARAMETERS.md).
+
 A numerical parameter point is a separate object specified by
 [Renormalization Scales, Parameter Points, and RG Evolution](docs/formats/RENORMALIZATION_GROUP.md).
 It includes a mass unit, renormalization scheme, reference scale, and values for

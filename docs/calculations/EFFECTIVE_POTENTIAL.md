@@ -355,8 +355,10 @@ which may eventually include:
 - rejection outside a real-valued domain; or
 - an explicitly named approximation or projection.
 
-The initial set of policies is deferred. There is no implicit “take the real
-part” policy.
+The first supported policy, for zero-temperature one-loop real scalar
+fluctuations, returns the full principal-branch complex value as specified in
+[Zero-Temperature One-Loop Scalar Effective Potential](SCALAR_ONE_LOOP_EFFECTIVE_POTENTIAL.md).
+There is no implicit “take the real part” policy.
 
 A non-finite or complex result at a particular background does not retroactively
 make the structural artifact invalid. Evaluation reports the point-specific
@@ -515,9 +517,11 @@ This specification deliberately does not fix:
 
 - the complete effective-potential request schema;
 - the exact contribution-role and provenance enumerations;
-- formulas or support matrices for particular loop orders;
+- formulas or support matrices for loop orders beyond the initial scalar
+  one-loop calculation;
 - the first master-integral and thermal-function catalogs;
-- numerical policies for negative or complex mass-squared values;
+- numerical policies for negative or complex mass-squared values outside the
+  initial scalar one-loop calculation;
 - subtraction and normalization request syntax;
 - analytic, automatic, or hybrid differentiation algorithms;
 - spectral derivative algorithms at degeneracies;

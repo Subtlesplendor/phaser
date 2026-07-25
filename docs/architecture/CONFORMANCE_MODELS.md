@@ -62,6 +62,24 @@ Each conformance fixture MUST record:
 - known limitations and deliberately unsupported checks; and
 - tool names and versions for externally generated data.
 
+The initial language-neutral manifest uses schema identifier
+`phaser.conformance-fixture/0.1`. It contains:
+
+- `fixture_id`, `model_file`, and `model_schema`;
+- the applicable roadmap milestones;
+- the scientific conventions needed to interpret the expected results;
+- exact identities and named reference points;
+- structured metamorphic cases with their transformations, expected relations,
+  and exact common results;
+- derivation or external provenance; and
+- deliberately unsupported obligations.
+
+Unknown top-level properties are rejected when machine loading is introduced.
+Exact mathematical values are stored as reviewable strings rather than rounded
+JSON numbers. The target-specific parser for those expected-value expressions
+is introduced only when a milestone first consumes the quantity; the manifest
+itself does not extend the QFT model expression language.
+
 An obligation becomes active only when its required Phaser capability is
 supported. A fixture MUST distinguish `not_yet_supported` from failure of an
 implemented calculation.
@@ -332,14 +350,21 @@ checks become supported.
 
 This is the minimal exact fixture for expression parsing, factorial
 normalization, scalar tensors, background selection, derivatives, binding,
-kernel evaluation, and symbolic export.
+kernel evaluation, and symbolic export. Its version 0.1 source model, exact
+identities, positive/zero/negative mass-squared points, and principal-branch
+complex one-loop values live under
+`test/fixtures/conformance/phi4/`.
 
 ### 7.2 Multi-scalar theory
 
 This fixture contains at least two real scalars, a non-diagonal quadratic tensor,
 cubic interactions, and mixed quartics. It verifies tensor orbit handling,
 field-dependent mixing, multiple background choices, and covariance comparisons
-against a separately supplied transformed model.
+against explicitly recorded permutation and orthogonal transformations. Its
+version 0.1 source,
+symmetric-orbit multiplicities, definite/degenerate/indefinite matrices, and
+complex spectral references live under
+`test/fixtures/conformance/multi_scalar/`.
 
 ### 7.3 Abelian Higgs model
 
@@ -379,7 +404,7 @@ A conformance model is not accepted solely because:
 
 ## 9. Decisions intentionally deferred
 
-- The language-neutral conformance-fixture serialization schema.
+- Compatibility rules for conformance-fixture schemas after version 0.1.
 - Numerical comparison policies for higher-loop master integrals.
 - The first independent high-precision implementation.
 - The bounded and scheduled division of Standard Model cases.

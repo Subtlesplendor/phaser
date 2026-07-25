@@ -364,6 +364,9 @@ Stateful testing covers:
 
 ## 13. Diagnostics and assertions
 
+The common structured record, ownership, and deterministic ordering contract is
+specified in [Foundation Types and Failure Reporting](FOUNDATION.md).
+
 Negative fixtures SHOULD violate one intended rule at a time.
 
 Tests normally assert:

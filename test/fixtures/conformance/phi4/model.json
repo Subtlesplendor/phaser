@@ -1,0 +1,65 @@
+{
+  "schema": "phaser.qft-model/0.1",
+  "spacetime_dimension": 4,
+  "conventions": {
+    "metric": "mostly_plus",
+    "scalar_representation": "real_components",
+    "fermions": "two_component_weyl"
+  },
+  "parameters": {
+    "lambda": {
+      "domain": "real",
+      "mass_dimension": 0,
+      "latex": "\\lambda"
+    },
+    "m2": {
+      "domain": "real",
+      "mass_dimension": 2,
+      "latex": "m^2"
+    },
+    "omega": {
+      "domain": "real",
+      "mass_dimension": 4,
+      "latex": "\\Omega"
+    }
+  },
+  "fields": {
+    "real_scalars": [
+      {
+        "id": "phi",
+        "latex": "\\phi"
+      }
+    ],
+    "weyl_fermions": [],
+    "gauge_vectors": []
+  },
+  "tensors": {
+    "vacuum_energy": {
+      "value": "omega"
+    },
+    "scalar_mass_squared": {
+      "components": [
+        {
+          "indices": [
+            "phi",
+            "phi"
+          ],
+          "value": "m2"
+        }
+      ]
+    },
+    "scalar_quartic": {
+      "components": [
+        {
+          "indices": [
+            "phi",
+            "phi",
+            "phi",
+            "phi"
+          ],
+          "value": "lambda"
+        }
+      ]
+    }
+  }
+}

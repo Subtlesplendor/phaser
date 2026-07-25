@@ -1,0 +1,69 @@
+{
+  "schema": "phaser.qft-model/0.1",
+  "spacetime_dimension": 4,
+  "conventions": {
+    "metric": "mostly_plus",
+    "scalar_representation": "real_components",
+    "fermions": "two_component_weyl"
+  },
+  "parameters": {
+    "a": { "domain": "real", "mass_dimension": 1 },
+    "b": { "domain": "real", "mass_dimension": 1 },
+    "c": { "domain": "real", "mass_dimension": 1 },
+    "d": { "domain": "real", "mass_dimension": 1 },
+    "l1": { "domain": "real", "mass_dimension": 0 },
+    "l2": { "domain": "real", "mass_dimension": 0 },
+    "l3": { "domain": "real", "mass_dimension": 0 },
+    "lh": { "domain": "real", "mass_dimension": 0 },
+    "ls": { "domain": "real", "mass_dimension": 0 },
+    "m_h2": { "domain": "real", "mass_dimension": 2 },
+    "m_hs2": { "domain": "real", "mass_dimension": 2 },
+    "m_s2": { "domain": "real", "mass_dimension": 2 },
+    "omega": { "domain": "real", "mass_dimension": 4 },
+    "t_h": { "domain": "real", "mass_dimension": 3 },
+    "t_s": { "domain": "real", "mass_dimension": 3 }
+  },
+  "fields": {
+    "real_scalars": [
+      { "id": "h", "latex": "h" },
+      { "id": "s", "latex": "s" }
+    ],
+    "weyl_fermions": [],
+    "gauge_vectors": []
+  },
+  "tensors": {
+    "vacuum_energy": {
+      "value": "omega"
+    },
+    "scalar_tadpole": {
+      "components": [
+        { "indices": ["h"], "value": "t_h" },
+        { "indices": ["s"], "value": "t_s" }
+      ]
+    },
+    "scalar_mass_squared": {
+      "components": [
+        { "indices": ["h", "h"], "value": "m_h2" },
+        { "indices": ["h", "s"], "value": "m_hs2" },
+        { "indices": ["s", "s"], "value": "m_s2" }
+      ]
+    },
+    "scalar_cubic": {
+      "components": [
+        { "indices": ["h", "h", "h"], "value": "a" },
+        { "indices": ["h", "h", "s"], "value": "b" },
+        { "indices": ["h", "s", "s"], "value": "c" },
+        { "indices": ["s", "s", "s"], "value": "d" }
+      ]
+    },
+    "scalar_quartic": {
+      "components": [
+        { "indices": ["h", "h", "h", "h"], "value": "lh" },
+        { "indices": ["h", "h", "h", "s"], "value": "l3" },
+        { "indices": ["h", "h", "s", "s"], "value": "l2" },
+        { "indices": ["h", "s", "s", "s"], "value": "l1" },
+        { "indices": ["s", "s", "s", "s"], "value": "ls" }
+      ]
+    }
+  }
+}

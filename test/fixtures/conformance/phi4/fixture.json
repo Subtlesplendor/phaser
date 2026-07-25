@@ -1,0 +1,95 @@
+{
+  "schema": "phaser.conformance-fixture/0.1",
+  "fixture_id": "scalar.phi4",
+  "model_file": "model.json",
+  "model_schema": "phaser.qft-model/0.1",
+  "applicable_milestones": [
+    1,
+    2,
+    3
+  ],
+  "conventions": {
+    "spacetime_dimension": 4,
+    "renormalization_scheme": "MSbar",
+    "one_loop_formula_version": "scalar-vacuum-msbar/1",
+    "complex_log_branch": "arg(-pi,pi]",
+    "resummation": "none"
+  },
+  "exact_identities": {
+    "tree_potential": "omega + (m2 / 2) * phi^2 + (lambda / 24) * phi^4",
+    "tree_gradient": "m2 * phi + (lambda / 6) * phi^3",
+    "tree_hessian": "m2 + (lambda / 2) * phi^2",
+    "field_dependent_mass_squared": "m2 + (lambda / 2) * phi^2",
+    "scalar_one_loop": "x^2 * (Log(x / muR^2) - 3 / 2) / (64 * pi^2)"
+  },
+  "reference_points": [
+    {
+      "id": "positive_mass_squared",
+      "parameters": {
+        "omega": "0",
+        "m2": "1",
+        "lambda": "2"
+      },
+      "background": {
+        "phi": "0"
+      },
+      "renormalization_scale": "1",
+      "mass_squared": "1",
+      "one_loop": {
+        "re": "-3 / (128 * pi^2)",
+        "im": "0"
+      },
+      "status": "ok_real"
+    },
+    {
+      "id": "zero_mass_squared",
+      "parameters": {
+        "omega": "0",
+        "m2": "-1",
+        "lambda": "2"
+      },
+      "background": {
+        "phi": "1"
+      },
+      "renormalization_scale": "1",
+      "mass_squared": "0",
+      "one_loop": {
+        "re": "0",
+        "im": "0"
+      },
+      "gradient_limit": {
+        "re": "0",
+        "im": "0"
+      },
+      "hessian_status": "singular_derivative"
+    },
+    {
+      "id": "negative_mass_squared",
+      "parameters": {
+        "omega": "0",
+        "m2": "-1",
+        "lambda": "2"
+      },
+      "background": {
+        "phi": "0"
+      },
+      "renormalization_scale": "1",
+      "mass_squared": "-1",
+      "one_loop": {
+        "re": "-3 / (128 * pi^2)",
+        "im": "1 / (64 * pi)"
+      },
+      "status": "ok_complex"
+    }
+  ],
+  "provenance": {
+    "kind": "hand_derived",
+    "derivation_file": "README.md"
+  },
+  "deliberately_unsupported": [
+    "fermion contributions",
+    "gauge and ghost contributions",
+    "thermal contributions",
+    "Goldstone or instability resummation"
+  ]
+}
