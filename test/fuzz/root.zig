@@ -686,6 +686,94 @@ fn fuzzRequest(_: void, smith: *std.testing.Smith) !void {
     }
 }
 
+test "symbolic_exporter" {
+    try std.testing.fuzz({}, fuzzExporter, .{
+        .corpus = &.{
+            @embedFile("../corpus/symbolic_exporter/leaves.bin"),
+            @embedFile("../corpus/symbolic_exporter/polynomial.bin"),
+            @embedFile("../corpus/symbolic_exporter/deep.bin"),
+        },
+    });
+}
+
+/// Renders generated value graphs under generated presentation options.
+///
+/// The properties are those section 18 requires of every exporter: output is
+/// deterministic, a complete export either fits its budget or fails without
+/// publishing anything, and a preview that omits content says so.
+fn fuzzExporter(_: void, smith: *std.testing.Smith) !void {
+    const count = smith.valueRangeLessThan(u16, 0, max_steps + 1);
+    var steps: [max_steps]Step = undefined;
+    for (steps[0..count]) |*step| {
+        step.* = .{
+            .kind = smith.value(u8),
+            .a = smith.value(u8),
+            .b = smith.value(u8),
+            .c = smith.value(u8),
+        };
+    }
+
+    var graph = try replay(steps[0..count], std.testing.allocator);
+    defer graph.deinit();
+
+    const root = phaser.value.ValueId.fromUsize(graph.values.len - 1) catch return;
+    const target: phaser.symbolic.Target = if (smith.value(bool)) .latex else .phaser;
+    const options = phaser.symbolic.Options{
+        .target = target,
+        .max_bytes = smith.valueRangeLessThan(u16, 1, 4096),
+        .max_preview_nodes = smith.valueRangeLessThan(u16, 1, 64),
+    };
+
+    const first = phaser.symbolic.renderAlloc(
+        &graph,
+        root,
+        std.testing.allocator,
+        options,
+    ) catch |err| switch (err) {
+        // A budget below the required size is an ordinary failure that
+        // publishes nothing.
+        error.OutputCapacityExceeded => return,
+        else => return err,
+    };
+    defer std.testing.allocator.free(first);
+
+    // Deterministic for fixed source, target, and options.
+    const second = try phaser.symbolic.renderAlloc(
+        &graph,
+        root,
+        std.testing.allocator,
+        options,
+    );
+    defer std.testing.allocator.free(second);
+    try std.testing.expectEqualStrings(first, second);
+
+    // A complete export never exceeds the budget it accepted.
+    try std.testing.expect(first.len <= options.max_bytes);
+
+    // A LaTeX fragment carries no delimiters or preamble.
+    if (target == .latex) {
+        try std.testing.expect(std.mem.indexOf(u8, first, "$") == null);
+        try std.testing.expect(std.mem.indexOf(u8, first, "\\begin{document}") == null);
+    }
+
+    // A preview either renders or visibly states that it omitted content.
+    var preview: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer preview.deinit();
+    try phaser.symbolic.writeValuePreview(
+        &graph,
+        root,
+        std.testing.allocator,
+        options,
+        &preview.writer,
+    );
+    const nodes = try phaser.symbolic.countNodes(&graph, root, std.testing.allocator);
+    if (nodes > options.max_preview_nodes) {
+        try std.testing.expect(
+            std.mem.indexOf(u8, preview.written(), "omitted from preview") != null,
+        );
+    }
+}
+
 fn expectSameDiagnostic(
     first: foundation.Diagnostic,
     second: foundation.Diagnostic,
