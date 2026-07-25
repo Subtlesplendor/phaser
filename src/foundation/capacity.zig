@@ -180,6 +180,13 @@ test "checked byte arithmetic covers exact and overflow boundaries" {
 }
 
 test "alignment is checked including zero and near overflow" {
+    switch (ByteSize.init(9).alignForward(0, .workspace_bytes)) {
+        .value => return error.TestUnexpectedResult,
+        .failure => |failure| try std.testing.expectEqual(
+            diagnostic.Code.invalid_alignment,
+            failure.code,
+        ),
+    }
     switch (ByteSize.init(0).alignForward(8, .workspace_bytes)) {
         .value => |value| try std.testing.expectEqual(@as(usize, 0), value.value),
         .failure => return error.TestUnexpectedResult,

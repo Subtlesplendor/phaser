@@ -2,16 +2,20 @@
 
 Stable target identifier: `foundation_capacity`.
 
-The target uses `std.testing.Smith` to generate one bounded sequence containing:
+The target uses `std.testing.Smith` to generate bounded state-machine sequences
+of at most 64 operations containing:
 
 - checked `usize` addition;
 - checked `usize` multiplication;
-- alignment to one valid power of two; and
-- two transactional budget reservations.
+- valid and invalid alignment;
+- transactional budget reservation; and
+- valid release of committed budget.
 
 Addition, multiplication, and alignment are compared with a `u128` oracle.
-Rejected budget reservations must preserve current and peak usage. The target
-checks structured failure codes in addition to process survival.
+Budget current and peak usage are compared with an independent `u128` state
+after every operation. Rejected arithmetic and reservation operations are
+immediately repeated; they must return identical structured failures and
+preserve all prior state.
 
 The permanent seed corpus is under
 `test/corpus/foundation_capacity/`. Ordinary `zig build test` and

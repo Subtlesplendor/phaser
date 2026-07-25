@@ -1,5 +1,7 @@
 const std = @import("std");
 
+// Numerical transcription smoke tests for the exact language-neutral fixtures.
+// Milestone 0 intentionally has no fixture or model parser.
 const Complex64 = struct {
     re: f64,
     im: f64,

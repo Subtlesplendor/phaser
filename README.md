@@ -56,9 +56,18 @@ No bounded command claims to complete fuzzing. A discovered failure must be
 preserved, minimized where practical, and committed to the corresponding
 `test/corpus/` directory.
 
+After the pinned Zig archive is installed, the build, deterministic tests,
+corpus replay, and fuzz target invoke no network clients and require no network
+resources. CI does not claim to reconfigure the hosted runner's firewall.
+
 Zig 0.16.0's live fuzzer currently requires ReleaseSafe on the supported macOS
 ARM64 toolchain because its Debug test runner fails to compile before the target
 executes. Ordinary seed replay remains part of both Debug and ReleaseSafe tests.
+
+Milestone 0's scalar one-loop Zig tests are numerical transcription smoke tests
+for the exact hand-derived fixture expressions. The exact strings become
+machine-validated only when the corresponding parser and IR capabilities are
+activated in later milestones; Milestone 0 does not add a fixture parser.
 
 ## Current scope
 

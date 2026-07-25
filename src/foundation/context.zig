@@ -2,7 +2,6 @@ const std = @import("std");
 const diagnostic = @import("diagnostic.zig");
 
 pub const Limits = struct {
-    total_memory_bytes: usize,
     max_diagnostics: usize,
     max_related_locations: usize,
 };
@@ -17,9 +16,6 @@ pub const Context = struct {
     limits: Limits,
 
     pub fn init(allocator: std.mem.Allocator, limits: Limits) Result {
-        if (limits.total_memory_bytes == 0) {
-            return invalidLimit(.total_memory_bytes, 0);
-        }
         if (limits.max_diagnostics == 0) {
             return invalidLimit(.max_diagnostics, 0);
         }
@@ -52,7 +48,6 @@ fn invalidLimit(name: diagnostic.LimitName, value: usize) Result {
 
 test "context retains explicit allocator and validated limits" {
     const limits = Limits{
-        .total_memory_bytes = 1024,
         .max_diagnostics = 8,
         .max_related_locations = 16,
     };
@@ -70,8 +65,7 @@ test "context retains explicit allocator and validated limits" {
 
 test "invalid context limits return structured diagnostics" {
     const result = Context.init(std.testing.allocator, .{
-        .total_memory_bytes = 0,
-        .max_diagnostics = 1,
+        .max_diagnostics = 0,
         .max_related_locations = 0,
     });
 
@@ -80,7 +74,7 @@ test "invalid context limits return structured diagnostics" {
         .failure => |failure| {
             try std.testing.expectEqual(diagnostic.Code.invalid_limit, failure.code);
             try std.testing.expectEqual(
-                diagnostic.LimitName.total_memory_bytes,
+                diagnostic.LimitName.max_diagnostics,
                 failure.detail.invalid_limit.name,
             );
         },

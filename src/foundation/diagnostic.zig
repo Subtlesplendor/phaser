@@ -1,5 +1,8 @@
 const std = @import("std");
 const SourceSpan = @import("source.zig").SourceSpan;
+const TypedId = @import("typed_id.zig").TypedId;
+
+pub const DiagnosticId = TypedId("diagnostic");
 
 pub const Code = enum(u32) {
     invalid_source_span = 0x0001_0001,
@@ -33,7 +36,6 @@ pub const Resource = enum {
 };
 
 pub const LimitName = enum {
-    total_memory_bytes,
     max_diagnostics,
     max_related_locations,
 };
@@ -70,7 +72,7 @@ pub const Diagnostic = struct {
     primary: ?SourceSpan = null,
     detail: Detail = .none,
     related: []const SourceSpan = &.{},
-    cause: ?u32 = null,
+    cause: ?DiagnosticId = null,
 
     pub fn render(self: Diagnostic, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print(
@@ -113,8 +115,18 @@ pub const Diagnostic = struct {
                 .{ span.source_id.toU32(), span.start, span.end },
             );
         }
-        if (self.cause) |cause| try writer.print(" cause={d}", .{cause});
-        try writer.print(" related={d}", .{self.related.len});
+        if (self.cause) |cause| {
+            try writer.print(" cause={d}", .{cause.toU32()});
+        }
+        try writer.writeAll(" related=[");
+        for (self.related, 0..) |span, index| {
+            if (index != 0) try writer.writeAll(",");
+            try writer.print(
+                "source={d} span=[{d},{d})",
+                .{ span.source_id.toU32(), span.start, span.end },
+            );
+        }
+        try writer.writeAll("]");
     }
 };
 
@@ -125,7 +137,7 @@ pub const Template = struct {
     primary: ?SourceSpan = null,
     detail: Detail = .none,
     related: []const SourceSpan = &.{},
-    cause: ?u32 = null,
+    cause: ?DiagnosticId = null,
 };
 
 pub fn allocationFailure(resource: Resource) Diagnostic {
@@ -150,9 +162,9 @@ const PendingDiagnostic = struct {
     severity: Severity,
     primary: ?SourceSpan,
     detail: Detail,
-    related_start: u32,
-    related_length: u32,
-    cause: ?u32,
+    related_start: usize,
+    related_length: usize,
+    cause: ?DiagnosticId,
 };
 
 pub const Diagnostics = struct {
@@ -196,6 +208,7 @@ pub const Builder = struct {
         OutOfMemory,
         DiagnosticCapacityExceeded,
         RelatedLocationCapacityExceeded,
+        InvalidCause,
     }!void {
         if (self.pending.items.len >= self.max_diagnostics) {
             return error.DiagnosticCapacityExceeded;
@@ -210,7 +223,9 @@ pub const Builder = struct {
             return error.RelatedLocationCapacityExceeded;
         }
         if (template.cause) |cause| {
-            std.debug.assert(cause < self.pending.items.len);
+            if (cause.toUsize() >= self.pending.items.len) {
+                return error.InvalidCause;
+            }
         }
 
         const related_start = self.related.items.len;
@@ -223,8 +238,8 @@ pub const Builder = struct {
             .severity = template.severity,
             .primary = template.primary,
             .detail = template.detail,
-            .related_start = @intCast(related_start),
-            .related_length = @intCast(template.related.len),
+            .related_start = related_start,
+            .related_length = template.related.len,
             .cause = template.cause,
         });
     }
@@ -281,9 +296,49 @@ test "diagnostic rendering is deterministic and structured" {
     try diagnostic.render(&output.writer);
 
     try std.testing.expectEqualStrings(
-        "error:capacity:capacity_exceeded resource=workspace_bytes limit=32 current=24 requested=9 related=0",
+        "error:capacity:capacity_exceeded resource=workspace_bytes limit=32 current=24 requested=9 related=[]",
         output.written(),
     );
+}
+
+test "diagnostic rendering includes primary cause and related locations" {
+    const SourceId = @import("typed_id.zig").SourceId;
+    const source_id = try SourceId.fromUsize(2);
+    const primary = try SourceSpan.init(source_id, 10, 1, 3);
+    const first_related = try SourceSpan.init(source_id, 10, 4, 5);
+    const second_related = try SourceSpan.init(source_id, 10, 7, 9);
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+
+    try (Diagnostic{
+        .code = .invalid_source_span,
+        .category = .source,
+        .primary = primary,
+        .related = &.{ first_related, second_related },
+        .cause = try DiagnosticId.fromUsize(0),
+    }).render(&output.writer);
+
+    try std.testing.expectEqualStrings(
+        "error:source:invalid_source_span source=2 span=[1,3) cause=0 related=[source=2 span=[4,5),source=2 span=[7,9)]",
+        output.written(),
+    );
+
+    var different_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer different_output.deinit();
+    const different_related = try SourceSpan.init(source_id, 10, 6, 9);
+    try (Diagnostic{
+        .code = .invalid_source_span,
+        .category = .source,
+        .primary = primary,
+        .related = &.{ first_related, different_related },
+        .cause = try DiagnosticId.fromUsize(0),
+    }).render(&different_output.writer);
+    try std.testing.expect(!std.mem.eql(
+        u8,
+        output.written(),
+        different_output.written(),
+    ));
 }
 
 test "allocation failure remains available without allocating" {
@@ -313,7 +368,7 @@ test "diagnostic builder preserves order causes and related locations" {
         .code = .capacity_exceeded,
         .category = .capacity,
         .related = &.{related},
-        .cause = 0,
+        .cause = try DiagnosticId.fromUsize(0),
     });
 
     var diagnostics = try builder.finish();
@@ -321,9 +376,51 @@ test "diagnostic builder preserves order causes and related locations" {
 
     try std.testing.expectEqual(@as(usize, 2), diagnostics.items.len);
     try std.testing.expectEqual(Code.invalid_source_span, diagnostics.items[0].code);
-    try std.testing.expectEqual(@as(?u32, 0), diagnostics.items[1].cause);
+    try std.testing.expectEqual(
+        @as(u32, 0),
+        diagnostics.items[1].cause.?.toU32(),
+    );
     try std.testing.expectEqual(@as(usize, 1), diagnostics.items[1].related.len);
     try std.testing.expectEqual(@as(u32, 7), diagnostics.items[1].related[0].start);
+}
+
+test "diagnostic builder rejects invalid causes transactionally" {
+    const SourceId = @import("typed_id.zig").SourceId;
+    const source_id = try SourceId.fromUsize(0);
+    const related = try SourceSpan.init(source_id, 1, 0, 1);
+
+    var builder = Builder.init(std.testing.allocator, 2, 2);
+    defer builder.deinit();
+
+    try builder.append(.{
+        .code = .invalid_limit,
+        .category = .configuration,
+    });
+    try std.testing.expectError(
+        error.InvalidCause,
+        builder.append(.{
+            .code = .capacity_exceeded,
+            .category = .capacity,
+            .related = &.{related},
+            .cause = try DiagnosticId.fromUsize(1),
+        }),
+    );
+    try std.testing.expectError(
+        error.InvalidCause,
+        builder.append(.{
+            .code = .capacity_exceeded,
+            .category = .capacity,
+            .related = &.{related},
+            .cause = try DiagnosticId.fromU64(std.math.maxInt(u32)),
+        }),
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), builder.pending.items.len);
+    try std.testing.expectEqual(@as(usize, 0), builder.related.items.len);
+
+    var diagnostics = try builder.finish();
+    defer diagnostics.deinit();
+    try std.testing.expectEqual(@as(usize, 1), diagnostics.items.len);
 }
 
 test "diagnostic builder capacity failures preserve prior entries" {
@@ -385,7 +482,7 @@ fn buildDiagnosticSet(allocator: std.mem.Allocator) !void {
     try builder.append(.{
         .code = .capacity_exceeded,
         .category = .capacity,
-        .cause = 0,
+        .cause = try DiagnosticId.fromUsize(0),
     });
 
     var diagnostics = try builder.finish();

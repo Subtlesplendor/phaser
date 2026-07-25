@@ -37,6 +37,14 @@ pub const SourceSpan = struct {
         std.debug.assert(self.start <= self.end);
         return self.end - self.start;
     }
+
+    pub fn isValidForSourceLength(
+        self: SourceSpan,
+        source_length: usize,
+    ) bool {
+        if (source_length > std.math.maxInt(u32)) return false;
+        return self.start <= self.end and self.end <= source_length;
+    }
 };
 
 test "source spans use validated half-open byte ranges" {
@@ -44,6 +52,7 @@ test "source spans use validated half-open byte ranges" {
 
     const complete = try SourceSpan.init(source_id, 8, 0, 8);
     try std.testing.expectEqual(@as(u32, 8), complete.length());
+    try std.testing.expect(complete.isValidForSourceLength(8));
 
     const insertion = try SourceSpan.init(source_id, 8, 4, 4);
     try std.testing.expectEqual(@as(u32, 0), insertion.length());
@@ -56,4 +65,39 @@ test "source spans use validated half-open byte ranges" {
         error.OutOfBounds,
         SourceSpan.init(source_id, 8, 0, 9),
     );
+    try std.testing.expectError(
+        error.SourceTooLarge,
+        SourceSpan.init(
+            source_id,
+            @as(usize, std.math.maxInt(u32)) + 1,
+            0,
+            0,
+        ),
+    );
+    try std.testing.expectError(
+        error.OffsetTooLarge,
+        SourceSpan.init(
+            source_id,
+            std.math.maxInt(u32),
+            @as(usize, std.math.maxInt(u32)) + 1,
+            @as(usize, std.math.maxInt(u32)) + 1,
+        ),
+    );
+}
+
+test "source span validation detects forged values at trust boundaries" {
+    const source_id = try SourceId.fromUsize(3);
+    const reversed = SourceSpan{
+        .source_id = source_id,
+        .start = 5,
+        .end = 4,
+    };
+    const out_of_bounds = SourceSpan{
+        .source_id = source_id,
+        .start = 0,
+        .end = 9,
+    };
+
+    try std.testing.expect(!reversed.isValidForSourceLength(8));
+    try std.testing.expect(!out_of_bounds.isValidForSourceLength(8));
 }

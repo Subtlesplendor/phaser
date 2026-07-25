@@ -22,6 +22,7 @@ pub const Resource = diagnostic.Resource;
 pub const LimitName = diagnostic.LimitName;
 pub const Detail = diagnostic.Detail;
 pub const Diagnostic = diagnostic.Diagnostic;
+pub const DiagnosticId = diagnostic.DiagnosticId;
 pub const DiagnosticTemplate = diagnostic.Template;
 pub const Diagnostics = diagnostic.Diagnostics;
 pub const DiagnosticBuilder = diagnostic.Builder;
