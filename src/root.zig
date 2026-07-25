@@ -5,6 +5,7 @@
 
 pub const foundation = @import("foundation/root.zig");
 pub const model = @import("model/root.zig");
+pub const expression = @import("expression/root.zig");
 
 pub const Context = foundation.Context;
 pub const Limits = foundation.Limits;
@@ -29,4 +30,5 @@ pub const ModelLimits = model.ModelLimits;
 test {
     _ = foundation;
     _ = model;
+    _ = expression;
 }
