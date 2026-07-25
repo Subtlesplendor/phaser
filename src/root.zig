@@ -1,0 +1,29 @@
+//! Public experimental Zig interface for Phaser.
+//!
+//! Internal Zig APIs may evolve with the pinned compiler. No declaration in
+//! this module defines a stable C ABI or persisted binary layout.
+
+pub const foundation = @import("foundation/root.zig");
+
+pub const Context = foundation.Context;
+pub const Limits = foundation.Limits;
+pub const TypedId = foundation.TypedId;
+pub const SourceId = foundation.SourceId;
+pub const SourceSpan = foundation.SourceSpan;
+pub const SourceSpanResult = foundation.SourceSpanResult;
+pub const makeSourceSpan = foundation.makeSourceSpan;
+pub const ByteSize = foundation.ByteSize;
+pub const Budget = foundation.Budget;
+pub const Code = foundation.Code;
+pub const Category = foundation.Category;
+pub const Severity = foundation.Severity;
+pub const Resource = foundation.Resource;
+pub const Detail = foundation.Detail;
+pub const Diagnostic = foundation.Diagnostic;
+pub const Diagnostics = foundation.Diagnostics;
+pub const DiagnosticBuilder = foundation.DiagnosticBuilder;
+pub const allocationFailure = foundation.allocationFailure;
+
+test {
+    _ = foundation;
+}

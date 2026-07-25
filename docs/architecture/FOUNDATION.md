@@ -67,6 +67,12 @@ Creating a span from external values MUST validate the invariant and return a
 structured diagnostic on failure. Code operating on a span from a validated IR
 MAY assert the invariant.
 
+Zig permits direct construction of public value structs. Such construction is a
+trusted internal operation, not an external validation boundary. A span received
+from an untrusted or separately versioned boundary MUST be checked against its
+source length before use. `SourceSpan.isValidForSourceLength` supports that
+check; `makeSourceSpan` is the ordinary external-value constructor.
+
 The version 0.1 span representation uses `u32` offsets. A source document whose
 length cannot be represented is rejected before span construction. Milestone 1
 will select a substantially smaller parser hard limit.
@@ -122,7 +128,7 @@ budget; that remains distinct from `capacity_exceeded`.
 The Zig root context is created from:
 
 - a caller-provided `std.mem.Allocator`; and
-- validated resource limits.
+- validated limits that its current constructors enforce.
 
 It MUST NOT choose a default allocator or reach for a process-global,
 thread-local, or operating-system allocator. Scientific constructors receive
@@ -131,6 +137,12 @@ the context or an explicitly derived allocator and budget.
 Context initialization validates limit relationships without allocating where
 practical. Objects using the context's allocator MUST be destroyed before that
 allocator becomes invalid.
+
+Version 0.1 `Context.Limits` contains the enforced diagnostic-count and
+related-location-count limits. It deliberately does not expose a nominal
+process-wide or context-wide byte limit. Components that allocate against a byte
+limit receive and update an explicit `Budget`; a later context field MUST NOT be
+introduced until every allocation it claims to limit is accounted for.
 
 The initial context carries policy and plumbing only. It does not introduce a
 general cache, persistent-object arena, fixed-buffer construction mode, or
@@ -163,6 +175,8 @@ Diagnostic detail payloads carry machine-readable values such as:
 Exact human prose is not the stable contract. Rendering derives deterministic
 text from the code and payload into a caller-provided writer. Rendering MUST
 NOT mutate the diagnostic or require a global allocator.
+The deterministic rendering includes the primary span, cause, and every related
+location in insertion order; it does not replace structured inspection.
 
 ## 8. Diagnostic ordering and ownership
 
@@ -182,6 +196,13 @@ set. On any failure:
 Cause references point only to earlier entries, making the cause graph acyclic
 by construction. Related source locations preserve insertion order.
 
+Builder construction failures are infrastructure errors. In particular,
+backing allocation failure remains `OutOfMemory`, and exhausting the builder's
+own publication capacity remains a builder error because appending another
+diagnostic would be recursive. A boundary with sufficient classification
+context MAY translate such an error into an allocation-free diagnostic value;
+it MUST NOT swallow or relabel `OutOfMemory` as a scientific validation error.
+
 ## 9. Error and assertion boundary
 
 Invalid external values, unsupported requests, capacity exhaustion, and backing
@@ -192,7 +213,7 @@ Assertions are reserved for trusted-state invariants, including:
 
 - releasing unreserved budget;
 - using an ID with the wrong owner or outside its validated table;
-- constructing an immutable diagnostic set with invalid cause references; and
+- reading a published diagnostic set whose validated cause graph is corrupt; and
 - observing a published object that borrows builder storage.
 
 An assertion MUST NOT be the expected response to malformed external input.
