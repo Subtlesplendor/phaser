@@ -232,6 +232,10 @@ boundary and the derivative method are recorded in
 Provide CLI workflows that emit equations and sampled potential data. These form
 the data and expected behavior for the first Python notebook in Milestone 4.
 
+The delivered workflows are `phaser inspect`, `phaser export`, and
+`phaser evaluate`, with committed inputs and golden outputs under
+`examples/phi4/` and `examples/multi_scalar/`.
+
 ## 7. Milestone 3: zero-temperature one-loop scalar potential
 
 ### Objective

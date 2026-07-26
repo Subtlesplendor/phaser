@@ -44,16 +44,43 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const cli_commands_module = b.createModule(.{
+        .root_source_file = b.path("src/cli/commands.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phaser", .module = phaser_module },
+        },
+    });
+
+    const cli_module = b.createModule(.{
+        .root_source_file = b.path("src/cli/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phaser", .module = phaser_module },
+            .{ .name = "commands", .module = cli_commands_module },
+        },
+    });
+    const cli = b.addExecutable(.{
+        .name = "phaser",
+        .root_module = cli_module,
+    });
+    b.installArtifact(cli);
+
+    const cli_tests = b.addTest(.{ .root_module = cli_commands_module });
+    const run_cli_tests = b.addRunArtifact(cli_tests);
+    const test_cli_step = b.step("test-cli", "Run command-line client tests");
+    test_cli_step.dependOn(&run_cli_tests.step);
+
     const suite_module = b.createModule(.{
         .root_source_file = b.path("test/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "phaser", .module = phaser_module },
-            .{
-                .name = "example_data",
-                .module = example_data_module,
-            },
+            .{ .name = "example_data", .module = example_data_module },
+            .{ .name = "commands", .module = cli_commands_module },
         },
     });
     const suite_tests = b.addTest(.{
@@ -68,6 +95,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "phaser", .module = phaser_module },
             .{ .name = "example_data", .module = example_data_module },
+            .{ .name = "commands", .module = cli_commands_module },
         },
     });
     const integration_tests = b.addTest(.{ .root_module = integration_module });
@@ -112,6 +140,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_suite_tests.step);
     test_step.dependOn(&run_fuzz_tests.step);
+    test_step.dependOn(&run_cli_tests.step);
 
     const fuzz_step = b.step("fuzz", "Replay every fuzz target or run with --fuzz=N");
     const fuzz_target_names = [_][]const u8{
@@ -146,6 +175,26 @@ pub fn build(b: *std.Build) void {
         .root_module = example_module,
     });
     const run_model_inspection = b.addRunArtifact(model_inspection);
-    const examples_step = b.step("examples", "Run public model-inspection examples");
+    const examples_step = b.step("examples", "Run public example workflows");
     examples_step.dependOn(&run_model_inspection.step);
+
+    // Drive the installed client over the committed example inputs, so the
+    // executable itself cannot silently decay.
+    for ([_][]const u8{ "phi4", "multi_scalar" }) |name| {
+        const run_export = b.addRunArtifact(cli);
+        run_export.addArg("export");
+        run_export.addFileArg(b.path(b.fmt("examples/{s}/model.json", .{name})));
+        run_export.addFileArg(b.path(b.fmt("examples/{s}/request.json", .{name})));
+        run_export.addArg("--target=latex");
+        examples_step.dependOn(&run_export.step);
+
+        const run_evaluate = b.addRunArtifact(cli);
+        run_evaluate.addArg("evaluate");
+        run_evaluate.addFileArg(b.path(b.fmt("examples/{s}/model.json", .{name})));
+        run_evaluate.addFileArg(b.path(b.fmt("examples/{s}/request.json", .{name})));
+        run_evaluate.addFileArg(b.path(b.fmt("examples/{s}/point.json", .{name})));
+        run_evaluate.addArg("--outputs=gradient");
+        run_evaluate.addArg("--scan=0:0:600:13");
+        examples_step.dependOn(&run_evaluate.step);
+    }
 }
