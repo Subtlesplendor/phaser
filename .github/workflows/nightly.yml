@@ -102,10 +102,12 @@ jobs:
     runs-on: ubuntu-24.04
     # A mutant costs a full cold-cache rebuild of the oracle, so this tier is
     # sized by the rotation in tools/ci/mutation_rotation.sh rather than by the
-    # clock. The ceiling is deliberately far above the expected cost: the first
-    # scheduled runs are themselves the measurement that sets GROUP_COUNT, and a
-    # campaign cut off mid-run reports nothing useful. See decision 0005.
-    timeout-minutes: 120
+    # clock. Groups are deliberately uneven, because the rotation buys coverage
+    # with balance; the heaviest currently holds about 105 mutants against an
+    # average of 49. The ceiling is set for that heavy end and then some: the
+    # first scheduled runs are themselves the measurement that sets GROUP_COUNT,
+    # and a campaign cut off mid-run reports nothing useful. See decision 0005.
+    timeout-minutes: 150
 
     env:
       # Nights needed for one full pass over every mutant. Raise it if a night
@@ -138,10 +140,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Day of the year, forced to base ten so 08 and 09 are not read as
-          # invalid octal. Scheduled runs are daily, so consecutive nights take
-          # consecutive groups and a full pass completes every GROUP_COUNT days.
-          index=$(( 10#$(date -u +%j) % GROUP_COUNT ))
+          # Whole days since the epoch, which is strictly increasing and never
+          # restarts. Day of the year would have been simpler but repeats a
+          # group and skips another every New Year, because 365 is not a
+          # multiple of GROUP_COUNT. Scheduled runs are daily, so consecutive
+          # nights take consecutive groups and every cell that exists for a
+          # whole cycle is visited exactly once in GROUP_COUNT nights.
+          index=$(( $(date -u +%s) / 86400 % GROUP_COUNT ))
           echo "MUTATION_GROUP_INDEX=$index" >> "$GITHUB_ENV"
           tools/ci/mutation_rotation.sh \
             zentinel.toml "$GROUP_COUNT" "$index" .zentinel-rotation \
@@ -159,6 +164,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p zig-out/zentinel
+          if [[ ! -s "$RUNNER_TEMP/plan.txt" ]]; then
+            echo "Tonight's rotation group holds no cells; nothing to run."
+            exit 0
+          fi
           while read -r operator config count; do
             echo "::group::$operator ($count mutants)"
             "$RUNNER_TEMP/zig/zig" build mutation -- \

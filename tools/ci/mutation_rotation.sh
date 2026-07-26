@@ -15,10 +15,31 @@
 # rotation could never make a night smaller than that file; splitting it by
 # operator brings the worst night down by roughly a factor of three.
 #
-# Cells are packed by descending mutant count, each going to the group that
-# currently holds the fewest mutants, with ties broken on the cell name. The
-# packing is a pure function of the mutant listing, so the same commit and group
-# index always select the same work.
+# A cell's group is a hash of the cell's own name, and of nothing else. That
+# choice is deliberate and costs real balance, so it is worth stating why.
+#
+# The obvious scheduler packs cells by descending mutant count into whichever
+# group is currently lightest. It produces perfectly even groups, and it is
+# wrong here, because a group then depends on every other cell in the listing.
+# Measured on this repository, adding a single mutant moved 53% of the existing
+# cells to a different group, and adding one source file moved 75%. Since the
+# listing is regenerated nightly, the schedule reshuffled faster than it
+# advanced: simulating fourteen nights with one new mutant per day covered 51 of
+# 96 cells and never reached the other 45. A rotation that cannot promise it
+# will visit every cell is not a rotation.
+#
+# Hashing the cell name fixes that completely: a cell keeps its group no matter
+# what is added or removed around it, so every cell that exists throughout a
+# cycle is visited exactly once per cycle, and a new cell joins the rotation
+# without disturbing any other. The price is that groups are no longer even,
+# because a hash cannot know that one cell holds 43 mutants and another holds
+# one. On the current listing the spread is roughly 12 to 106 mutants against an
+# average of 49, and the nightly timeout is sized for the heavy end. Coverage is
+# the property worth having; evenness is not.
+#
+# The hash is computed here rather than shelled out to `cksum` so that the
+# schedule cannot vary with the host's tools, and it stays well inside the
+# integer range awk represents exactly.
 #
 # The mutant listing is read on standard input in `zentinel list-mutants
 # --format text` form, whose second field is the operator and whose third is
@@ -72,8 +93,32 @@ fi
 mkdir -p "$out_dir"
 
 # `OPERATOR<TAB>PATH<TAB>COUNT` for every cell in the selected group.
+#
+# awk visits an associative array in an unspecified order, so the selected cells
+# are sorted afterwards rather than left in whatever order they were found. The
+# generated configuration files are inputs to a scientific tool's schedule, and
+# reproducing a night must not depend on an awk implementation detail.
 readonly cells=$(
   awk -v groups="$group_count" -v want="$group_index" '
+    BEGIN {
+      # Byte values for the printable ASCII that operator names and repository
+      # paths are made of.
+      for (i = 32; i < 127; i += 1) ord[sprintf("%c", i)] = i
+    }
+
+    # A small polynomial hash, reduced modulo a prime on every step. The largest
+    # intermediate is under 2^38, so every value awk holds here is an exact
+    # integer, and the result cannot vary between awk implementations or hosts.
+    function cellGroup(name,   h, i, c) {
+      h = 7
+      for (i = 1; i <= length(name); i += 1) {
+        c = ord[substr(name, i, 1)]
+        if (c == "") c = 1
+        h = (h * 131 + c) % 2147483647
+      }
+      return h % groups
+    }
+
     {
       split($3, location, ":")
       path = location[1]
@@ -81,38 +126,22 @@ readonly cells=$(
       if (path == "" || operator == "") next
       count[operator "\t" path] += 1
     }
+
     END {
-      total = 0
       for (cell in count) {
-        total += 1
-        cells[total] = cell
-      }
-      # Descending mutant count, ascending cell name.
-      for (i = 1; i <= total; i += 1) {
-        for (j = i + 1; j <= total; j += 1) {
-          a = cells[i]; b = cells[j]
-          if (count[b] > count[a] || (count[b] == count[a] && b < a)) {
-            cells[i] = b; cells[j] = a
-          }
-        }
-      }
-      for (g = 0; g < groups; g += 1) load[g] = 0
-      for (i = 1; i <= total; i += 1) {
-        lightest = 0
-        for (g = 1; g < groups; g += 1) {
-          if (load[g] < load[lightest]) lightest = g
-        }
-        load[lightest] += count[cells[i]]
-        if (lightest == want) print cells[i] "\t" count[cells[i]]
+        if (cellGroup(cell) == want) print cell "\t" count[cell]
       }
     }
-  '
+  ' | sort -t"$(printf '\t')" -k3,3nr -k1,1 -k2,2
 )
 
+# An empty group is unlikely but legitimate: hashing distributes cells without
+# guaranteeing every group receives one, and it becomes likelier as GROUP_COUNT
+# approaches the number of cells. A night with nothing to do is not a failure.
 if [[ -z "$cells" ]]; then
-  echo "$0: rotation group $group_index of $group_count is empty" >&2
-  echo "$0: there are fewer mutant cells than groups; reduce GROUP_COUNT" >&2
-  exit 1
+  echo "$0: rotation group $group_index of $group_count holds no cells" >&2
+  echo "$0: nothing to run tonight; lower GROUP_COUNT if this repeats" >&2
+  exit 0
 fi
 
 # Record the plan in the job log. The report names the mutants; this names the

@@ -175,10 +175,13 @@ nightly.
 
 The mutation campaign rotates under exactly that allowance, because a mutant
 costs a full rebuild of the oracle and the whole repository would take hours.
-`tools/ci/mutation_rotation.sh` packs every (source file, mutation operator)
-cell into balanced groups from the current mutant listing, and each night runs
-the group its day of the year selects, so a full pass completes every two weeks
-and the schedule rebalances itself as the sources change. Mutation runs use
+`tools/ci/mutation_rotation.sh` assigns every (source file, mutation operator)
+cell to a group by hashing the cell's name, and each night runs one group, so a
+full pass completes every two weeks. Assignment deliberately ignores how large a
+cell is, which leaves groups uneven: a cell's group must not depend on what else
+exists, or the schedule reshuffles faster than it advances and stops visiting
+every cell at all. New sources join the rotation without displacing anything.
+Mutation runs use
 `zig build test-mutation` as their oracle, which is the bounded suite without
 the fuzz tier, and they do not fail on survivors. Decision
 [0005](docs/decisions/0005-mutation-testing-dependency.md) records why.

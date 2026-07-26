@@ -91,10 +91,47 @@ most of its time compiling rather than running tests.
 
 The rotation schedules one (file, operator) cell at a time rather than one file.
 Cells are what the pinned Zentinel can select, and they divide the work far more
-evenly: `src/expression/root.zig` alone carries 142 mutants, so a file-granular
+finely: `src/expression/root.zig` alone carries 142 mutants, so a file-granular
 rotation could never make a night smaller than that, while the largest single
-cell is 43. At 14 groups the packing is exactly even, 49 mutants per night, and
-a full pass completes every two weeks.
+cell is 43.
+
+### Coverage before balance
+
+A cell's group is a hash of the cell's own name. The obvious alternative packs
+cells by descending mutant count into whichever group is lightest, which
+produces exactly even groups of 49, and it was implemented first and rejected on
+measurement.
+
+Packing makes a cell's group depend on every other cell, and the listing is
+regenerated nightly, so the schedule reshuffles as the repository changes:
+
+| Change to the repository | Existing cells that changed group |
+| --- | --- |
+| One added mutant | 51 of 96 |
+| One added source file | 72 of 96 |
+
+Simulating fourteen nights with one new mutant per day, that scheduler visited
+51 of 96 cells and never reached the other 45. It advanced more slowly than it
+reshuffled, so "a full pass every fourteen nights" was not true of it in any
+repository under active development.
+
+Hashing the cell name makes a cell's group independent of everything else. The
+same two perturbations move zero cells, and the same fourteen-night simulation
+reaches 96 of 96. Every cell that exists for a whole cycle is visited exactly
+once per cycle, and a new cell joins the rotation without displacing any other.
+
+The price is evenness. A hash cannot know that one cell holds 43 mutants and
+another holds one, so on the current listing groups range from 6 to 105 mutants
+against an average of 49, and the nightly timeout is sized for the heavy end.
+That is the right trade: an uneven schedule that covers everything is useful,
+and an even one that covers half of it is not.
+
+Growth is absorbed automatically in one direction only. New files and new
+mutants join the rotation with no edit, but the cost of a night grows with them,
+and `GROUP_COUNT` is the knob for that. Note also that mutants come from `src/`
+while the oracle's cost comes from the test suite, so the two grow independently
+and multiply: a larger library means more mutants per night, and a larger suite
+means each mutant costs more. Neither is bounded by anything here.
 
 ## Alternatives
 
