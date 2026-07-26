@@ -93,6 +93,10 @@ jobs:
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseFast'
 
+      - name: Run property tests
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build test-property -Doptimize=ReleaseSafe'
+
       - name: Compare differential implementations
         shell: bash
         run: |

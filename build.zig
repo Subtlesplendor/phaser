@@ -17,6 +17,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Property-testing dependency, recorded in decision 0004. It is reachable
+    // only from the Phaser-owned property harness, never from library code.
+    const minish = b.dependency("minish", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const phaser_module = b.addModule("phaser", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -123,6 +130,43 @@ pub fn build(b: *std.Build) void {
     );
     test_conformance_step.dependOn(&run_conformance_tests.step);
 
+    const property_module = b.createModule(.{
+        .root_source_file = b.path("test/property/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phaser", .module = phaser_module },
+            .{ .name = "example_data", .module = example_data_module },
+            .{ .name = "minish", .module = minish.module("minish") },
+        },
+    });
+    const property_tests = b.addTest(.{ .root_module = property_module });
+    const run_property_tests = b.addRunArtifact(property_tests);
+
+    const property_campaign_module = b.createModule(.{
+        .root_source_file = b.path("test/property/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phaser", .module = phaser_module },
+            .{ .name = "example_data", .module = example_data_module },
+            .{ .name = "minish", .module = minish.module("minish") },
+        },
+    });
+    const property_campaign = b.addExecutable(.{
+        .name = "phaser-property",
+        .root_module = property_campaign_module,
+    });
+    const run_property_campaign = b.addRunArtifact(property_campaign);
+    if (b.args) |args| run_property_campaign.addArgs(args);
+
+    const test_property_step = b.step(
+        "test-property",
+        "Run bounded deterministic property tests",
+    );
+    test_property_step.dependOn(&run_property_tests.step);
+    test_property_step.dependOn(&run_property_campaign.step);
+
     const differential_module = b.createModule(.{
         .root_source_file = b.path("test/differential/root.zig"),
         .target = target,
@@ -159,6 +203,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_fuzz_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_differential_tests.step);
+    test_step.dependOn(&run_property_tests.step);
+    test_step.dependOn(&run_property_campaign.step);
 
     const fuzz_step = b.step("fuzz", "Replay every fuzz target or run with --fuzz=N");
     const fuzz_target_names = [_][]const u8{

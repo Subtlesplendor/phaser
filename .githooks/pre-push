@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Refuse a direct push to the protected branch.
+#
+# Enable per clone with:
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+readonly protected_ref='refs/heads/main'
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [[ "$remote_ref" == "$protected_ref" ]]; then
+    cat >&2 <<'MESSAGE'
+error: refusing to push directly to main
+
+Merges to main happen through a reviewed pull request, and merge authority
+belongs to the repository owner; see DEVELOPMENT_WORKFLOW.md section 1.
+
+To bypass deliberately, push with --no-verify.
+MESSAGE
+    exit 1
+  fi
+done

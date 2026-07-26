@@ -107,10 +107,18 @@ zig build
 Worked inputs and golden outputs live in [examples/phi4](examples/phi4/README.md)
 and [examples/multi_scalar](examples/multi_scalar/README.md).
 
+Contributors should enable the repository's local hooks once per clone, which
+refuse a commit or push on `main`:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 Build steps:
 
 ```sh
 zig build test               # all bounded deterministic tests
+zig build test-property      # bounded deterministic property tests
 zig build test-differential  # independent implementations of the same quantity
 zig build test-conformance   # scientific conformance fixtures
 zig build fuzz               # replay corpora, or add --fuzz=N for a campaign

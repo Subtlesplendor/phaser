@@ -288,10 +288,16 @@ metamorphic tests, differential implementations, fuzzing, and external reference
 
 ### Property-based testing
 
-Minish is a candidate for property-based testing, not an adopted dependency.
-Adding it requires the dependency proposal and explicit approval specified in
-the Dependencies section. Property generators remain behind Phaser-owned
-interfaces whether or not Minish is adopted.
+Minish is the adopted property-testing dependency, recorded in
+[decision 0004](docs/decisions/0004-property-testing-dependency.md). Property
+generators remain behind the Phaser-owned harness in `test/property/`, and no
+other module imports Minish.
+
+The list below is an obligation, not an aspiration. A milestone gate requires
+that every listed property applicable to the implemented capability has a test,
+or a recorded reason it does not yet apply. Milestone 2 closed with three
+applicable properties unwritten, which is exactly the accounting this rule is
+meant to force.
 
 Important initial properties include:
 
@@ -316,7 +322,41 @@ components and rejecting nearly every sample. Also generate near-valid objects t
 exercise each validation boundary.
 
 All property failures record a seed. Shrunk failures become ordinary regression
-tests.
+tests. The harness always supplies an explicit seed; a framework default derived
+from address-space layout is not acceptable, because a pull-request run must be
+reproducible.
+
+### Ownership and lifetime tests
+
+A published type that holds a reference into another object needs a test that
+exercises the value being *moved*, not merely outliving the reference.
+
+"Must outlive" is the contract most such comments state, and it is usually
+insufficient. Milestone 2 shipped a binding that held a pointer to its kernel;
+because the kernel is returned by value from its constructor, the ordinary act of
+returning a kernel and a binding together from a helper left the binding reading a
+freed stack slot. Every existing test happened to construct both in one place, so
+none exercised the move, and the defect surfaced as an unrelated shape mismatch.
+
+Prefer holding the stable part by value over holding a pointer to the container.
+Where a pointer is genuinely required, say so and require the test.
+
+### Requirements that cannot be reached
+
+A specified behavior sometimes has no reachable code path in the current
+implementation: an error branch whose condition cannot yet occur, or a policy
+whose alternative does not yet exist.
+
+Record it rather than counting it as verified. The practice is:
+
+1. implement the behavior anyway, so the structure is correct;
+2. add a tripwire test asserting the condition that makes it unreachable, so
+   removing that condition fails and prompts the real test; and
+3. list it in the owning milestone's gate accounting under requirements
+   satisfied only trivially.
+
+Discovering that a requirement is unreachable is a normal outcome of attempting to
+test it, and it is information worth keeping.
 
 ### Fuzzing
 
@@ -928,7 +968,7 @@ This guide is influenced by:
 - [Tiger Style](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md),
   particularly its treatment of assertions, bounds, explicit memory, batching,
   and safe production builds.
-- [Minish](https://github.com/CogitatorTech/minish), a candidate property-based
+- [Minish](https://github.com/CogitatorTech/minish), the adopted property-based
   testing framework whose adoption remains subject to dependency approval.
 - Zig's integrated fuzzer and `std.testing.Smith`, described in the
   [Zig 0.16 release notes](https://ziglang.org/download/0.16.0/release-notes.html#Fuzzer).

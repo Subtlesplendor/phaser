@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Refuse commits directly on the protected branch.
+#
+# Server-side branch protection needs a paid GitHub plan for a private
+# repository, so this local hook is the available mechanism. It is advisory: a
+# clone that has not run the setup below is unprotected, and --no-verify bypasses
+# it deliberately.
+#
+# Enable per clone with:
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+readonly protected_branch='main'
+branch="$(git symbolic-ref --quiet --short HEAD || echo '')"
+
+if [[ "$branch" == "$protected_branch" ]]; then
+  cat >&2 <<'MESSAGE'
+error: refusing to commit directly on main
+
+Implementation changes enter through a pull request; see
+DEVELOPMENT_WORKFLOW.md section 1. Create a branch first:
+
+    git switch -c <topic>/<short-description>
+
+To bypass deliberately, commit with --no-verify.
+MESSAGE
+  exit 1
+fi

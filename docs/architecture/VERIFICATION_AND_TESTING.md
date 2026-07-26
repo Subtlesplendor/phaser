@@ -291,10 +291,10 @@ Every randomized property failure records:
 
 Shrunk failures become ordinary regression fixtures.
 
-Property generators belong behind Phaser-owned interfaces. Minish remains a
-candidate test-only dependency, not an adopted dependency. Adding it requires the
-external-dependency proposal and explicit user approval required by
-[Phaser Engineering Style](../../ENGINEERING_STYLE.md).
+Property generators belong behind the Phaser-owned harness in `test/property/`.
+Minish is the adopted test-only property dependency, recorded in
+[decision 0004](../decisions/0004-property-testing-dependency.md). No module
+outside that harness imports it, and no published interface exposes its types.
 
 ## 11. Fuzzing layers
 
@@ -624,7 +624,8 @@ This specification deliberately leaves open:
 - initial numerical comparison-policy types;
 - first independent high-precision implementation;
 - property-generator API;
-- whether Minish is adopted after dependency review;
+- the declared numerical-comparison policy that metamorphic and cross-platform
+  agreement assertions require;
 - exact per-target property and fuzz budgets after implementation measurement;
 - assertion/death-test mechanism;
 - external-reference provenance schema;
