@@ -101,3 +101,63 @@ test "source span validation detects forged values at trust boundaries" {
     try std.testing.expect(!reversed.isValidForSourceLength(8));
     try std.testing.expect(!out_of_bounds.isValidForSourceLength(8));
 }
+
+test "source span construction separates oversized offsets from other faults" {
+    const source_id = try SourceId.fromUsize(3);
+    const too_large = @as(usize, std.math.maxInt(u32)) + 1;
+
+    // Each offset is checked on its own. A start past the encodable range is an
+    // oversized offset even though it is also, incidentally, past the end; a
+    // reversed-range error here would describe the wrong fault.
+    try std.testing.expectError(
+        error.OffsetTooLarge,
+        SourceSpan.init(source_id, 8, too_large, 8),
+    );
+
+    // Likewise for an end past the range, which is also past the source.
+    try std.testing.expectError(
+        error.OffsetTooLarge,
+        SourceSpan.init(source_id, 8, 0, too_large),
+    );
+
+    // Offsets of exactly the largest encodable value are not oversized, which
+    // pins which side of the boundary each rejection begins on.
+    const largest = @as(usize, std.math.maxInt(u32));
+    const whole = try SourceSpan.init(source_id, largest, 0, largest);
+    try std.testing.expectEqual(@as(u32, std.math.maxInt(u32)), whole.length());
+
+    const empty_at_end = try SourceSpan.init(source_id, largest, largest, largest);
+    try std.testing.expectEqual(@as(u32, 0), empty_at_end.length());
+}
+
+test "source span validation rejects a source no span can address" {
+    const source_id = try SourceId.fromUsize(3);
+    const span = SourceSpan{
+        .source_id = source_id,
+        .start = 0,
+        .end = 8,
+    };
+
+    // Span offsets are u32. A source longer than that cannot be described by
+    // any span, so validation refuses it even when the span's own bounds are
+    // unremarkable and lie well inside the source.
+    try std.testing.expect(
+        !span.isValidForSourceLength(@as(usize, std.math.maxInt(u32)) + 1),
+    );
+
+    // A source of exactly the largest addressable length is still valid, which
+    // pins which side of the boundary the rejection begins on.
+    try std.testing.expect(span.isValidForSourceLength(std.math.maxInt(u32)));
+
+    // An empty span is a position, not a degenerate range, so start equal to
+    // end is valid. Insertion points are represented this way.
+    const insertion = SourceSpan{
+        .source_id = source_id,
+        .start = 4,
+        .end = 4,
+    };
+    try std.testing.expect(insertion.isValidForSourceLength(8));
+
+    // A span reaching exactly the end of the source is inside it.
+    try std.testing.expect(span.isValidForSourceLength(8));
+}

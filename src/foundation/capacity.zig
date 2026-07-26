@@ -174,6 +174,12 @@ pub const LimitedAllocator = struct {
         return_address: usize,
     ) bool {
         const self: *LimitedAllocator = @ptrCast(@alignCast(context));
+        // A same-length resize takes the shrinking branch and adjusts nothing.
+        // Reserving a growth of zero would do just as little, because a zero
+        // reservation cannot fail while the live count never exceeds the limit.
+        // The two branches therefore agree on this boundary, which is why
+        // mutation runs report the `>=` form of this test as a survivor. It is
+        // an equivalent mutant, not a missing test.
         if (new_len > memory.len) {
             const growth = new_len - memory.len;
             if (!self.reserve(growth)) return false;
@@ -198,6 +204,7 @@ pub const LimitedAllocator = struct {
         return_address: usize,
     ) ?[*]u8 {
         const self: *LimitedAllocator = @ptrCast(@alignCast(context));
+        // Equivalent under `>=` for the same reason as in `resize` above.
         if (new_len > memory.len) {
             const growth = new_len - memory.len;
             if (!self.reserve(growth)) return null;
@@ -388,4 +395,255 @@ test "limited allocator enforces live and peak byte ceilings" {
     const reused = try allocator.alloc(u8, 8);
     allocator.free(reused);
     try std.testing.expectEqual(@as(usize, 8), limited.peak);
+}
+
+/// Child allocator whose in-place resize decision is fixed by the test.
+///
+/// The limited allocator's resize and remap paths each branch on what the child
+/// says, and both the accepted and the refused branch adjust the live byte
+/// count. A general-purpose allocator decides in place resizing for its own
+/// reasons, so a test built on one would exercise whichever branch that
+/// allocator happened to choose for a particular size class. This one is told.
+///
+/// Resizes are reported without moving or reallocating anything, so the backing
+/// buffer's own bookkeeping must tolerate a length it did not agree to. A fixed
+/// buffer does; a checking allocator would not, which is why one is not used.
+const FixedDecisionChild = struct {
+    backing: std.mem.Allocator,
+    accepts_resize: bool,
+
+    fn allocator(self: *FixedDecisionChild) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = childAlloc,
+                .resize = childResize,
+                .remap = childRemap,
+                .free = childFree,
+            },
+        };
+    }
+
+    fn childAlloc(
+        context: *anyopaque,
+        len: usize,
+        alignment: std.mem.Alignment,
+        return_address: usize,
+    ) ?[*]u8 {
+        const self: *FixedDecisionChild = @ptrCast(@alignCast(context));
+        return self.backing.rawAlloc(len, alignment, return_address);
+    }
+
+    fn childResize(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        new_len: usize,
+        return_address: usize,
+    ) bool {
+        const self: *FixedDecisionChild = @ptrCast(@alignCast(context));
+        _ = .{ memory, alignment, new_len, return_address };
+        return self.accepts_resize;
+    }
+
+    fn childRemap(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        new_len: usize,
+        return_address: usize,
+    ) ?[*]u8 {
+        const self: *FixedDecisionChild = @ptrCast(@alignCast(context));
+        _ = .{ alignment, new_len, return_address };
+        if (!self.accepts_resize) return null;
+        return memory.ptr;
+    }
+
+    fn childFree(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        return_address: usize,
+    ) void {
+        const self: *FixedDecisionChild = @ptrCast(@alignCast(context));
+        self.backing.rawFree(memory, alignment, return_address);
+    }
+};
+
+const byte_alignment = std.mem.Alignment.fromByteUnits(@alignOf(u8));
+
+/// The allocation as its owner now sees it after an accepted in-place resize.
+///
+/// An in-place resize keeps the pointer and changes the length, so the caller's
+/// slice has to be retaken at the new length before it can be handed back to
+/// the allocator. The backing buffers below are far larger than any length
+/// these tests claim.
+fn resized(memory: []u8, new_len: usize) []u8 {
+    return memory.ptr[0..new_len];
+}
+
+test "limited allocator accounts for accepted growth and shrinking" {
+    var buffer: [64]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
+    var child: FixedDecisionChild = .{
+        .backing = fixed.allocator(),
+        .accepts_resize = true,
+    };
+
+    var limited = LimitedAllocator.init(child.allocator(), 16);
+    const allocator = limited.allocator();
+
+    const memory = try allocator.alloc(u8, 4);
+    try std.testing.expectEqual(@as(usize, 4), limited.current);
+
+    // Growing charges the difference, not the new length and not their sum.
+    try std.testing.expect(
+        allocator.rawResize(memory, byte_alignment, 12, @returnAddress()),
+    );
+    try std.testing.expectEqual(@as(usize, 12), limited.current);
+    try std.testing.expectEqual(@as(usize, 12), limited.peak);
+
+    // Shrinking refunds the difference. The peak is a high-water mark and does
+    // not follow it back down.
+    try std.testing.expect(
+        allocator.rawResize(resized(memory, 12), byte_alignment, 4, @returnAddress()),
+    );
+    try std.testing.expectEqual(@as(usize, 4), limited.current);
+    try std.testing.expectEqual(@as(usize, 12), limited.peak);
+
+    // A resize to the same length is neither growth nor shrinkage.
+    try std.testing.expect(
+        allocator.rawResize(memory, byte_alignment, 4, @returnAddress()),
+    );
+    try std.testing.expectEqual(@as(usize, 4), limited.current);
+}
+
+test "limited allocator refuses growth that would exceed its ceiling" {
+    var buffer: [64]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
+    var child: FixedDecisionChild = .{
+        .backing = fixed.allocator(),
+        .accepts_resize = true,
+    };
+
+    var limited = LimitedAllocator.init(child.allocator(), 16);
+    const allocator = limited.allocator();
+
+    // Nothing has been refused yet, so the flag a caller reads to distinguish
+    // a limit refusal from an ordinary allocation failure starts clear.
+    try std.testing.expect(!limited.limit_exceeded);
+
+    const memory = try allocator.alloc(u8, 4);
+    try std.testing.expect(!limited.limit_exceeded);
+
+    // The ceiling constrains the resulting live total, so a growth of 13 over
+    // the 4 already held is one byte too many.
+    try std.testing.expect(
+        !allocator.rawResize(memory, byte_alignment, 17, @returnAddress()),
+    );
+    try std.testing.expectEqual(@as(usize, 4), limited.current);
+    try std.testing.expect(limited.limit_exceeded);
+
+    // Growth to exactly the ceiling is allowed, which pins the boundary the
+    // refusal above sits next to.
+    try std.testing.expect(
+        allocator.rawResize(memory, byte_alignment, 16, @returnAddress()),
+    );
+    try std.testing.expectEqual(@as(usize, 16), limited.current);
+}
+
+test "limited allocator restores its byte count when the child refuses" {
+    var buffer: [64]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
+    var child: FixedDecisionChild = .{
+        .backing = fixed.allocator(),
+        .accepts_resize = true,
+    };
+
+    var limited = LimitedAllocator.init(child.allocator(), 16);
+    const allocator = limited.allocator();
+
+    const memory = try allocator.alloc(u8, 4);
+    child.accepts_resize = false;
+
+    // Growth reserves before asking the child. When the child refuses, the
+    // reservation has to be given back, or a rejected resize would permanently
+    // consume budget.
+    try std.testing.expect(
+        !allocator.rawResize(memory, byte_alignment, 12, @returnAddress()),
+    );
+    try std.testing.expectEqual(@as(usize, 4), limited.current);
+
+    // A refused shrink must not refund bytes the child still holds.
+    try std.testing.expect(
+        !allocator.rawResize(memory, byte_alignment, 2, @returnAddress()),
+    );
+    try std.testing.expectEqual(@as(usize, 4), limited.current);
+
+    // The budget is intact, so a later accepted growth still succeeds.
+    child.accepts_resize = true;
+    try std.testing.expect(
+        allocator.rawResize(memory, byte_alignment, 16, @returnAddress()),
+    );
+    try std.testing.expectEqual(@as(usize, 16), limited.current);
+}
+
+test "limited allocator accounts for remapping the same way as resizing" {
+    var buffer: [64]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
+    var child: FixedDecisionChild = .{
+        .backing = fixed.allocator(),
+        .accepts_resize = true,
+    };
+
+    var limited = LimitedAllocator.init(child.allocator(), 16);
+    const allocator = limited.allocator();
+
+    const memory = try allocator.alloc(u8, 4);
+
+    try std.testing.expect(
+        allocator.rawRemap(memory, byte_alignment, 12, @returnAddress()) != null,
+    );
+    try std.testing.expectEqual(@as(usize, 12), limited.current);
+    try std.testing.expectEqual(@as(usize, 12), limited.peak);
+
+    try std.testing.expect(
+        allocator.rawRemap(resized(memory, 12), byte_alignment, 4, @returnAddress()) != null,
+    );
+    try std.testing.expectEqual(@as(usize, 4), limited.current);
+
+    // Over the ceiling, and then exactly at it.
+    try std.testing.expect(
+        allocator.rawRemap(memory, byte_alignment, 17, @returnAddress()) == null,
+    );
+    try std.testing.expectEqual(@as(usize, 4), limited.current);
+    try std.testing.expect(
+        allocator.rawRemap(memory, byte_alignment, 16, @returnAddress()) != null,
+    );
+    try std.testing.expectEqual(@as(usize, 16), limited.current);
+}
+
+test "limited allocator restores its byte count when a remap is refused" {
+    var buffer: [64]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
+    var child: FixedDecisionChild = .{
+        .backing = fixed.allocator(),
+        .accepts_resize = true,
+    };
+
+    var limited = LimitedAllocator.init(child.allocator(), 16);
+    const allocator = limited.allocator();
+
+    const memory = try allocator.alloc(u8, 4);
+    child.accepts_resize = false;
+
+    try std.testing.expect(
+        allocator.rawRemap(memory, byte_alignment, 12, @returnAddress()) == null,
+    );
+    try std.testing.expectEqual(@as(usize, 4), limited.current);
+
+    try std.testing.expect(
+        allocator.rawRemap(memory, byte_alignment, 2, @returnAddress()) == null,
+    );
+    try std.testing.expectEqual(@as(usize, 4), limited.current);
 }
