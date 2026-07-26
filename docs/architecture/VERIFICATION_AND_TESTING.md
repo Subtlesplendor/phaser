@@ -257,6 +257,10 @@ bitwise comparison of outputs and statuses.
 
 ### 9.3 Independent numerical paths
 
+The policies themselves, their measured bounds, and the evidence for each are
+cataloged in [Numerical Comparison](NUMERICAL_COMPARISON.md). This section owns
+what a policy must record; that document owns which policies exist.
+
 Every approximate comparison policy records:
 
 - quantity and operation;
@@ -647,11 +651,11 @@ appropriate CI tier once its tooling has been explicitly approved.
 This specification deliberately leaves open:
 
 - exact conformance-fixture schema;
-- initial numerical comparison-policy types;
 - first independent high-precision implementation;
 - property-generator API;
-- the declared numerical-comparison policy that metamorphic and cross-platform
-  agreement assertions require;
+- the spectral, near-degenerate, and zero-mode comparison policies, whose
+  required form [Numerical Comparison §7](NUMERICAL_COMPARISON.md) fixes and
+  whose bounds are measured with the calculation that needs them;
 - exact per-target property and fuzz budgets after implementation measurement;
 - assertion/death-test mechanism;
 - external-reference provenance schema;

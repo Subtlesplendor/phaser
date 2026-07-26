@@ -55,6 +55,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Executable mirror of `docs/architecture/NUMERICAL_COMPARISON.md`. Test
+    // tiers name a policy from it instead of carrying separately editable
+    // tolerance literals, so it is imported by every tier that compares
+    // approximate numbers. It depends on nothing, including Phaser itself.
+    const numerical_comparison_module = b.createModule(.{
+        .root_source_file = b.path("test/support/numerical_comparison.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const cli_commands_module = b.createModule(.{
         .root_source_file = b.path("src/cli/commands.zig"),
         .target = target,
@@ -142,6 +152,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phaser", .module = phaser_module },
             .{ .name = "example_data", .module = example_data_module },
             .{ .name = "minish", .module = minish.module("minish") },
+            .{
+                .name = "numerical_comparison",
+                .module = numerical_comparison_module,
+            },
         },
     });
     const property_tests = b.addTest(.{ .root_module = property_module });
@@ -155,6 +169,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phaser", .module = phaser_module },
             .{ .name = "example_data", .module = example_data_module },
             .{ .name = "minish", .module = minish.module("minish") },
+            .{
+                .name = "numerical_comparison",
+                .module = numerical_comparison_module,
+            },
         },
     });
     const property_campaign = b.addExecutable(.{
@@ -178,6 +196,10 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "phaser", .module = phaser_module },
             .{ .name = "example_data", .module = example_data_module },
+            .{
+                .name = "numerical_comparison",
+                .module = numerical_comparison_module,
+            },
         },
     });
     const differential_tests = b.addTest(.{ .root_module = differential_module });

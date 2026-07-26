@@ -652,7 +652,10 @@ scientific numerical-comparison policy. Universal cross-platform bitwise
 identity is not promised.
 
 Comparison policies must be operation-aware and include difficult cases such as
-degeneracies, cancellations, and special-function boundaries.
+degeneracies, cancellations, and special-function boundaries. They are declared
+in [Numerical Comparison](NUMERICAL_COMPARISON.md), which states how a
+cross-platform requirement is discharged for a quantity through that quantity's
+own operation-specific policy.
 
 ### 15.4 Faster policies
 

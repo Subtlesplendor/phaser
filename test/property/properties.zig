@@ -22,17 +22,27 @@
 //! Phaser objects. That keeps ownership inside the dependency's own generator
 //! contract rather than spreading it across Phaser-owned generator
 //! implementations.
+//!
+//! Every numerical comparison names a policy from
+//! `docs/architecture/NUMERICAL_COMPARISON.md`. A metamorphic transformation
+//! changes the canonical accumulation order, so the two sides of one of these
+//! properties agree to rounding rather than bitwise, and deciding what "to
+//! rounding" means is that document's job rather than this file's.
 
 const std = @import("std");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
 const harness = @import("harness.zig");
+const policies = @import("numerical_comparison");
 
 const gen = harness.gen;
 const value = phaser.value;
 const calculation = phaser.calculation;
 const kernel_module = phaser.kernel;
 const Scalar = kernel_module.Scalar;
+
+const same_kernel = policies.same_kernel_bitwise;
+const reordered = policies.reordered_value_well_conditioned;
 
 /// Allocator every property uses.
 ///
@@ -171,22 +181,89 @@ pub fn runAll(allocator: std.mem.Allocator, budget: harness.Budget) !void {
     );
 }
 
-/// Compares two results that are mathematically equal but need not be bitwise
-/// equal.
+/// One term of the multi-scalar example potential.
+const Monomial = struct {
+    coefficient: Scalar,
+    h_power: u8,
+    s_power: u8,
+};
+
+/// The multi-scalar example potential written out term by term.
 ///
-/// A metamorphic transformation such as relabelling fields changes the
-/// content-derived canonical operand order, and therefore the accumulation order.
-/// Floating-point addition is not associative, so the two sums agree only to
-/// rounding. Bitwise equality is the wrong expectation; a coefficient error would
-/// show up as a factor, which this tolerance still rejects by many orders of
-/// magnitude.
+/// This is not a second implementation used as an oracle: it supplies the scale
+/// at which `reordered_value_well_conditioned` compares, and nothing asserts
+/// its total. A wrong coefficient here would move a tolerance slightly, not
+/// admit a wrong result.
 ///
-/// The tolerance is local to this test until the declared numerical-comparison
-/// policy of `POTENTIAL_KERNEL.md` section 15.3 is written.
-fn expectClose(expected: Scalar, actual: Scalar) !void {
-    const scale = @max(@abs(expected), @abs(actual));
-    if (scale < 1e-300) return;
-    try std.testing.expectApproxEqRel(expected, actual, 1e-12);
+/// The form is the fixture derivation in
+/// `test/fixtures/conformance/multi_scalar/README.md`,
+///
+///   V = W + t_h h + t_s s
+///     + (m_h2 h^2 + 2 m_hs2 h s + m_s2 s^2) / 2
+///     + (a h^3 + 3 b h^2 s + 3 c h s^2 + d s^3) / 6
+///     + (lh h^4 + 4 l3 h^3 s + 6 l2 h^2 s^2 + 4 l1 h s^3 + ls s^4) / 24,
+///
+/// evaluated at the parameter values of `examples/multi_scalar/point.json`. Only
+/// `l3` varies between the properties here, because the zero-coupling property
+/// binds it to zero.
+fn multiScalarTerms(l3: Scalar) [15]Monomial {
+    return .{
+        .{ .coefficient = 0.0, .h_power = 0, .s_power = 0 }, // omega
+        .{ .coefficient = 0.0, .h_power = 1, .s_power = 0 }, // t_h
+        .{ .coefficient = 0.0, .h_power = 0, .s_power = 1 }, // t_s
+        .{ .coefficient = -7812.5 / 2.0, .h_power = 2, .s_power = 0 }, // m_h2
+        .{ .coefficient = 500.0, .h_power = 1, .s_power = 1 }, // m_hs2
+        .{ .coefficient = 2500.0 / 2.0, .h_power = 0, .s_power = 2 }, // m_s2
+        .{ .coefficient = 25.0 / 6.0, .h_power = 3, .s_power = 0 }, // a
+        .{ .coefficient = -5.0 / 2.0, .h_power = 2, .s_power = 1 }, // b
+        .{ .coefficient = 2.5 / 2.0, .h_power = 1, .s_power = 2 }, // c
+        .{ .coefficient = 10.0 / 6.0, .h_power = 0, .s_power = 3 }, // d
+        .{ .coefficient = 0.26 / 24.0, .h_power = 4, .s_power = 0 }, // lh
+        .{ .coefficient = l3 / 6.0, .h_power = 3, .s_power = 1 }, // l3
+        .{ .coefficient = 0.1 / 4.0, .h_power = 2, .s_power = 2 }, // l2
+        .{ .coefficient = 0.05 / 6.0, .h_power = 1, .s_power = 3 }, // l1
+        .{ .coefficient = 0.3 / 24.0, .h_power = 0, .s_power = 4 }, // ls
+    };
+}
+
+/// Sum of the terms' magnitudes at one background point.
+///
+/// Two accumulation orders of the same exact sum differ by rounding bounded by
+/// this quantity, not by the magnitude of the total. The two separate by seven
+/// orders of magnitude where the potential passes through zero, which the
+/// generated points reach, so this is the scale the policy is applied at.
+fn unsignedValueScale(terms: []const Monomial, point: [2]Scalar) Scalar {
+    var total: Scalar = 0;
+    for (terms) |term| {
+        total += @abs(term.coefficient) *
+            std.math.pow(Scalar, @abs(point[0]), @floatFromInt(term.h_power)) *
+            std.math.pow(Scalar, @abs(point[1]), @floatFromInt(term.s_power));
+    }
+    return total;
+}
+
+/// The same scale for one gradient component, term by differentiated term.
+fn unsignedGradientScale(
+    terms: []const Monomial,
+    point: [2]Scalar,
+    index: usize,
+) Scalar {
+    var total: Scalar = 0;
+    for (terms) |term| {
+        const powers = [_]u8{ term.h_power, term.s_power };
+        if (powers[index] == 0) continue;
+        var factor = @abs(term.coefficient) * @as(Scalar, @floatFromInt(powers[index]));
+        for ([_]usize{ 0, 1 }) |coordinate| {
+            const exponent = powers[coordinate] - @intFromBool(coordinate == index);
+            factor *= std.math.pow(
+                Scalar,
+                @abs(point[coordinate]),
+                @floatFromInt(exponent),
+            );
+        }
+        total += factor;
+    }
+    return total;
 }
 
 // -- shared plumbing -------------------------------------------------------
@@ -527,7 +604,7 @@ fn scalarMatchesBatch(coordinates_flat: []const f64) !void {
         );
         try std.testing.expectEqual(statuses[index], single_status[0]);
         if (statuses[index] == .ok) {
-            try std.testing.expectEqual(batch[index], single[0]);
+            try same_kernel.expectEqual(batch[index], single[0]);
         }
     }
 }
@@ -571,8 +648,8 @@ fn stagedMatchesUnstaged(coordinates_flat: []const f64) !void {
         },
     );
 
-    try std.testing.expectEqualSlices(Scalar, direct_values, staged_values);
-    try std.testing.expectEqualSlices(Scalar, direct_gradients, staged_gradients);
+    try same_kernel.expectEqualSlices(direct_values, staged_values);
+    try same_kernel.expectEqualSlices(direct_gradients, staged_gradients);
     try std.testing.expectEqualSlices(
         kernel_module.Status,
         direct_statuses,
@@ -595,7 +672,7 @@ fn hessianIsSymmetric(point: [2]f64) !void {
         .statuses = &statuses,
     });
     if (statuses[0] != .ok) return;
-    try std.testing.expectEqual(hessians[1], hessians[2]);
+    try same_kernel.expectEqual(hessians[1], hessians[2]);
 }
 
 // -- metamorphic properties ------------------------------------------------
@@ -629,7 +706,11 @@ fn relabellingPreservesResults(point: [2]f64) !void {
 
     try std.testing.expectEqual(original_status[0], relabelled_status[0]);
     if (original_status[0] != .ok) return;
-    try expectClose(original_value[0], relabelled_value[0]);
+
+    const terms = multiScalarTerms(-0.02);
+    try reordered.expectCloseAt(original_value[0], relabelled_value[0], .{
+        .magnitude = unsignedValueScale(&terms, point),
+    });
 }
 
 /// A coupling bound to zero agrees with the model that omits its tensor
@@ -665,9 +746,14 @@ fn zeroCouplingMatchesReducedModel(point: [2]f64) !void {
     // The omitted monomial contributes exactly zero, but dropping a parameter
     // shifts the remaining terms' canonical order, so the sums agree to rounding
     // rather than bitwise.
-    try expectClose(full_value[0], reduced_value[0]);
-    for (full_gradient, reduced_gradient) |expected, actual| {
-        try expectClose(expected, actual);
+    const terms = multiScalarTerms(0);
+    try reordered.expectCloseAt(full_value[0], reduced_value[0], .{
+        .magnitude = unsignedValueScale(&terms, point),
+    });
+    for (full_gradient, reduced_gradient, 0..) |expected, actual, index| {
+        try reordered.expectCloseAt(expected, actual, .{
+            .magnitude = unsignedGradientScale(&terms, point, index),
+        });
     }
 }
 
@@ -704,7 +790,7 @@ fn lifecycleSequence(script: []const u8) !void {
                     .values = &values,
                     .statuses = &statuses,
                 });
-                try std.testing.expectEqual(expected[0], values[0]);
+                try same_kernel.expectEqual(expected[0], values[0]);
                 setup.binding = moved;
             },
             // Move the kernel and evaluate through the existing binding, which
@@ -718,7 +804,7 @@ fn lifecycleSequence(script: []const u8) !void {
                     .values = &values,
                     .statuses = &statuses,
                 });
-                try std.testing.expectEqual(expected[0], values[0]);
+                try same_kernel.expectEqual(expected[0], values[0]);
                 setup.kernel = moved;
             },
             // Create a second binding over the same values and compare.
@@ -738,7 +824,7 @@ fn lifecycleSequence(script: []const u8) !void {
                     .values = &values,
                     .statuses = &statuses,
                 });
-                try std.testing.expectEqual(expected[0], values[0]);
+                try same_kernel.expectEqual(expected[0], values[0]);
             },
             // Evaluate a batch and check the probe still agrees.
             3 => {
@@ -758,7 +844,7 @@ fn lifecycleSequence(script: []const u8) !void {
                     setup.workspace,
                     .{ .values = values, .statuses = statuses },
                 );
-                try std.testing.expectEqual(expected[0], values[0]);
+                try same_kernel.expectEqual(expected[0], values[0]);
             },
             else => unreachable,
         }
