@@ -18,6 +18,14 @@ pub const Scheme = request_module.Scheme;
 /// Version 0.1 supports one mass unit.
 pub const MassUnit = enum { gev };
 
+pub const PointHardLimits = struct {
+    pub const source_bytes: usize = 1024 * 1024;
+    pub const json_tokens: usize = 64 * 1024;
+    pub const json_nesting: usize = 64;
+    pub const significant_digits: usize = 4096;
+    pub const decimal_exponent: usize = 4096;
+};
+
 pub const PointLimits = struct {
     source_bytes: usize = 64 * 1024,
     json_tokens: usize = 4096,
@@ -26,6 +34,24 @@ pub const PointLimits = struct {
     significant_digits: usize = 40,
     /// Documented bound on the decimal exponent, required by section 4.
     decimal_exponent: usize = 300,
+
+    pub fn validate(self: PointLimits) ?foundation.Diagnostic {
+        inline for (@typeInfo(PointLimits).@"struct".fields) |field| {
+            const value = @field(self, field.name);
+            const hard = @field(PointHardLimits, field.name);
+            if (value == 0 or value > hard) {
+                return .{
+                    .code = .invalid_limit,
+                    .category = .configuration,
+                    .detail = .{ .invalid_limit = .{
+                        .name = @field(foundation.LimitName, field.name),
+                        .value = value,
+                    } },
+                };
+            }
+        }
+        return null;
+    }
 };
 
 pub const Entry = struct {
@@ -112,12 +138,19 @@ pub fn parseParameterPoint(
     source: PointSource,
     options: ParseOptions,
 ) ParseError!ParseResult {
+    if (options.limits.validate()) |diagnostic| {
+        return .{ .diagnostics = try oneDiagnosticValue(context, diagnostic) };
+    }
     if (source.bytes.len > options.limits.source_bytes) {
         return .{ .diagnostics = try oneDiagnostic(
             context,
             .capacity_exceeded,
             .calculation,
         ) };
+    }
+
+    if (try scanJson(context.allocator, source, options.limits)) |diagnostic| {
+        return .{ .diagnostics = try oneDiagnosticValue(context, diagnostic) };
     }
 
     var parsed = std.json.parseFromSlice(
@@ -342,6 +375,76 @@ fn rejectUnknown(object: std.json.ObjectMap, allowed: []const []const u8) !void 
         }
         if (!found) return error.UnknownProperty;
     }
+}
+
+fn scanJson(
+    allocator: std.mem.Allocator,
+    source: PointSource,
+    limits: PointLimits,
+) !?foundation.Diagnostic {
+    var scanner = std.json.Scanner.initCompleteInput(allocator, source.bytes);
+    defer scanner.deinit();
+    var diagnostics = std.json.Diagnostics{};
+    scanner.enableDiagnostics(&diagnostics);
+    var token_count: usize = 0;
+    var depth: usize = 0;
+    while (true) {
+        const token = scanner.nextAllocMax(
+            allocator,
+            .alloc_if_needed,
+            limits.source_bytes,
+        ) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return .{
+                .code = .invalid_json,
+                .category = .json,
+            };
+        };
+        defer switch (token) {
+            .allocated_string => |slice| allocator.free(slice),
+            .allocated_number => |slice| allocator.free(slice),
+            else => {},
+        };
+        token_count += 1;
+        if (token_count > limits.json_tokens) {
+            return .{ .code = .capacity_exceeded, .category = .json };
+        }
+        switch (token) {
+            .object_begin, .array_begin => {
+                depth += 1;
+                if (depth > limits.json_nesting) {
+                    return .{ .code = .capacity_exceeded, .category = .json };
+                }
+            },
+            .object_end, .array_end => depth -= 1,
+            .end_of_document => break,
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn oneDiagnosticValue(
+    context: foundation.Context,
+    diagnostic: foundation.Diagnostic,
+) ParseError!foundation.Diagnostics {
+    var builder = context.diagnosticBuilder();
+    defer builder.deinit();
+    builder.append(.{
+        .code = diagnostic.code,
+        .category = diagnostic.category,
+        .severity = diagnostic.severity,
+        .primary = diagnostic.primary,
+        .detail = diagnostic.detail,
+        .related = diagnostic.related,
+        .cause = diagnostic.cause,
+    }) catch |err| switch (err) {
+        error.InvalidCause => unreachable,
+        error.OutOfMemory => return error.OutOfMemory,
+        error.DiagnosticCapacityExceeded => return error.DiagnosticCapacityExceeded,
+        error.RelatedLocationCapacityExceeded => return error.RelatedLocationCapacityExceeded,
+    };
+    return builder.finish();
 }
 
 fn oneDiagnostic(
@@ -572,6 +675,72 @@ test "significant digit and exponent bounds are enforced" {
         .{long},
     );
     try expectDiagnostic(source, .capacity_exceeded);
+}
+
+test "JSON token and nesting limits are enforced" {
+    var token_limits = PointLimits{};
+    token_limits.json_tokens = 1;
+    const tokens = try parseParameterPoint(testContext(), .{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = valid_point,
+    }, .{ .limits = token_limits });
+    var token_diagnostics = switch (tokens) {
+        .diagnostics => |value| value,
+        .point => |value| {
+            var owned = value;
+            defer owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer token_diagnostics.deinit();
+    try std.testing.expectEqual(
+        foundation.Code.capacity_exceeded,
+        token_diagnostics.items[0].code,
+    );
+
+    var nesting_limits = PointLimits{};
+    nesting_limits.json_nesting = 1;
+    const nesting = try parseParameterPoint(testContext(), .{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = valid_point,
+    }, .{ .limits = nesting_limits });
+    var nesting_diagnostics = switch (nesting) {
+        .diagnostics => |value| value,
+        .point => |value| {
+            var owned = value;
+            defer owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer nesting_diagnostics.deinit();
+    try std.testing.expectEqual(
+        foundation.Code.capacity_exceeded,
+        nesting_diagnostics.items[0].code,
+    );
+}
+
+test "every parameter-point limit checks zero exact and one-over boundaries" {
+    inline for (@typeInfo(PointLimits).@"struct".fields) |field| {
+        var limits = PointLimits{};
+        @field(limits, field.name) = 0;
+        try std.testing.expectEqual(
+            foundation.Code.invalid_limit,
+            limits.validate().?.code,
+        );
+
+        limits = .{};
+        @field(limits, field.name) = @field(PointHardLimits, field.name);
+        try std.testing.expectEqual(
+            @as(?foundation.Diagnostic, null),
+            limits.validate(),
+        );
+
+        @field(limits, field.name) = @field(PointHardLimits, field.name) + 1;
+        try std.testing.expectEqual(
+            foundation.Code.invalid_limit,
+            limits.validate().?.code,
+        );
+    }
 }
 
 test "member order does not affect the parsed point" {

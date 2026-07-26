@@ -146,12 +146,21 @@ pub const Program = struct {
         return point_count;
     }
 
-    pub fn gradientCount(self: *const Program, point_count: usize) usize {
-        return point_count * self.coordinate_count;
+    pub fn gradientCount(
+        self: *const Program,
+        point_count: usize,
+    ) error{SizeOverflow}!usize {
+        return std.math.mul(usize, point_count, self.coordinate_count) catch
+            error.SizeOverflow;
     }
 
-    pub fn hessianCount(self: *const Program, point_count: usize) usize {
-        return point_count * self.coordinate_count * self.coordinate_count;
+    pub fn hessianCount(
+        self: *const Program,
+        point_count: usize,
+    ) error{SizeOverflow}!usize {
+        const rows = try self.gradientCount(point_count);
+        return std.math.mul(usize, rows, self.coordinate_count) catch
+            error.SizeOverflow;
     }
 
     /// Establishes every invariant the interpreter then relies on. A program

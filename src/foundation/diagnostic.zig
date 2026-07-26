@@ -116,6 +116,8 @@ pub const LimitName = enum {
     request_json_nesting,
     background_coordinates,
     contributions,
+    significant_digits,
+    decimal_exponent,
     scratch_bytes,
     persistent_bytes,
 };

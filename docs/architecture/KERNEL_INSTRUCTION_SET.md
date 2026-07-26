@@ -199,8 +199,9 @@ worker-count-dependent layout without an API change, and
 public input and output shapes.
 
 Execution MUST allocate no memory. Insufficient size, insufficient alignment,
-and forbidden aliasing between workspace, inputs, and outputs are call-level
-errors detected before any slot is written.
+unrepresentable point-count-dependent shapes, and forbidden aliasing between
+workspace, inputs, and outputs are call-level errors detected before any slot
+is written.
 
 ## 8. Status
 

@@ -84,6 +84,7 @@ pub const Tensor = struct {
 
 pub const Model = struct {
     allocator: std.mem.Allocator,
+    persistent_allocator: *foundation.LimitedAllocator,
     arena: *std.heap.ArenaAllocator,
     expression_storage: []expression.Expression,
     parameters: []const Parameter,
@@ -93,9 +94,9 @@ pub const Model = struct {
     persistent_bytes: usize,
 
     pub fn deinit(self: *Model) void {
-        const allocator = self.arena.child_allocator;
         self.arena.deinit();
-        allocator.destroy(self.arena);
+        self.allocator.destroy(self.arena);
+        self.allocator.destroy(self.persistent_allocator);
         self.* = undefined;
     }
 
@@ -219,6 +220,7 @@ const BuildState = struct {
     allocator: std.mem.Allocator,
     arena: *std.heap.ArenaAllocator,
     expressions: std.ArrayList(expression.Expression) = .empty,
+    expression_parameters: ?[]const expression.Parameter = null,
     expression_failure: ?expression.Failure = null,
     value_nodes: usize = 0,
 
@@ -255,13 +257,31 @@ pub fn loadModel(
         ) };
     }
 
-    if (try scanJson(context.allocator, source, options.limits)) |diagnostic| {
+    var scratch_allocator = foundation.LimitedAllocator.init(
+        context.allocator,
+        options.limits.scratch_bytes,
+    );
+    const scratch = scratch_allocator.allocator();
+
+    const scan_result = scanJson(scratch, source, options.limits) catch |err| {
+        if (scratch_allocator.limit_exceeded) {
+            return .{ .diagnostics = try capacityDiagnostics(
+                context,
+                source,
+                .scratch_bytes,
+                options.limits.scratch_bytes,
+                scratch_allocator.current + 1,
+            ) };
+        }
+        return err;
+    };
+    if (scan_result) |diagnostic| {
         return .{ .diagnostics = try oneDiagnostic(context, diagnostic) };
     }
 
     var parsed = std.json.parseFromSlice(
         std.json.Value,
-        context.allocator,
+        scratch,
         source.bytes,
         .{
             .duplicate_field_behavior = .@"error",
@@ -270,6 +290,16 @@ pub fn loadModel(
             .allocate = .alloc_always,
         },
     ) catch |err| {
+        if (scratch_allocator.limit_exceeded) {
+            return .{ .diagnostics = try capacityDiagnostics(
+                context,
+                source,
+                .scratch_bytes,
+                options.limits.scratch_bytes,
+                scratch_allocator.current + 1,
+            ) };
+        }
+        if (err == error.OutOfMemory) return error.OutOfMemory;
         return .{ .diagnostics = try simpleDiagnostics(
             context,
             source,
@@ -289,12 +319,21 @@ pub fn loadModel(
         ) },
     };
 
+    const persistent_allocator = try context.allocator.create(
+        foundation.LimitedAllocator,
+    );
+    errdefer context.allocator.destroy(persistent_allocator);
+    persistent_allocator.* = .init(
+        context.allocator,
+        options.limits.persistent_bytes,
+    );
+
     const model_arena = try context.allocator.create(std.heap.ArenaAllocator);
     errdefer context.allocator.destroy(model_arena);
-    model_arena.* = std.heap.ArenaAllocator.init(context.allocator);
+    model_arena.* = std.heap.ArenaAllocator.init(persistent_allocator.allocator());
     errdefer model_arena.deinit();
     var state = BuildState{
-        .allocator = context.allocator,
+        .allocator = scratch,
         .arena = model_arena,
     };
     errdefer state.cleanupExpressions();
@@ -320,6 +359,7 @@ pub fn loadModel(
             state.cleanupExpressions();
             model_arena.deinit();
             context.allocator.destroy(model_arena);
+            context.allocator.destroy(persistent_allocator);
             const failure = failureInfo(@errorCast(err));
             if (expression_failure) |detail| {
                 const raw_span = foundation.SourceSpan.init(
@@ -342,41 +382,81 @@ pub fn loadModel(
                 failure.category,
             ) };
         },
-        error.OutOfMemory => return error.OutOfMemory,
+        error.OutOfMemory => {
+            if (!persistent_allocator.limit_exceeded and
+                !scratch_allocator.limit_exceeded)
+            {
+                return error.OutOfMemory;
+            }
+            const persistent_exceeded = persistent_allocator.limit_exceeded;
+            state.cleanupExpressions();
+            model_arena.deinit();
+            context.allocator.destroy(model_arena);
+            context.allocator.destroy(persistent_allocator);
+            const resource: foundation.Resource = if (persistent_exceeded)
+                .persistent_bytes
+            else
+                .scratch_bytes;
+            const limit = if (persistent_exceeded)
+                options.limits.persistent_bytes
+            else
+                options.limits.scratch_bytes;
+            return .{ .diagnostics = try capacityDiagnostics(
+                context,
+                source,
+                resource,
+                limit,
+                limit + 1,
+            ) };
+        },
         else => unreachable,
     };
 
-    const expressions = try model_arena.allocator().dupe(
+    const expressions = model_arena.allocator().dupe(
         expression.Expression,
         state.expressions.items,
-    );
-    state.expressions.deinit(context.allocator);
+    ) catch |err| {
+        if (!persistent_allocator.limit_exceeded) return err;
+        state.cleanupExpressions();
+        model_arena.deinit();
+        context.allocator.destroy(model_arena);
+        context.allocator.destroy(persistent_allocator);
+        return .{ .diagnostics = try capacityDiagnostics(
+            context,
+            source,
+            .persistent_bytes,
+            options.limits.persistent_bytes,
+            options.limits.persistent_bytes + 1,
+        ) };
+    };
+    state.expressions.deinit(scratch);
     state.expressions = .empty;
 
     var model = Model{
         .allocator = context.allocator,
+        .persistent_allocator = persistent_allocator,
         .arena = model_arena,
         .expression_storage = expressions,
         .parameters = built.parameters,
         .real_scalars = built.real_scalars,
         .tensors = built.tensors,
         .model_fingerprint = undefined,
-        .persistent_bytes = built.persistent_bytes,
+        .persistent_bytes = persistent_allocator.current,
     };
-    if (model.persistent_bytes > options.limits.persistent_bytes) {
+    model.model_fingerprint = computeFingerprint(
+        &model,
+        scratch,
+    ) catch {
+        if (!scratch_allocator.limit_exceeded) return error.OutOfMemory;
         model.deinit();
         return .{ .diagnostics = try capacityDiagnostics(
             context,
             source,
-            .persistent_bytes,
-            options.limits.persistent_bytes,
-            built.persistent_bytes,
+            .scratch_bytes,
+            options.limits.scratch_bytes,
+            options.limits.scratch_bytes + 1,
         ) };
-    }
-    model.model_fingerprint = computeFingerprint(
-        &model,
-        context.allocator,
-    ) catch return error.OutOfMemory;
+    };
     if (options.audit and !model.audit()) @panic("canonical model audit failed");
     std.debug.assert(model.audit());
     return .{ .model = model };
@@ -449,7 +529,6 @@ const Built = struct {
     parameters: []const Parameter,
     real_scalars: []const ScalarField,
     tensors: []const Tensor,
-    persistent_bytes: usize,
 };
 
 fn buildModel(
@@ -514,12 +593,10 @@ fn buildModel(
         options,
         state,
     );
-    const persistent_bytes = estimatePersistentBytes(parameters, scalars, tensors, state.expressions.items);
     return .{
         .parameters = parameters,
         .real_scalars = scalars,
         .tensors = tensors,
-        .persistent_bytes = persistent_bytes,
     };
 }
 
@@ -716,17 +793,21 @@ fn parseModelExpression(
     options: ModelLoadOptions,
     state: *BuildState,
 ) !u32 {
-    const expression_parameters = try state.arena.allocator().alloc(
-        expression.Parameter,
-        parameters.len,
-    );
-    for (parameters, expression_parameters) |parameter, *target| {
-        target.* = .{
-            .name = parameter.name,
-            .id = parameter.id,
-            .mass_dimension = parameter.mass_dimension,
-        };
-    }
+    const expression_parameters = state.expression_parameters orelse blk: {
+        const table = try state.arena.allocator().alloc(
+            expression.Parameter,
+            parameters.len,
+        );
+        for (parameters, table) |parameter, *target| {
+            target.* = .{
+                .name = parameter.name,
+                .id = parameter.id,
+                .mass_dimension = parameter.mass_dimension,
+            };
+        }
+        state.expression_parameters = table;
+        break :blk table;
+    };
     const expression_source_id = foundation.SourceId.fromUsize(
         source.source_id.toUsize() + state.expressions.items.len + 1,
     ) catch return invalid(.capacity_overflow, .model);
@@ -777,7 +858,8 @@ fn scanJson(
             allocator,
             .alloc_if_needed,
             limits.source_bytes,
-        ) catch {
+        ) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
             return diagnosticAt(
                 source,
                 .invalid_json,
@@ -838,45 +920,6 @@ fn computeFingerprint(model: *const Model, allocator: std.mem.Allocator) !ModelF
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(output.written(), &digest, .{});
     return .{ .bytes = digest };
-}
-
-fn estimatePersistentBytes(
-    parameters: []const Parameter,
-    scalars: []const ScalarField,
-    tensors: []const Tensor,
-    expressions: []const expression.Expression,
-) usize {
-    var total = parameters.len * @sizeOf(Parameter) +
-        scalars.len * @sizeOf(ScalarField) +
-        tensors.len * @sizeOf(Tensor) +
-        expressions.len * @sizeOf(expression.Expression);
-    for (parameters) |parameter| {
-        total += parameter.name.len;
-        if (parameter.label) |text| total += text.len;
-        if (parameter.latex) |text| total += text.len;
-        if (parameter.description) |text| total += text.len;
-    }
-    for (scalars) |field| {
-        total += field.name.len;
-        if (field.label) |text| total += text.len;
-        if (field.latex) |text| total += text.len;
-        if (field.description) |text| total += text.len;
-    }
-    for (tensors) |tensor| total += tensor.components.len * @sizeOf(TensorComponent);
-    for (expressions) |item| {
-        total += item.values.len * @sizeOf(expression.Value);
-        for (item.values) |value| {
-            switch (value.node) {
-                .rational, .sqrt_rational => |rational| {
-                    total += rational.numerator.len + rational.denominator.len;
-                },
-                .parameter => |parameter| total += parameter.name.len,
-                .add, .multiply => |children| total += children.len * @sizeOf(expression.ValueId),
-                else => {},
-            }
-        }
-    }
-    return total;
 }
 
 fn requiredObject(object: std.json.ObjectMap, key: []const u8) !std.json.ObjectMap {

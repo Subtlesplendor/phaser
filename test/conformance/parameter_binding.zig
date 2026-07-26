@@ -111,6 +111,20 @@ const multi_scalar_point =
     \\"omega":2.5,"t_h":10.0,"t_s":-20.0}}
 ;
 
+const divided_parameter_model =
+    \\{"schema":"phaser.qft-model/0.1","spacetime_dimension":4,
+    \\"conventions":{"metric":"mostly_plus","scalar_representation":"real_components","fermions":"two_component_weyl"},
+    \\"parameters":{"a":{"domain":"real","mass_dimension":4},"b":{"domain":"real","mass_dimension":0}},
+    \\"fields":{"real_scalars":[],"weyl_fermions":[],"gauge_vectors":[]},
+    \\"tensors":{"vacuum_energy":{"value":"a / b"}}}
+;
+
+const zero_divisor_point =
+    \\{"schema":"phaser.parameter-point/0.1","units":{"mass":"GeV"},
+    \\"renormalization":{"scheme":"MSbar","reference_scale":125.0},
+    \\"values":{"a":1.0,"b":0.0}}
+;
+
 const Fixture = struct {
     model: phaser.Model,
     request: calculation.Request,
@@ -215,6 +229,51 @@ test "staged and unstaged evaluation agree bitwise" {
         kernel_module.Status,
         &direct_statuses,
         &staged_statuses,
+    );
+}
+
+test "a parameter-stage division status survives binding" {
+    var fixture = try Fixture.init(divided_parameter_model, .value);
+    defer fixture.deinit();
+    var point = try parsePoint(zero_divisor_point);
+    defer point.deinit();
+    var binding = try kernel_module.bind(
+        std.testing.allocator,
+        &fixture.kernel,
+        &fixture.model,
+        &point,
+    );
+    defer binding.deinit();
+
+    var staged_values: [2]Scalar = undefined;
+    var staged_statuses: [2]kernel_module.Status = undefined;
+    try binding.evaluate(&.{}, 2, fixture.workspace, .{
+        .values = &staged_values,
+        .statuses = &staged_statuses,
+    });
+
+    var direct_values: [2]Scalar = undefined;
+    var direct_statuses: [2]kernel_module.Status = undefined;
+    try fixture.kernel.evaluate(
+        .{ .parameters = binding.parameters, .backgrounds = &.{} },
+        2,
+        fixture.workspace,
+        .{ .values = &direct_values, .statuses = &direct_statuses },
+    );
+
+    try std.testing.expectEqualSlices(Scalar, &direct_values, &staged_values);
+    try std.testing.expectEqualSlices(
+        kernel_module.Status,
+        &direct_statuses,
+        &staged_statuses,
+    );
+    try std.testing.expectEqual(
+        kernel_module.Status.division_by_zero,
+        staged_statuses[0],
+    );
+    try std.testing.expectEqual(
+        kernel_module.Status.division_by_zero,
+        staged_statuses[1],
     );
 }
 

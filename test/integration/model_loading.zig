@@ -162,6 +162,38 @@ test "persistent budget succeeds exactly and rejects one byte less" {
     );
 }
 
+test "scratch budget limits parser allocations rather than source length alone" {
+    const source = example_data.phi4_model;
+    var limits = phaser.ModelLimits{};
+    // The source itself fits exactly, but constructing the JSON tree requires
+    // additional temporary storage and must therefore hit the live budget.
+    limits.scratch_bytes = source.len;
+    const result = try phaser.loadModel(context(), .{
+        .source_id = try phaser.SourceId.fromUsize(0),
+        .bytes = source,
+    }, .{ .limits = limits });
+    var diagnostics = switch (result) {
+        .diagnostics => |value| value,
+        .model => |value| {
+            var owned = value;
+            defer owned.deinit();
+            return error.ExpectedCapacityFailure;
+        },
+    };
+    defer diagnostics.deinit();
+    try std.testing.expectEqual(
+        phaser.Code.capacity_exceeded,
+        diagnostics.items[0].code,
+    );
+    switch (diagnostics.items[0].detail) {
+        .capacity => |detail| try std.testing.expectEqual(
+            phaser.Resource.scratch_bytes,
+            detail.resource,
+        ),
+        else => return error.ExpectedCapacityDetail,
+    }
+}
+
 test "field array order changes semantic model identity" {
     const first_source =
         \\{"schema":"phaser.qft-model/0.1","spacetime_dimension":4,"conventions":{"metric":"mostly_plus","scalar_representation":"real_components","fermions":"two_component_weyl"},"parameters":{},"fields":{"real_scalars":[{"id":"a"},{"id":"b"}],"weyl_fermions":[],"gauge_vectors":[]},"tensors":{}}
