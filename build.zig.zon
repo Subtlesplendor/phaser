@@ -3,11 +3,18 @@
     .version = "0.0.0",
     .fingerprint = 0x600e59735a5c8b4c, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .minish = .{
+            .url = "https://github.com/CogitatorTech/minish/archive/refs/tags/v0.3.0.tar.gz",
+            .hash = "minish-0.3.0-SQtSTYI3AgCxWdWbKxS_lvmfbp0wJk29ZW5C9CozJaxm",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
         "test",
+        "examples",
+        "tools",
     },
 }

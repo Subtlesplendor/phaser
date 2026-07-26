@@ -32,6 +32,17 @@ The repository owner retains merge and release authority. An implementing agent
 MUST NOT merge a pull request, create a release or tag, publish an artifact, or
 change repository protection without explicit permission.
 
+Server-side branch protection requires a paid plan for a private repository and
+is currently unavailable. Local hooks in `.githooks/` refuse a commit or push on
+`main` in its place. They are advisory: enable them per clone with
+
+```sh
+git config core.hooksPath .githooks
+```
+
+A clone that has not done so is unprotected, and `--no-verify` bypasses them
+deliberately. They are a guard against mistakes, not an authorization boundary.
+
 Phaser initially uses squash merging. The resulting commit on `main` MUST
 describe one coherent change and preserve the pull request as the detailed
 review record.
@@ -257,9 +268,12 @@ Ordinary property tests are deterministic and bounded:
 Coverage-guided fuzzing may mutate the same Phaser-owned generators, but it does
 not replace deterministic property tests.
 
-Property generators remain behind Phaser-owned interfaces. Minish is not an
-approved dependency unless and until it passes the dependency process in
-[Phaser Engineering Style](ENGINEERING_STYLE.md#dependencies).
+Property generators remain behind the Phaser-owned harness in `test/property/`.
+Minish is the approved property-testing dependency, recorded in
+[decision 0004](docs/decisions/0004-property-testing-dependency.md).
+
+Property runs are bounded and cheap enough for every change, so `zig build test`
+includes them. A wider budget runs in the scheduled tier.
 
 ## 9. Toolchain, CI, and security
 

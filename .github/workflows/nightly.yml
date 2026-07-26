@@ -1,0 +1,147 @@
+name: Nightly
+
+# Scheduled fault-discovery campaigns on the default branch, specified by
+# DEVELOPMENT_WORKFLOW.md section 5.3.
+#
+# These are continuing campaigns, not retroactive evidence that an earlier merge
+# was approved without its required bounded checks. A failure here means a defect
+# to diagnose, not a merge to revert.
+on:
+  schedule:
+    # 02:30 UTC daily. Scheduled runs execute on the default branch only.
+    - cron: '30 2 * * *'
+  # Allow a manual run, so the tier can be exercised without waiting a day.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: Extended fuzz campaign
+    runs-on: ubuntu-24.04
+    # Bounded, per section 5.3's ten to thirty minute target, with headroom for
+    # the toolchain install and build.
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Zig toolchain
+        shell: bash
+        run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
+
+      - name: Record campaign metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "commit      ${GITHUB_SHA}"
+          echo "runner      ${RUNNER_OS} ${RUNNER_ARCH}"
+          echo "zig         $("$RUNNER_TEMP/zig/zig" version)"
+          echo "build_mode  ReleaseSafe"
+          echo "budget      2000000 iterations per target"
+
+      - name: Run extended fuzz campaign
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build fuzz -Doptimize=ReleaseSafe --fuzz=2M'
+
+      # A discovered failure is only useful with its input. Uploading it as a
+      # workflow artifact needs actions/upload-artifact, which is an external
+      # developer-tool dependency requiring its own approval under
+      # DEVELOPMENT_WORKFLOW.md section 9. Until that approval exists, a failure
+      # is reproduced from the logged seed and its minimized input is committed
+      # to test/corpus, which is the permanent record in any case.
+
+  property:
+    name: Extended property campaign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Zig toolchain
+        shell: bash
+        run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
+
+      - name: Run extended property campaign
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zig/zig" build test-property \
+            -Doptimize=ReleaseSafe -- --extended
+
+  allocation-failure:
+    name: Allocation failure and capacity campaign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Zig toolchain
+        shell: bash
+        run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
+
+      # The allocation-failure sweeps and exact-capacity tests live beside the
+      # code they cover, so a Debug run exercises them with leak detection and
+      # every safety check enabled.
+      - name: Run every tier in Debug
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zig/zig" build test -Doptimize=Debug
+          "$RUNNER_TEMP/zig/zig" build test-integration -Doptimize=Debug
+          "$RUNNER_TEMP/zig/zig" build test-conformance -Doptimize=Debug
+          "$RUNNER_TEMP/zig/zig" build test-differential -Doptimize=Debug
+
+  platforms:
+    name: Broader build modes (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86-64
+            runner: ubuntu-24.04
+          - name: macOS ARM64
+            runner: macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Zig toolchain
+        shell: bash
+        run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
+
+      - name: Test every build mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe ReleaseFast ReleaseSmall; do
+            "$RUNNER_TEMP/zig/zig" build test "-Doptimize=$mode"
+          done
+
+      - name: Record representative measurements
+        # Informational. A hosted runner is too noisy for a threshold, per
+        # DEVELOPMENT_WORKFLOW.md section 11.
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build bench'

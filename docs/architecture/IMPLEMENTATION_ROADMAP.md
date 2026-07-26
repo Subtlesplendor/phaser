@@ -272,6 +272,13 @@ recorded here rather than counted as verified.
   operation-aware comparison policy of
   [Potential Kernel §15.3](POTENTIAL_KERNEL.md) is not yet written.
 
+  This gap is now concrete rather than theoretical. The first metamorphic
+  property adopted after the milestone showed that relabelling model fields
+  preserves results only to floating-point rounding, because the transformation
+  changes canonical accumulation order and floating-point addition is not
+  associative. The property asserts a locally chosen tolerance because no declared
+  policy exists to appeal to.
+
 ### Known characteristics
 
 Not defects, but measured behavior a later milestone should know about.
@@ -286,6 +293,45 @@ Not defects, but measured behavior a later milestone should know about.
   costs about what it saves.
 
 ## 7. Milestone 3: zero-temperature one-loop scalar potential
+
+### Prerequisite: decide the independent oracle before implementing
+
+This decision MUST be made and recorded before Milestone 3 implementation
+begins.
+
+Milestone 2 could bootstrap its own oracle. Both conformance models are
+polynomials, so an exact identity could be transcribed by hand from the fixture
+and compared structurally, and the orbit coefficient was checkable by reading two
+files side by side.
+
+The one-loop potential admits no such transcription. It is a spectral sum over
+eigenvalues of a field-dependent matrix, with logarithms and a complex branch. The
+fixtures supply exact reference values at a handful of named points, which is
+necessary but not sufficient: the cases most likely to be wrong are exact
+degeneracy, negative mass-squared eigenvalues, and zero modes, and those are
+precisely where hand derivation is least reliable.
+
+The options are:
+
+- high-precision external computation stored as language-neutral reference data,
+  under the external-reference rules of
+  [Conformance Models](CONFORMANCE_MODELS.md);
+- the Wess-Zumino supertrace and vacuum-energy cancellations that
+  [Conformance Models §6](CONFORMANCE_MODELS.md) already specifies, which are
+  exact identities rather than sampled values; or
+- a combination, with the cancellations as the structural check and external data
+  for the numerical branch behavior.
+
+Either external option needs dependency approval and setup work. Discovering at
+the end of Milestone 3 that nothing independent exists to check against would be
+materially worse than the unreachable-requirement findings of Milestone 2,
+because a wrong spectral function produces entirely plausible numbers.
+
+A declared numerical-comparison policy is also required, as recorded under
+Milestone 2's requirements satisfied only trivially. The first metamorphic
+property showed that field relabelling preserves results only to floating-point
+rounding, so "agree" needs a defined meaning before it can be asserted across
+representations, platforms, or reference sources.
 
 ### Objective
 

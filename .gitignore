@@ -1,6 +1,8 @@
 # Zig build artifacts
 .zig-cache/
 zig-out/
+# Local dependency extraction directory
+zig-pkg/
 
 # macOS filesystem metadata
 .DS_Store
