@@ -1,12 +1,12 @@
-//! Bounded deterministic property-test campaign.
+//! Bounded property-test campaign.
 //!
 //! Runs as an executable rather than through the Zig test runner: the property
 //! framework reports progress unconditionally on the standard streams, which
 //! `ENGINEERING_STYLE.md` reserves for the build and test runners' coordination
 //! protocol.
 //!
-//! The budget is small enough to run on every change, which is the advantage
-//! property tests have over a fuzz campaign.
+//! Ordinary runs let Minish choose fresh seeds. A failure reports its seed and
+//! can be reproduced explicitly with `--seed`.
 
 const std = @import("std");
 const harness = @import("harness.zig");
@@ -20,24 +20,48 @@ pub fn main(init: std.process.Init) !void {
     defer arguments.deinit();
     _ = arguments.skip();
 
-    // The extended budget belongs to scheduled runs.
+    // The extended budget belongs to scheduled runs. Argument order does not
+    // matter: changing the run count preserves an explicitly requested replay
+    // seed.
     var budget = harness.standard;
     while (arguments.next()) |argument| {
         if (std.mem.eql(u8, argument, "--extended")) {
-            budget = harness.extended;
+            budget.runs = harness.extended.runs;
         } else if (std.mem.eql(u8, argument, "--smoke")) {
-            // One seed and a handful of runs, for diagnosing the harness itself.
-            budget = .{ .runs = 5, .seeds = &.{0x9e3779b97f4a7c15} };
+            budget.runs = 5;
+        } else if (std.mem.eql(u8, argument, "--seed")) {
+            const value = arguments.next() orelse {
+                printUsage();
+                return error.InvalidArguments;
+            };
+            budget.seed = std.fmt.parseInt(u64, value, 0) catch {
+                printUsage();
+                return error.InvalidArguments;
+            };
         } else {
-            std.debug.print("usage: phaser-property [--extended]\n", .{});
+            printUsage();
             return error.InvalidArguments;
         }
     }
 
-    std.debug.print(
-        "phaser properties: {d} seeds x {d} runs = {d} cases per property\n",
-        .{ budget.seeds.len, budget.runs, budget.cases() },
-    );
+    if (budget.seed) |seed| {
+        std.debug.print(
+            "phaser properties: replay seed {d}, {d} cases per property\n",
+            .{ seed, budget.cases() },
+        );
+    } else {
+        std.debug.print(
+            "phaser properties: {d} fresh cases per property; seeds are reported on failure\n",
+            .{budget.cases()},
+        );
+    }
     try properties.runAll(init.gpa, budget);
     std.debug.print("phaser properties: all properties held\n", .{});
+}
+
+fn printUsage() void {
+    std.debug.print(
+        "usage: phaser-property [--extended | --smoke] [--seed SEED]\n",
+        .{},
+    );
 }

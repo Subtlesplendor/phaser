@@ -1,6 +1,6 @@
 # Decision 0004: Minish as the property-testing dependency
 
-Status: accepted for Milestone 2, approved by the repository owner
+Status: accepted for Milestone 2; seed policy later amended by the repository owner
 
 ## Context
 
@@ -31,14 +31,15 @@ Phaser adopts Minish for property-based testing.
 - **Role**: test-only. It is not in the numerical data plane, so its allocation,
   threading, and floating-point behavior cannot affect a scientific result.
 
-The Phaser-owned harness enforces two policies Minish does not.
+The Phaser-owned harness leaves Minish's seed unspecified for ordinary runs.
+Minish derives a fresh seed from address-space layout for each process and
+reports it with every property failure, together with the failing and minimized
+inputs. The harness adds the remaining configuration the workflow requires:
+property name, run budget, build mode, and target.
 
-Seeds are always explicit. Minish derives a seed from address-space layout when
-none is supplied, which would make a pull-request run nondeterministic. Every
-budget in the harness carries fixed seeds and no path reaches Minish without one.
-
-Failures report the configuration the workflow requires: property name, seed,
-run budget, build mode, and target.
+An explicit seed is accepted only for an intentional reproduction run. Once the
+failure is understood, the minimized counterexample becomes a deterministic
+regression test rather than a permanently pinned property campaign.
 
 Property runs execute from a bounded campaign executable rather than the Zig test
 runner, because Minish reports progress unconditionally on the standard streams
@@ -61,8 +62,9 @@ maintaining one would spend effort where Phaser has no particular advantage.
 ## Consequences
 
 Property tests are cheap enough to run on every change, unlike a fuzz campaign,
-so `zig build test` includes them at a bounded budget of three fixed seeds and
-one hundred runs per property.
+so `zig build test` includes one hundred freshly seeded cases per property.
+Individual properties may use larger budgets when their input space and measured
+cost justify it, and scheduled runs use a wider general budget.
 
 The first metamorphic property adopted under this decision immediately showed
 that relabelling model fields preserves results only to floating-point rounding,

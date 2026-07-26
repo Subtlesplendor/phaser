@@ -44,8 +44,9 @@ properties, and fuzz targets.
 - Every discovered bug receives a minimized deterministic regression.
 - External software and published results are evidence, not unquestionable truth.
 - Golden files are reviewed regression artifacts, not sole scientific oracles.
-- Ordinary CI is deterministic, bounded, offline, and independent of licensed
-  software.
+- Ordinary CI is bounded, offline, and independent of licensed software.
+  Deterministic tiers are reproducible; randomized property failures report the
+  seed and minimized input required to reproduce them.
 - Fuzz targets check semantic properties and resource bounds, not only crashes.
 - Testability requirements influence production architecture from the beginning.
 
@@ -511,12 +512,12 @@ handling for these tiers are specified in
 
 ### 19.1 Per-change suite
 
-The default bounded deterministic suite SHOULD include:
+The default bounded suite SHOULD include:
 
 - unit tests;
 - regression corpora;
 - parser and model tests;
-- small deterministic property budgets;
+- small bounded property budgets with fresh seeds;
 - integration tests;
 - small language-neutral conformance models;
 - ABI header and smoke tests where the relevant artifacts exist;
@@ -531,7 +532,7 @@ Broader CI SHOULD include:
   safety-disabled leaf, optimized, or AOT execution path whose comparison is
   meaningful;
 - supported compiler and target combinations;
-- larger deterministic property budgets;
+- larger randomized property budgets;
 - saved fuzz corpora;
 - allocation-failure injection;
 - concurrency stress;

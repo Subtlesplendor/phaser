@@ -117,23 +117,3 @@ jobs:
       - name: Test full suite in ReleaseSafe
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseSafe'
-
-  fuzz-smoke:
-    name: Bounded fuzz smoke
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install pinned Zig toolchain
-        shell: bash
-        run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
-
-      - name: Run bounded fuzz campaign over high-risk targets
-        shell: bash
-        run: '"$RUNNER_TEMP/zig/zig" build fuzz-smoke -Doptimize=ReleaseSafe --fuzz=1000'

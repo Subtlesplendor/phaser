@@ -48,16 +48,19 @@ not acquire a network dependency or a nondeterministic input.
 
 ### The oracle
 
-Mutants are run against `zig build test-mutation`, which is `zig build test`
-without the fuzz tier:
+Mutants are run against `zig build test-mutation`, the deterministic subset of
+`zig build test`:
 
 - fuzz seed replay would add another test binary to every mutant's compile, and
   each mutant already pays for a rebuild; and
+- ordinary property campaigns choose a fresh seed, so including them could make
+  the same mutant survive or die for reasons unrelated to the source mutation;
+  deterministic tests of the property harness itself remain; and
 - a mutant killed only by a committed corpus entry says less about the
   deterministic suite than the same mutant surviving it.
 
 The step is a strict subset of `test`, so a mutation kill can never depend on a
-check the pull-request suite does not also run. Live fuzzing is untouched.
+check the pull-request suite does not also run.
 
 ### The tier
 

@@ -45,9 +45,9 @@ enabled = [
 ]
 
 [test]
-# `test` without the fuzz tier, per decision 0005. Fuzzing is deliberately not
-# part of the oracle: seed replay would add another test binary to every
-# mutant's cold-cache compile, and a campaign is far too slow to run per mutant.
+# The deterministic subset of `test`, per decision 0005. Fuzz replay would add
+# another test binary to every mutant's cold-cache compile, and freshly seeded
+# property campaigns could make mutation results vary between runs.
 commands = ["zig build test-mutation -Doptimize=Debug"]
 selection = "same_file_then_package"
 # One oracle run measures about 75 seconds on the supported macOS ARM64

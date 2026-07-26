@@ -5,17 +5,15 @@
 //! module rather than Minish directly, so the dependency stays behind a Phaser
 //! boundary and can be replaced without touching a single property.
 //!
-//! Two policies are enforced here rather than left to each caller.
+//! Ordinary campaigns deliberately leave the seed unspecified, so Minish
+//! chooses a fresh seed for each process and explores new cases on every run.
+//! Minish prints that seed, the failing input, and its shrunk form whenever a
+//! property fails. A seed is accepted here only for an intentional reproduction
+//! run; it is never part of a default budget.
 //!
-//! Seeds are always explicit. Minish derives a seed from address-space layout
-//! when none is given, which would make a pull-request run nondeterministic;
-//! `DEVELOPMENT_WORKFLOW.md` §8 requires fixed seed sets instead. Every budget
-//! below carries its seeds, and no code path reaches Minish without one.
-//!
-//! Failures report the configuration §8 requires: the property name, the seed
-//! that produced the failure, the run budget, the build mode, and the target.
-//! Minish prints the failing input and its shrunk form; this adds the context
-//! needed to reproduce the run rather than just the value.
+//! Failures add the configuration §8 requires: the property name, run budget,
+//! build mode, and target. Together with Minish's seed and minimized input, that
+//! is enough to reproduce the failure and turn it into a permanent regression.
 //!
 //! Properties run from a bounded campaign executable rather than from the Zig
 //! test runner, in the same way as the fuzz and benchmark drivers. Minish reports
@@ -30,42 +28,30 @@ const minish = @import("minish");
 pub const gen = minish.gen;
 pub const combinators = minish.combinators;
 
-/// A deterministic run budget.
+/// A bounded property-test budget.
 ///
 /// Property tests are cheap enough to run on every change, unlike a fuzz
 /// campaign, so the default budget is exercised by `zig build test`.
 pub const Budget = struct {
-    /// Randomized cases per seed.
+    /// Randomized cases for each property.
     runs: u32,
-    /// Fixed seeds. Every one is executed, so a property is checked
-    /// `runs * seeds.len` times in total.
-    seeds: []const u64,
+    /// Set only to reproduce a previously reported failure.
+    seed: ?u64 = null,
     max_shrink_attempts: u32 = 1000,
 
     pub fn cases(self: Budget) usize {
-        return @as(usize, self.runs) * self.seeds.len;
+        return self.runs;
     }
 };
 
 /// Budget for ordinary development and pull-request runs.
-///
-/// Three fixed seeds rather than one, because a single seed's stream can miss a
-/// whole region of the input space and the cost of two more is negligible.
 pub const standard = Budget{
     .runs = 100,
-    .seeds = &.{ 0x9e3779b97f4a7c15, 0x0123456789abcdef, 0xdeadbeefcafef00d },
 };
 
 /// Wider budget for scheduled runs, where a longer stream is affordable.
 pub const extended = Budget{
     .runs = 2000,
-    .seeds = &.{
-        0x9e3779b97f4a7c15,
-        0x0123456789abcdef,
-        0xdeadbeefcafef00d,
-        0x5851f42d4c957f2d,
-        0x14057b7ef767814f,
-    },
 };
 
 /// Checks `property` over values from `generator`.
@@ -79,21 +65,20 @@ pub fn check(
     property: anytype,
     budget: Budget,
 ) !void {
-    for (budget.seeds) |seed| {
-        minish.check(allocator, generator, property, .{
-            .num_runs = budget.runs,
-            .seed = seed,
-            .max_shrink_attempts = budget.max_shrink_attempts,
-        }) catch |err| {
-            reportFailure(name, seed, budget, err);
-            return err;
-        };
-    }
+    var options = minish.Options{
+        .num_runs = budget.runs,
+        .max_shrink_attempts = budget.max_shrink_attempts,
+    };
+    if (budget.seed) |seed| options.seed = seed;
+
+    minish.check(allocator, generator, property, options) catch |err| {
+        reportFailure(name, budget, err);
+        return err;
+    };
 }
 
 fn reportFailure(
     comptime name: []const u8,
-    seed: u64,
     budget: Budget,
     err: anyerror,
 ) void {
@@ -102,11 +87,10 @@ fn reportFailure(
         \\phaser property failure
         \\  property      {s}
         \\  error         {s}
-        \\  seed          0x{x:0>16}
-        \\  runs_per_seed {d}
+        \\  runs          {d}
         \\  build_mode    {s}
         \\  target        {s}-{s}
-        \\  reproduce     set the budget to a single seed 0x{x:0>16}
+        \\  reproduce     zig build test-property -- --seed <seed reported above>
         \\
         \\A minimized failure becomes a permanent regression test, per
         \\DEVELOPMENT_WORKFLOW section 8.
@@ -114,26 +98,21 @@ fn reportFailure(
     , .{
         name,
         @errorName(err),
-        seed,
         budget.runs,
         @tagName(builtin.mode),
         @tagName(builtin.cpu.arch),
         @tagName(builtin.os.tag),
-        seed,
     });
 }
 
-test "the standard budget is deterministic and nonempty" {
-    try std.testing.expect(standard.seeds.len >= 1);
-    try std.testing.expect(standard.runs >= 100);
-    try std.testing.expectEqual(@as(usize, 300), standard.cases());
+test "the standard budget runs one hundred fresh cases" {
+    try std.testing.expectEqual(@as(u32, 100), standard.runs);
+    try std.testing.expectEqual(@as(usize, 100), standard.cases());
+    try std.testing.expectEqual(@as(?u64, null), standard.seed);
 }
 
-test "every budget carries explicit seeds" {
-    // A budget without seeds would fall through to Minish's address-derived
-    // default, which is exactly the nondeterminism the policy forbids.
+test "default budgets leave seed selection to Minish" {
     for ([_]Budget{ standard, extended }) |budget| {
-        try std.testing.expect(budget.seeds.len != 0);
-        for (budget.seeds) |seed| try std.testing.expect(seed != 0);
+        try std.testing.expectEqual(@as(?u64, null), budget.seed);
     }
 }

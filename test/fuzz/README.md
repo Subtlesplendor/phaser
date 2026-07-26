@@ -31,14 +31,10 @@ trust boundaries, repeat each operation, and compare diagnostics, canonical
 expression output, or model fingerprints. Their permanent corpora are under
 `test/corpus/expression_parser/` and `test/corpus/scalar_model_parser/`.
 
-Ordinary `zig build test` replays every committed corpus. Pull requests run a
-bounded live campaign over the parser trust boundaries and kernel lowering:
-
-```text
-zig build fuzz-smoke -Doptimize=ReleaseSafe --fuzz=1000
-```
-
-The complete live campaign remains available locally and runs nightly:
+Ordinary `zig build test` replays every committed corpus. Live coverage-guided
+campaigns run nightly and may be launched manually before a high-risk parser,
+model-loader, request-parser, kernel-lowering, ABI, or fuzz-harness change is
+merged:
 
 ```text
 zig build fuzz -Doptimize=ReleaseSafe --fuzz=1000

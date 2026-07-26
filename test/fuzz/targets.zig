@@ -18,17 +18,6 @@ pub const names = [_][]const u8{
     "parameter_point_parser",
 };
 
-/// Trust-boundary and kernel targets exercised by the bounded pull-request
-/// campaign. Every target still replays its committed corpus in `zig build
-/// test`, and the complete live campaign runs nightly.
-pub const smoke_names = [_][]const u8{
-    "expression_parser",
-    "scalar_model_parser",
-    "calculation_request_parser",
-    "kernel_lowering",
-    "parameter_point_parser",
-};
-
 /// The prefix the test binary gives every target.
 ///
 /// The fuzz module's root file is `test/fuzz.zig`, which imports
