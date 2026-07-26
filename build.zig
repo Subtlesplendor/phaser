@@ -201,16 +201,26 @@ pub fn build(b: *std.Build) void {
     });
     const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
 
+    const test_core_step = b.step(
+        "test-core",
+        "Run deterministic tests without specialized campaigns",
+    );
+    test_core_step.dependOn(&run_unit_tests.step);
+    test_core_step.dependOn(&run_suite_tests.step);
+    test_core_step.dependOn(&run_fuzz_tests.step);
+
     const test_step = b.step("test", "Run all bounded deterministic tests");
-    test_step.dependOn(&run_unit_tests.step);
-    test_step.dependOn(&run_suite_tests.step);
-    test_step.dependOn(&run_fuzz_tests.step);
+    test_step.dependOn(test_core_step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_differential_tests.step);
     test_step.dependOn(&run_property_tests.step);
     test_step.dependOn(&run_property_campaign.step);
 
     const fuzz_step = b.step("fuzz", "Replay every fuzz target or run with --fuzz=N");
+    const fuzz_smoke_step = b.step(
+        "fuzz-smoke",
+        "Run live fuzzing for high-risk pull-request targets",
+    );
     for (fuzz_targets.names) |target_name| {
         const filtered_tests = b.addTest(.{
             .root_module = fuzz_module,
@@ -218,6 +228,9 @@ pub fn build(b: *std.Build) void {
         });
         const run_filtered_tests = b.addRunArtifact(filtered_tests);
         fuzz_step.dependOn(&run_filtered_tests.step);
+        if (containsName(&fuzz_targets.smoke_names, target_name)) {
+            fuzz_smoke_step.dependOn(&run_filtered_tests.step);
+        }
     }
 
     const example_module = b.createModule(.{
@@ -310,4 +323,11 @@ pub fn build(b: *std.Build) void {
         run_evaluate.addArg("--scan=0:0:600:13");
         examples_step.dependOn(&run_evaluate.step);
     }
+}
+
+fn containsName(names: []const []const u8, target: []const u8) bool {
+    for (names) |name| {
+        if (std.mem.eql(u8, name, target)) return true;
+    }
+    return false;
 }
