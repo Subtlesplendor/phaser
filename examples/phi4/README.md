@@ -26,7 +26,7 @@ zig build
 ./zig-out/bin/phaser export examples/phi4/model.json examples/phi4/request.json \
     --target=phaser --contributions --gradient
 ./zig-out/bin/phaser evaluate examples/phi4/model.json examples/phi4/request.json \
-    examples/phi4/point.json --outputs=hessian --scan=0:0:600:13
+    examples/phi4/point.json --outputs=hessian --format=tsv --scan=0:0:600:13
 ```
 
 ## What to look for

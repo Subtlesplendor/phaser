@@ -43,6 +43,13 @@ pub const Outputs = enum {
     }
 };
 
+pub const EvaluateFormat = enum {
+    /// Aligned columns intended for terminals and logs.
+    table,
+    /// Exact tab-separated values intended for downstream tools.
+    tsv,
+};
+
 pub const ExportOptions = struct {
     target: symbolic.Target = .phaser,
     /// Emit each contribution separately in addition to the total.
@@ -53,6 +60,7 @@ pub const ExportOptions = struct {
 
 pub const EvaluateOptions = struct {
     outputs: Outputs = .value,
+    format: EvaluateFormat = .table,
     /// Row-major background points, `point_count * coordinate_count` values.
     points: []const Scalar,
     point_count: usize,
@@ -221,8 +229,9 @@ pub fn exportSymbolic(
 
 /// Evaluates the potential at the supplied background points.
 ///
-/// The output is a header of comment lines followed by one tab-separated row per
-/// point, so it is readable in a terminal and directly loadable as sampled data.
+/// The output is a header of comment lines followed by one row per point.
+/// Human-readable aligned columns are the default; callers can request exact
+/// tab-separated values for downstream tools.
 pub fn evaluate(
     allocator: std.mem.Allocator,
     model_source: []const u8,
@@ -312,7 +321,42 @@ pub fn evaluate(
         return error.EvaluationFailed;
     };
 
-    try writeHeader(&artifact, &kernel, &binding, options, out);
+    try writeMetadata(&artifact, &binding, out);
+    switch (options.format) {
+        .table => try writeTable(
+            allocator,
+            &kernel,
+            options,
+            values,
+            gradients,
+            hessians,
+            statuses,
+            out,
+        ),
+        .tsv => try writeTsv(
+            &kernel,
+            options,
+            values,
+            gradients,
+            hessians,
+            statuses,
+            out,
+        ),
+    }
+}
+
+fn writeTsv(
+    kernel: *const kernel_module.Kernel,
+    options: EvaluateOptions,
+    values: []const Scalar,
+    gradients: []const Scalar,
+    hessians: []const Scalar,
+    statuses: []const kernel_module.Status,
+    out: *std.Io.Writer,
+) Error!void {
+    writeColumnNames(kernel, options, "\t", out) catch return error.WriteFailed;
+
+    const coordinates = kernel.coordinateCount();
     for (0..options.point_count) |index| {
         for (options.points[index * coordinates ..][0..coordinates]) |coordinate| {
             out.print("{d}\t", .{coordinate}) catch return error.WriteFailed;
@@ -334,11 +378,192 @@ pub fn evaluate(
     }
 }
 
-fn writeHeader(
-    artifact: *const calculation.Artifact,
+fn writeTable(
+    allocator: std.mem.Allocator,
     kernel: *const kernel_module.Kernel,
-    binding: *const kernel_module.Binding,
     options: EvaluateOptions,
+    values: []const Scalar,
+    gradients: []const Scalar,
+    hessians: []const Scalar,
+    statuses: []const kernel_module.Status,
+    out: *std.Io.Writer,
+) Error!void {
+    const coordinates = kernel.coordinateCount();
+    const hessian_columns = if (options.outputs == .hessian)
+        std.math.mul(usize, coordinates, coordinates) catch
+            return error.InvalidArguments
+    else
+        0;
+    const gradient_columns = if (options.outputs == .value) 0 else coordinates;
+    const numerical_columns = std.math.add(
+        usize,
+        std.math.add(usize, coordinates, 1) catch return error.InvalidArguments,
+        std.math.add(usize, gradient_columns, hessian_columns) catch
+            return error.InvalidArguments,
+    ) catch return error.InvalidArguments;
+    const column_count = std.math.add(usize, numerical_columns, 1) catch
+        return error.InvalidArguments;
+
+    const widths = try allocator.alloc(usize, column_count);
+    defer allocator.free(widths);
+
+    var column: usize = 0;
+    for (kernel.coordinates) |channel| {
+        widths[column] = channel.name.len;
+        column += 1;
+    }
+    widths[column] = "value".len;
+    column += 1;
+    if (options.outputs != .value) {
+        for (kernel.coordinates) |channel| {
+            widths[column] = std.fmt.count("dV/d{s}", .{channel.name});
+            column += 1;
+        }
+    }
+    if (options.outputs == .hessian) {
+        for (kernel.coordinates) |row| {
+            for (kernel.coordinates) |component| {
+                widths[column] = std.fmt.count(
+                    "d2V/d{s}d{s}",
+                    .{ row.name, component.name },
+                );
+                column += 1;
+            }
+        }
+    }
+    widths[column] = "status".len;
+    std.debug.assert(column + 1 == column_count);
+
+    for (0..options.point_count) |index| {
+        column = 0;
+        for (options.points[index * coordinates ..][0..coordinates]) |coordinate| {
+            widenForNumber(&widths[column], coordinate);
+            column += 1;
+        }
+        widenForNumber(&widths[column], values[index]);
+        column += 1;
+        if (options.outputs != .value) {
+            for (gradients[index * coordinates ..][0..coordinates]) |component| {
+                widenForNumber(&widths[column], component);
+                column += 1;
+            }
+        }
+        if (options.outputs == .hessian) {
+            const stride = coordinates * coordinates;
+            for (hessians[index * stride ..][0..stride]) |component| {
+                widenForNumber(&widths[column], component);
+                column += 1;
+            }
+        }
+        widths[column] = @max(widths[column], @tagName(statuses[index]).len);
+        std.debug.assert(column + 1 == column_count);
+    }
+
+    column = 0;
+    for (kernel.coordinates) |channel| {
+        try writeTableSeparator(column, out);
+        try writeRightAlignedText(channel.name, widths[column], out);
+        column += 1;
+    }
+    try writeTableSeparator(column, out);
+    try writeRightAlignedText("value", widths[column], out);
+    column += 1;
+    if (options.outputs != .value) {
+        for (kernel.coordinates) |channel| {
+            try writeTableSeparator(column, out);
+            const label_width = std.fmt.count("dV/d{s}", .{channel.name});
+            out.splatByteAll(' ', widths[column] - label_width) catch
+                return error.WriteFailed;
+            out.print("dV/d{s}", .{channel.name}) catch return error.WriteFailed;
+            column += 1;
+        }
+    }
+    if (options.outputs == .hessian) {
+        for (kernel.coordinates) |row| {
+            for (kernel.coordinates) |component| {
+                try writeTableSeparator(column, out);
+                const label_width = std.fmt.count(
+                    "d2V/d{s}d{s}",
+                    .{ row.name, component.name },
+                );
+                out.splatByteAll(' ', widths[column] - label_width) catch
+                    return error.WriteFailed;
+                out.print(
+                    "d2V/d{s}d{s}",
+                    .{ row.name, component.name },
+                ) catch return error.WriteFailed;
+                column += 1;
+            }
+        }
+    }
+    try writeTableSeparator(column, out);
+    try writeRightAlignedText("status", widths[column], out);
+    out.writeByte('\n') catch return error.WriteFailed;
+
+    for (widths, 0..) |width, index| {
+        try writeTableSeparator(index, out);
+        out.splatByteAll('-', width) catch return error.WriteFailed;
+    }
+    out.writeByte('\n') catch return error.WriteFailed;
+
+    for (0..options.point_count) |index| {
+        column = 0;
+        for (options.points[index * coordinates ..][0..coordinates]) |coordinate| {
+            try writeTableSeparator(column, out);
+            out.print("{d: >[1]}", .{ coordinate, widths[column] }) catch
+                return error.WriteFailed;
+            column += 1;
+        }
+        try writeTableSeparator(column, out);
+        out.print("{d: >[1]}", .{ values[index], widths[column] }) catch
+            return error.WriteFailed;
+        column += 1;
+        if (options.outputs != .value) {
+            for (gradients[index * coordinates ..][0..coordinates]) |component| {
+                try writeTableSeparator(column, out);
+                out.print("{d: >[1]}", .{ component, widths[column] }) catch
+                    return error.WriteFailed;
+                column += 1;
+            }
+        }
+        if (options.outputs == .hessian) {
+            const stride = coordinates * coordinates;
+            for (hessians[index * stride ..][0..stride]) |component| {
+                try writeTableSeparator(column, out);
+                out.print("{d: >[1]}", .{ component, widths[column] }) catch
+                    return error.WriteFailed;
+                column += 1;
+            }
+        }
+        try writeTableSeparator(column, out);
+        out.print(
+            "{s: >[1]}",
+            .{ @tagName(statuses[index]), widths[column] },
+        ) catch return error.WriteFailed;
+        out.writeByte('\n') catch return error.WriteFailed;
+    }
+}
+
+fn widenForNumber(width: *usize, value: Scalar) void {
+    width.* = @max(width.*, std.fmt.count("{d}", .{value}));
+}
+
+fn writeTableSeparator(column: usize, out: *std.Io.Writer) Error!void {
+    if (column != 0) out.writeAll("  ") catch return error.WriteFailed;
+}
+
+fn writeRightAlignedText(
+    text: []const u8,
+    width: usize,
+    out: *std.Io.Writer,
+) Error!void {
+    out.splatByteAll(' ', width - text.len) catch return error.WriteFailed;
+    out.writeAll(text) catch return error.WriteFailed;
+}
+
+fn writeMetadata(
+    artifact: *const calculation.Artifact,
+    binding: *const kernel_module.Binding,
     out: *std.Io.Writer,
 ) Error!void {
     out.writeAll("# phaser evaluate classical_scalar_potential\n") catch
@@ -355,28 +580,38 @@ fn writeHeader(
         "# loop_orders 0 through 0 contributions {d}\n",
         .{artifact.contributions.len},
     ) catch return error.WriteFailed;
+}
 
-    // Column names, so the rows are self-describing.
+fn writeColumnNames(
+    kernel: *const kernel_module.Kernel,
+    options: EvaluateOptions,
+    separator: []const u8,
+    out: *std.Io.Writer,
+) std.Io.Writer.Error!void {
+    var column: usize = 0;
     for (kernel.coordinates) |channel| {
-        out.print("{s}\t", .{channel.name}) catch return error.WriteFailed;
+        if (column != 0) try out.writeAll(separator);
+        try out.writeAll(channel.name);
+        column += 1;
     }
-    out.writeAll("value") catch return error.WriteFailed;
+    if (column != 0) try out.writeAll(separator);
+    try out.writeAll("value");
     if (options.outputs != .value) {
         for (kernel.coordinates) |channel| {
-            out.print("\tdV/d{s}", .{channel.name}) catch return error.WriteFailed;
+            try out.writeAll(separator);
+            try out.print("dV/d{s}", .{channel.name});
         }
     }
     if (options.outputs == .hessian) {
         for (kernel.coordinates) |row| {
-            for (kernel.coordinates) |column| {
-                out.print(
-                    "\td2V/d{s}d{s}",
-                    .{ row.name, column.name },
-                ) catch return error.WriteFailed;
+            for (kernel.coordinates) |component| {
+                try out.writeAll(separator);
+                try out.print("d2V/d{s}d{s}", .{ row.name, component.name });
             }
         }
     }
-    out.writeAll("\tstatus\n") catch return error.WriteFailed;
+    try out.writeAll(separator);
+    try out.writeAll("status\n");
 }
 
 /// Background dimension of the calculation the sources describe.

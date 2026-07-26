@@ -117,6 +117,9 @@ zig build
     examples/phi4/point.json --outputs=hessian --scan=0:0:600:13
 ```
 
+Evaluation output defaults to an aligned table for terminals and CI logs. Pass
+`--format=tsv` to emit exact tab-separated sampled data for downstream tools.
+
 Worked inputs and golden outputs live in [examples/phi4](examples/phi4/README.md)
 and [examples/multi_scalar](examples/multi_scalar/README.md).
 
