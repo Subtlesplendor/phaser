@@ -106,6 +106,10 @@ pub const Program = struct {
     constants: []const Scalar,
     outputs: Outputs,
     capability: Capability,
+    /// Number of leading instructions that depend only on constants and bound
+    /// parameters. The interpreter executes them once per binding rather than
+    /// once per point.
+    parameter_stage_count: u32,
     temporary_count: u32,
     parameter_count: u32,
     background_count: u32,
@@ -240,6 +244,7 @@ fn programForTest(
         .constants = constants,
         .outputs = outputs,
         .capability = .value,
+        .parameter_stage_count = 0,
         .temporary_count = temporary_count,
         .parameter_count = 2,
         .background_count = 1,

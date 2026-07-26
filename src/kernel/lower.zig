@@ -67,6 +67,7 @@ pub fn lower(
 
     try builder.collectRoots(request);
     try builder.markReachable();
+    try builder.classifyStages();
     try builder.assignSlots();
     try builder.emit();
 
@@ -83,6 +84,7 @@ pub fn lower(
         .outputs = outputs,
         .capability = request.capability,
         .temporary_count = builder.slot_count,
+        .parameter_stage_count = builder.parameter_stage_count,
         .parameter_count = request.parameter_count,
         .background_count = request.background_count,
         .coordinate_count = request.coordinate_count,
@@ -99,6 +101,10 @@ const Builder = struct {
     reachable: []bool = &.{},
     slots: []u32 = &.{},
     last_use: []usize = &.{},
+    /// True when a node depends, transitively, on a background coordinate and
+    /// must therefore be recomputed for every point.
+    background_dependent: []bool = &.{},
+    parameter_stage_count: u32 = 0,
     roots: std.ArrayList(ValueId) = .empty,
     instructions: std.ArrayList(Instruction) = .empty,
     constants: std.ArrayList(Scalar) = .empty,
@@ -109,6 +115,9 @@ const Builder = struct {
         if (self.reachable.len != 0) self.allocator.free(self.reachable);
         if (self.slots.len != 0) self.allocator.free(self.slots);
         if (self.last_use.len != 0) self.allocator.free(self.last_use);
+        if (self.background_dependent.len != 0) {
+            self.allocator.free(self.background_dependent);
+        }
         self.roots.deinit(self.allocator);
         self.instructions.deinit(self.allocator);
         self.constants.deinit(self.allocator);
@@ -153,6 +162,45 @@ const Builder = struct {
         }
     }
 
+    /// Classifies every reachable node by binding stage.
+    ///
+    /// A node is background dependent when it loads a coordinate or has any
+    /// background-dependent operand. Everything else depends only on constants
+    /// and bound parameters, so it can be computed once per binding instead of
+    /// once per point. Operands precede their consumers, so one ascending sweep
+    /// resolves the whole set.
+    fn classifyStages(self: *Builder) LowerError!void {
+        self.background_dependent = try self.allocator.alloc(bool, self.frontier);
+        @memset(self.background_dependent, false);
+
+        for (self.reachable, 0..) |included, index| {
+            if (!included) continue;
+            self.background_dependent[index] = switch (self.graph.values[index].node) {
+                .background => true,
+                .add, .multiply => |children| blk: {
+                    for (children) |child| {
+                        if (self.background_dependent[child.toUsize()]) break :blk true;
+                    }
+                    break :blk false;
+                },
+                .divide => |binary| self.background_dependent[binary.numerator.toUsize()] or
+                    self.background_dependent[binary.denominator.toUsize()],
+                .power => |power_node| self.background_dependent[power_node.base.toUsize()],
+                else => false,
+            };
+        }
+    }
+
+    /// Emission order: every parameter-stage node, then every
+    /// background-dependent node, each in ascending node order.
+    ///
+    /// This is a valid topological order because a parameter-stage node never
+    /// depends on a background-dependent one. Making the split contiguous is
+    /// what lets the interpreter execute the first section once per binding.
+    fn stageOf(self: *const Builder, index: usize) u1 {
+        return if (self.background_dependent[index]) 1 else 0;
+    }
+
     /// Computes the last instruction that reads each node, then assigns
     /// temporary slots with reuse. Output roots never die, so their slots stay
     /// live to the end.
@@ -162,47 +210,84 @@ const Builder = struct {
         self.slots = try self.allocator.alloc(u32, self.frontier);
         @memset(self.slots, 0);
 
-        // Emission order is ascending node index over the reachable set, so a
-        // node's position in that order is its instruction index.
         var position: usize = 0;
-        for (self.reachable, 0..) |included, index| {
-            if (!included) continue;
-            switch (self.graph.values[index].node) {
-                .add, .multiply => |children| {
-                    for (children) |child| self.last_use[child.toUsize()] = position;
-                },
-                .divide => |binary| {
-                    self.last_use[binary.numerator.toUsize()] = position;
-                    self.last_use[binary.denominator.toUsize()] = position;
-                },
-                .power => |power_node| self.last_use[power_node.base.toUsize()] = position,
-                else => {},
+        for ([_]u1{ 0, 1 }) |stage| {
+            for (self.reachable, 0..) |included, index| {
+                if (!included or self.stageOf(index) != stage) continue;
+                switch (self.graph.values[index].node) {
+                    .add, .multiply => |children| {
+                        for (children) |child| self.last_use[child.toUsize()] = position;
+                    },
+                    .divide => |binary| {
+                        self.last_use[binary.numerator.toUsize()] = position;
+                        self.last_use[binary.denominator.toUsize()] = position;
+                    },
+                    .power => |power_node| {
+                        self.last_use[power_node.base.toUsize()] = position;
+                    },
+                    else => {},
+                }
+                position += 1;
             }
-            position += 1;
+            if (stage == 0) self.parameter_stage_count = @intCast(position);
         }
+
         // An output is read by the caller after the last instruction.
         for (self.roots.items) |root| self.last_use[root.toUsize()] = position;
+
+        // A parameter-stage value consumed by the background section must
+        // survive every point, not just its first reader: the background
+        // section reruns per point while the parameter section does not.
+        for (self.reachable, 0..) |included, index| {
+            if (!included or self.background_dependent[index]) continue;
+            if (self.consumedByBackground(index)) self.last_use[index] = position;
+        }
+    }
+
+    fn consumedByBackground(self: *const Builder, produced: usize) bool {
+        for (self.reachable, 0..) |included, index| {
+            if (!included or !self.background_dependent[index]) continue;
+            const reads = switch (self.graph.values[index].node) {
+                .add, .multiply => |children| blk: {
+                    for (children) |child| {
+                        if (child.toUsize() == produced) break :blk true;
+                    }
+                    break :blk false;
+                },
+                .divide => |binary| binary.numerator.toUsize() == produced or
+                    binary.denominator.toUsize() == produced,
+                .power => |power_node| power_node.base.toUsize() == produced,
+                else => false,
+            };
+            if (reads) return true;
+        }
+        return false;
     }
 
     fn emit(self: *Builder) LowerError!void {
         var position: usize = 0;
-        for (self.reachable, 0..) |included, index| {
-            if (!included) continue;
-            if (self.instructions.items.len >= self.options.max_instructions) {
-                return error.CapacityExceeded;
+        for ([_]u1{ 0, 1 }) |stage| {
+            for (self.reachable, 0..) |included, index| {
+                if (!included or self.stageOf(index) != stage) continue;
+                if (self.instructions.items.len >= self.options.max_instructions) {
+                    return error.CapacityExceeded;
+                }
+                const id = ValueId.fromUsize(index) catch return error.CapacityExceeded;
+                const node = self.graph.values[index].node;
+
+                // Operands are read before the result is written, and the
+                // interpreter computes into a local before storing, so a result
+                // may safely reuse a slot that dies at this instruction.
+                try self.releaseExpired(node, position);
+                const result = try self.acquireSlot();
+                self.slots[index] = result;
+
+                try self.instructions.append(
+                    self.allocator,
+                    try self.select(node, result, id),
+                );
+                position += 1;
             }
-            const id = ValueId.fromUsize(index) catch return error.CapacityExceeded;
-            const node = self.graph.values[index].node;
-
-            // Operands are read before the result is written, and the
-            // interpreter computes into a local before storing, so a result may
-            // safely reuse a slot that dies at this instruction.
-            try self.releaseExpired(node, position);
-            const result = try self.acquireSlot();
-            self.slots[index] = result;
-
-            try self.instructions.append(self.allocator, try self.select(node, result, id));
-            position += 1;
         }
     }
 

@@ -48,6 +48,13 @@ pub const RequestSource = calculation.RequestSource;
 pub const parseRequest = calculation.parseRequest;
 pub const PotentialArtifact = calculation.Artifact;
 pub const deriveClassicalPotential = calculation.deriveClassicalPotential;
+pub const ParameterPoint = calculation.ParameterPoint;
+pub const PointSource = calculation.PointSource;
+pub const parseParameterPoint = calculation.parseParameterPoint;
+pub const PotentialKernel = kernel.Kernel;
+pub const Binding = kernel.Binding;
+pub const compileKernel = kernel.compile;
+pub const bindParameters = kernel.bind;
 
 test {
     _ = foundation;

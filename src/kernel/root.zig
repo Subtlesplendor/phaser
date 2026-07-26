@@ -4,6 +4,7 @@ pub const program = @import("program.zig");
 pub const lowering = @import("lower.zig");
 pub const interpreter = @import("interpret.zig");
 pub const potential = @import("potential.zig");
+pub const bindings = @import("binding.zig");
 
 pub const Scalar = program.Scalar;
 pub const Opcode = program.Opcode;
@@ -33,9 +34,16 @@ pub const Channel = potential.Channel;
 pub const CompileError = potential.CompileError;
 pub const compile = potential.compile;
 
+pub const Binding = bindings.Binding;
+pub const BindError = bindings.BindError;
+pub const bind = bindings.bind;
+pub const runParameterStage = interpreter.runParameterStage;
+pub const evaluateStaged = interpreter.evaluateStaged;
+
 test {
     _ = program;
     _ = lowering;
     _ = interpreter;
     _ = potential;
+    _ = bindings;
 }

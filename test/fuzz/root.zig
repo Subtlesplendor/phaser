@@ -881,6 +881,89 @@ fn fuzzKernel(_: void, smith: *std.testing.Smith) !void {
     }
 }
 
+test "parameter_point_parser" {
+    try std.testing.fuzz({}, fuzzParameterPoint, .{
+        .corpus = &.{
+            @embedFile("../corpus/parameter_point_parser/valid.json"),
+            @embedFile("../corpus/parameter_point_parser/scientific.json"),
+            @embedFile("../corpus/parameter_point_parser/invalid.json"),
+        },
+    });
+}
+
+fn fuzzParameterPoint(_: void, smith: *std.testing.Smith) !void {
+    const length = smith.valueRangeLessThan(u16, 0, 1025);
+    var bytes: [1024]u8 = undefined;
+    for (bytes[0..length]) |*byte| byte.* = smith.value(u8);
+
+    const context = switch (foundation.Context.init(std.testing.allocator, .{
+        .max_diagnostics = 8,
+        .max_related_locations = 8,
+    })) {
+        .context => |value| value,
+        .failure => unreachable,
+    };
+    const source = phaser.PointSource{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = bytes[0..length],
+    };
+
+    const first = try phaser.parseParameterPoint(context, source, .{});
+    const second = try phaser.parseParameterPoint(context, source, .{});
+
+    switch (first) {
+        .diagnostics => |value| {
+            var owned = value;
+            defer owned.deinit();
+            var other = switch (second) {
+                .diagnostics => |inner| inner,
+                .point => |point| {
+                    var owned_point = point;
+                    owned_point.deinit();
+                    return error.NondeterministicPointParse;
+                },
+            };
+            defer other.deinit();
+            try std.testing.expectEqual(owned.items.len, other.items.len);
+            for (owned.items, other.items) |expected, actual| {
+                try std.testing.expectEqual(expected.code, actual.code);
+            }
+        },
+        .point => |value| {
+            var owned = value;
+            defer owned.deinit();
+            var other = switch (second) {
+                .point => |inner| inner,
+                .diagnostics => |diagnostics| {
+                    var owned_diagnostics = diagnostics;
+                    owned_diagnostics.deinit();
+                    return error.NondeterministicPointParse;
+                },
+            };
+            defer other.deinit();
+
+            // Every accepted point is finite, positively scaled, sorted, and
+            // free of duplicate names.
+            try std.testing.expect(std.math.isFinite(owned.reference_scale));
+            try std.testing.expect(owned.reference_scale > 0);
+            for (owned.entries) |entry| {
+                try std.testing.expect(std.math.isFinite(entry.value));
+            }
+            if (owned.entries.len > 1) {
+                for (
+                    owned.entries[1..],
+                    owned.entries[0 .. owned.entries.len - 1],
+                ) |current, previous| {
+                    try std.testing.expect(
+                        std.mem.order(u8, previous.name, current.name) == .lt,
+                    );
+                }
+            }
+            try std.testing.expectEqual(owned.entries.len, other.entries.len);
+        },
+    }
+}
+
 fn expectSameDiagnostic(
     first: foundation.Diagnostic,
     second: foundation.Diagnostic,
