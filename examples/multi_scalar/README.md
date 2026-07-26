@@ -24,7 +24,7 @@ zig build
     examples/multi_scalar/request.json --target=phaser --contributions --gradient
 ./zig-out/bin/phaser evaluate examples/multi_scalar/model.json \
     examples/multi_scalar/request.json examples/multi_scalar/point.json \
-    --outputs=gradient --scan=0:0:600:13
+    --outputs=gradient --format=tsv --scan=0:0:600:13
 ```
 
 ## What to look for

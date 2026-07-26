@@ -60,7 +60,12 @@ fn renderEvaluate(
         model_source,
         request_source,
         point_source,
-        .{ .outputs = outputs, .points = points, .point_count = 13 },
+        .{
+            .outputs = outputs,
+            .format = .tsv,
+            .points = points,
+            .point_count = 13,
+        },
         &out.writer,
         &errors.writer,
     );
@@ -139,6 +144,35 @@ test "the multi-scalar scan reproduces its golden sampled data" {
     );
     defer out.deinit();
     try std.testing.expectEqualStrings(example_data.multi_scalar_scan, out.written());
+}
+
+test "the default evaluation format aligns exact values for human readers" {
+    const points = [_]f64{ 0, 50, 600 };
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer errors.deinit();
+
+    try commands.evaluate(
+        std.testing.allocator,
+        example_data.phi4_model,
+        example_data.phi4_request,
+        example_data.phi4_point,
+        .{ .outputs = .hessian, .points = &points, .point_count = points.len },
+        &out.writer,
+        &errors.writer,
+    );
+    try std.testing.expectEqualStrings("", errors.written());
+
+    const expected_table =
+        \\phi               value             dV/dphi  d2V/dphidphi  status
+        \\---  ------------------  ------------------  ------------  ------
+        \\  0                   0                   0       -7812.5      ok
+        \\ 50  -9697916.666666666  -385208.3333333333       -7487.5      ok
+        \\600            -2250000             4672500       38987.5      ok
+        \\
+    ;
+    try std.testing.expect(std.mem.endsWith(u8, out.written(), expected_table));
 }
 
 test "the inspect workflow reproduces its golden output" {

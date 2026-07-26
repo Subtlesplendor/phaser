@@ -29,6 +29,7 @@ const usage =
     \\
     \\Evaluate options:
     \\  --outputs=value|gradient|hessian   Requested outputs (default: value)
+    \\  --format=table|tsv                 Output format (default: table)
     \\  --point=A[,B...]                   One background point; repeatable
     \\  --scan=INDEX:FROM:TO:COUNT         Vary one coordinate, others at zero
     \\
@@ -129,6 +130,7 @@ fn run(
         const point_path = iterator.next() orelse return error.Usage;
 
         var outputs = commands.Outputs.value;
+        var format = commands.EvaluateFormat.table;
         var explicit: std.ArrayList(Scalar) = .empty;
         defer explicit.deinit(gpa);
         var explicit_points: usize = 0;
@@ -138,6 +140,10 @@ fn run(
             if (std.mem.startsWith(u8, argument, "--outputs=")) {
                 const name = argument["--outputs=".len..];
                 outputs = std.meta.stringToEnum(commands.Outputs, name) orelse
+                    return error.Usage;
+            } else if (std.mem.startsWith(u8, argument, "--format=")) {
+                const name = argument["--format=".len..];
+                format = std.meta.stringToEnum(commands.EvaluateFormat, name) orelse
                     return error.Usage;
             } else if (std.mem.startsWith(u8, argument, "--point=")) {
                 var values = std.mem.splitScalar(u8, argument["--point=".len..], ',');
@@ -196,7 +202,12 @@ fn run(
             model_source,
             request_source,
             point_source,
-            .{ .outputs = outputs, .points = points, .point_count = point_count },
+            .{
+                .outputs = outputs,
+                .format = format,
+                .points = points,
+                .point_count = point_count,
+            },
             out,
             errors,
         );
