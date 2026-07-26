@@ -1,0 +1,80 @@
+# Mutation-testing configuration, recorded in decision 0005.
+#
+# A mutant is a single-token edit to one library source file: `*` becomes `/`,
+# `==` becomes `!=`, a `>` boundary shifts. Zentinel applies one, re-runs the
+# oracle command below in an isolated workspace, and reports whether the suite
+# noticed. A surviving mutant marks a place where the deterministic suite runs a
+# line without constraining what it computes.
+#
+# Nothing here runs in the pull-request tier. See .github/workflows/nightly.yml.
+
+[project]
+name = "phaser"
+root = "."
+include = ["src/**/*.zig"]
+# `src/cli/main.zig` is argument plumbing around `src/cli/commands.zig`, which
+# is covered; process exit codes are exercised by the example workflows instead.
+exclude = [
+  ".zig-cache/**",
+  "zig-out/**",
+  "test/**",
+  "src/cli/main.zig",
+]
+
+[zig]
+version = "0.16.0"
+# Debug is the cheapest mode to compile and the strictest to run: a mutant that
+# trips a safety check is killed, which is the outcome this tier wants to count.
+modes = ["Debug"]
+
+[backend]
+default = "ast"
+experimental = []
+
+[mutators]
+# The stable operator set. Each one maps onto a mistake the exact arithmetic,
+# capacity, and comparison code in this repository can actually make, so none
+# are switched off.
+enabled = [
+  "arithmetic_add_sub",
+  "arithmetic_mul_div",
+  "equality_swap",
+  "comparison_boundary",
+  "logical_and_or",
+  "boolean_literal"
+]
+
+[test]
+# `test` without the fuzz tier, per decision 0005. Fuzzing is deliberately not
+# part of the oracle: seed replay would add another test binary to every
+# mutant's cold-cache compile, and a campaign is far too slow to run per mutant.
+commands = ["zig build test-mutation -Doptimize=Debug"]
+selection = "same_file_then_package"
+# One oracle run measures about 75 seconds on the supported macOS ARM64
+# development machine. The ceiling sits well above that so a slower hosted
+# runner reports a survivor honestly rather than a timeout.
+timeout_ms = 300000
+baseline_required = true
+
+[run]
+# Serial by default, so a local run competes with nothing. The nightly job
+# passes `--jobs 4`, which measured about 4.3x throughput on a 12-core
+# development machine because each worker spends most of its time compiling.
+jobs = 1
+
+[cache]
+enabled = true
+directory = ".zig-cache/zentinel"
+
+[report]
+formats = ["text", "json"]
+output_dir = "zig-out/zentinel"
+
+[ai]
+# Phaser's verification evidence is produced by the suite, not advised by a
+# model, and this tier must not acquire a network dependency.
+enabled = false
+provider = "disabled"
+remote_allowed = false
+source_context_lines = 4
+redact_patterns = ["(?i)api[_-]?key", "(?i)token"]

@@ -216,6 +216,27 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_property_tests.step);
     test_step.dependOn(&run_property_campaign.step);
 
+    // The oracle the mutation campaign runs against every mutant, per decision
+    // 0005. It is `test` without the fuzz tier, so it names the tiers directly
+    // rather than depending on `test-core`, which bundles fuzz replay in.
+    //
+    // Fuzzing is left out for two reasons. Seed replay would add another test
+    // binary to every mutant's cold-cache compile, and each mutant already pays
+    // for a full rebuild. And a mutant killed only by a corpus entry says less
+    // about the deterministic suite than the same mutant surviving it. The step
+    // stays a strict subset of `test`, so a mutation kill can never depend on a
+    // check the pull-request suite does not also run.
+    const test_mutation_step = b.step(
+        "test-mutation",
+        "Bounded oracle used by the mutation campaign (`test` without fuzzing)",
+    );
+    test_mutation_step.dependOn(&run_unit_tests.step);
+    test_mutation_step.dependOn(&run_suite_tests.step);
+    test_mutation_step.dependOn(&run_cli_tests.step);
+    test_mutation_step.dependOn(&run_differential_tests.step);
+    test_mutation_step.dependOn(&run_property_tests.step);
+    test_mutation_step.dependOn(&run_property_campaign.step);
+
     const fuzz_step = b.step("fuzz", "Replay every fuzz target or run with --fuzz=N");
     const fuzz_smoke_step = b.step(
         "fuzz-smoke",
@@ -300,6 +321,44 @@ pub fn build(b: *std.Build) void {
         "Inspect and stage generated fuzz corpus entries (list | stage)",
     );
     corpus_step.dependOn(&run_corpus.step);
+
+    // Mutation testing, recorded in decision 0005. Zentinel is a standalone
+    // client rather than a library: it copies the project into a per-worker
+    // workspace, edits one operator in one source file, and re-runs the oracle
+    // command from `zentinel.toml`. Building it from the pinned dependency
+    // rather than from whatever a runner has installed keeps the tool itself
+    // reproducible from the lockfile.
+    //
+    // The dependency is lazy, so `zig build`, `zig build test`, and every
+    // pull-request job resolve nothing here. Only this step fetches it, and
+    // only when it is the step that was asked for.
+    const mutation_step = b.step(
+        "mutation",
+        "Run the mutation campaign (`-- run --changed-only`, `-- list-mutants`, ...)",
+    );
+    if (b.lazyDependency("zentinel", .{
+        .target = target,
+        // The tool is not the thing under test, and every mutant pays for its
+        // speed, so it is built optimized regardless of the selected mode.
+        .optimize = .ReleaseSafe,
+    })) |zentinel| {
+        const run_zentinel = b.addRunArtifact(zentinel.artifact("zentinel"));
+        // It reads the working tree and writes reports and mutant workspaces,
+        // so it runs from the source directory and is never cacheable.
+        run_zentinel.setCwd(b.path("."));
+        run_zentinel.has_side_effects = true;
+        // A campaign is long enough that its progress must reach the terminal.
+        run_zentinel.stdio = .inherit;
+        if (b.args) |args| {
+            run_zentinel.addArgs(args);
+        } else {
+            // Survivors are reported, not failed on: a surviving mutant is
+            // evidence to read, and this experiment has agreed no threshold
+            // yet. See decision 0005.
+            run_zentinel.addArgs(&.{ "run", "--report", "text" });
+        }
+        mutation_step.dependOn(&run_zentinel.step);
+    }
 
     const examples_step = b.step("examples", "Run public example workflows");
     examples_step.dependOn(&run_model_inspection.step);

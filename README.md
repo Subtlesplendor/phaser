@@ -136,7 +136,36 @@ zig build test-conformance   # scientific conformance fixtures
 zig build fuzz               # replay corpora, or add --fuzz=N for a campaign
 zig build examples           # public example workflows
 zig build bench              # representative measurements (informational)
+zig build mutation           # mutation campaign (nightly tier; see below)
 ```
+
+## Mutation testing
+
+Line coverage says a test ran a line. Mutation testing says whether a test would
+notice if the line were wrong. `zig build mutation` builds the pinned Zentinel
+client and runs it over `src/`, applying one single-token change at a time and
+re-running the bounded suite against each.
+
+```sh
+zig build mutation -- list-mutants          # what would be mutated, no runs
+zig build mutation -- check                 # validate configuration only
+zig build mutation                          # the whole repository, hours
+```
+
+A mutant costs a full rebuild, so the whole repository takes hours. Scope a
+local run to one operator, which is what the nightly job does per rotation
+group:
+
+```sh
+zig build mutation -- run --operator comparison_boundary --jobs 4
+```
+
+The oracle is `zig build test-mutation`, which is `zig build test` without the
+fuzz tier; fuzzing is deliberately not part of this tier. The dependency is
+lazy, so no other build step or pull-request job fetches it, and nothing about
+mutation testing runs on a pull request. Configuration lives in `zentinel.toml`,
+and decision
+[0005](docs/decisions/0005-mutation-testing-dependency.md) records the rest.
 
 The C ABI and
 language bindings are not implemented yet.

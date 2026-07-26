@@ -97,6 +97,126 @@ jobs:
           "$RUNNER_TEMP/zig/zig" build test-property \
             -Doptimize=ReleaseSafe -- --extended
 
+  mutation:
+    name: Mutation campaign (rotation group)
+    runs-on: ubuntu-24.04
+    # A mutant costs a full cold-cache rebuild of the oracle, so this tier is
+    # sized by the rotation in tools/ci/mutation_rotation.sh rather than by the
+    # clock. The ceiling is deliberately far above the expected cost: the first
+    # scheduled runs are themselves the measurement that sets GROUP_COUNT, and a
+    # campaign cut off mid-run reports nothing useful. See decision 0005.
+    timeout-minutes: 120
+
+    env:
+      # Nights needed for one full pass over every mutant. Raise it if a night
+      # runs long; the rotation rebalances itself from the mutant listing.
+      GROUP_COUNT: 14
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Zig toolchain
+        shell: bash
+        run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
+
+      # Generating the listing also builds the pinned zentinel from source, so a
+      # tool or configuration fault fails here rather than after an hour of
+      # mutation runs.
+      - name: List mutants and validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zig/zig" build mutation -- check
+          "$RUNNER_TEMP/zig/zig" build mutation -- list-mutants --format text \
+            > "$RUNNER_TEMP/mutants.txt"
+          echo "total mutants: $(wc -l < "$RUNNER_TEMP/mutants.txt")"
+
+      - name: Plan tonight's rotation group
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Day of the year, forced to base ten so 08 and 09 are not read as
+          # invalid octal. Scheduled runs are daily, so consecutive nights take
+          # consecutive groups and a full pass completes every GROUP_COUNT days.
+          index=$(( 10#$(date -u +%j) % GROUP_COUNT ))
+          echo "MUTATION_GROUP_INDEX=$index" >> "$GITHUB_ENV"
+          tools/ci/mutation_rotation.sh \
+            zentinel.toml "$GROUP_COUNT" "$index" .zentinel-rotation \
+            > "$RUNNER_TEMP/plan.txt"
+          echo "--- plan ---"
+          cat "$RUNNER_TEMP/plan.txt"
+
+      # Survivors do not fail the job. A surviving mutant is evidence about the
+      # suite to read and act on, not a regression in the commit under test, and
+      # this tier has agreed no survivor threshold yet. `--fail-on-survivors` is
+      # deliberately absent; zentinel still exits non-zero if the baseline fails
+      # or the tool itself errors, which does fail the job.
+      - name: Run the rotation group
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p zig-out/zentinel
+          while read -r operator config count; do
+            echo "::group::$operator ($count mutants)"
+            "$RUNNER_TEMP/zig/zig" build mutation -- \
+              --config "$config" run \
+              --operator "$operator" \
+              --jobs 4 \
+              --report text \
+              --output "zig-out/zentinel/$operator.json" \
+              | tee "zig-out/zentinel/$operator.txt"
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/plan.txt"
+
+      # A survivor is only useful with the file and line it survived at, and the
+      # runner is discarded when the job ends. The text report already names
+      # every survivor, so carrying it out in the job log and the run summary
+      # needs no workflow artifact, matching how the fuzz job reports a crashing
+      # input.
+      - name: Report survivors
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          reports=(zig-out/zentinel/*.txt)
+          if (( ${#reports[@]} == 0 )); then
+            echo "No mutation reports were produced; read the campaign log above."
+            exit 0
+          fi
+
+          # The text report lists each surviving mutant as
+          # `survived <operator> <path>:<line>` and ends with a
+          # `N mutants: K killed, S survived` line per operator.
+          echo "--- per-operator totals ---"
+          grep -h 'mutants:' "${reports[@]}" || true
+          echo "--- survivors ---"
+          grep -h '^survived' "${reports[@]}" || echo "No survivors."
+
+          {
+            echo "## Mutation rotation group ${MUTATION_GROUP_INDEX} of ${GROUP_COUNT}"
+            echo
+            echo '```text'
+            grep -h 'mutants:' "${reports[@]}" || true
+            echo '```'
+            echo
+            echo "### Survivors"
+            echo
+            echo '```text'
+            grep -h '^survived' "${reports[@]}" || echo "No survivors."
+            echo '```'
+            echo
+            echo "A survivor is a mutation the bounded suite did not notice."
+            echo "Reproduce one locally with:"
+            echo
+            echo '```sh'
+            echo "zig build mutation -- --config CONFIG run --operator OPERATOR"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   allocation-failure:
     name: Allocation failure and capacity campaign
     runs-on: ubuntu-24.04
