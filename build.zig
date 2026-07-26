@@ -166,7 +166,7 @@ pub fn build(b: *std.Build) void {
 
     const test_property_step = b.step(
         "test-property",
-        "Run bounded deterministic property tests",
+        "Run bounded property tests",
     );
     test_property_step.dependOn(&run_property_tests.step);
     test_property_step.dependOn(&run_property_campaign.step);
@@ -209,7 +209,7 @@ pub fn build(b: *std.Build) void {
     test_core_step.dependOn(&run_suite_tests.step);
     test_core_step.dependOn(&run_fuzz_tests.step);
 
-    const test_step = b.step("test", "Run all bounded deterministic tests");
+    const test_step = b.step("test", "Run all bounded tests");
     test_step.dependOn(test_core_step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_differential_tests.step);
@@ -217,31 +217,29 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_property_campaign.step);
 
     // The oracle the mutation campaign runs against every mutant, per decision
-    // 0005. It is `test` without the fuzz tier, so it names the tiers directly
-    // rather than depending on `test-core`, which bundles fuzz replay in.
+    // 0005. It is `test` without randomized campaigns, so it names the
+    // deterministic tiers directly rather than depending on `test-core`, which
+    // bundles fuzz replay in.
     //
     // Fuzzing is left out for two reasons. Seed replay would add another test
     // binary to every mutant's cold-cache compile, and each mutant already pays
     // for a full rebuild. And a mutant killed only by a corpus entry says less
     // about the deterministic suite than the same mutant surviving it. The step
     // stays a strict subset of `test`, so a mutation kill can never depend on a
-    // check the pull-request suite does not also run.
+    // check the pull-request suite does not also run. The property harness tests
+    // remain, but the randomized property campaign does not: a mutant must not
+    // be killed or survive because Minish happened to choose a different seed.
     const test_mutation_step = b.step(
         "test-mutation",
-        "Bounded oracle used by the mutation campaign (`test` without fuzzing)",
+        "Deterministic oracle used by the mutation campaign",
     );
     test_mutation_step.dependOn(&run_unit_tests.step);
     test_mutation_step.dependOn(&run_suite_tests.step);
     test_mutation_step.dependOn(&run_cli_tests.step);
     test_mutation_step.dependOn(&run_differential_tests.step);
     test_mutation_step.dependOn(&run_property_tests.step);
-    test_mutation_step.dependOn(&run_property_campaign.step);
 
     const fuzz_step = b.step("fuzz", "Replay every fuzz target or run with --fuzz=N");
-    const fuzz_smoke_step = b.step(
-        "fuzz-smoke",
-        "Run live fuzzing for high-risk pull-request targets",
-    );
     for (fuzz_targets.names) |target_name| {
         const filtered_tests = b.addTest(.{
             .root_module = fuzz_module,
@@ -249,9 +247,6 @@ pub fn build(b: *std.Build) void {
         });
         const run_filtered_tests = b.addRunArtifact(filtered_tests);
         fuzz_step.dependOn(&run_filtered_tests.step);
-        if (containsName(&fuzz_targets.smoke_names, target_name)) {
-            fuzz_smoke_step.dependOn(&run_filtered_tests.step);
-        }
     }
 
     const example_module = b.createModule(.{
@@ -382,11 +377,4 @@ pub fn build(b: *std.Build) void {
         run_evaluate.addArg("--scan=0:0:600:13");
         examples_step.dependOn(&run_evaluate.step);
     }
-}
-
-fn containsName(names: []const []const u8, target: []const u8) bool {
-    for (names) |name| {
-        if (std.mem.eql(u8, name, target)) return true;
-    }
-    return false;
 }

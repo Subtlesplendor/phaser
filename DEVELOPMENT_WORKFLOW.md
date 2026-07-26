@@ -107,12 +107,11 @@ Conceptually, a change is checked through:
 
 1. formatting and static build checks;
 2. bounded deterministic tests;
-3. relevant property and metamorphic tests;
+3. relevant bounded property and metamorphic tests;
 4. regression-corpus replay;
-5. a bounded live fuzz campaign where applicable;
-6. examples and public-interface checks;
-7. required native build modes and platforms; and
-8. performance measurement where the change affects a hot path.
+5. examples and public-interface checks;
+6. required native build modes and platforms; and
+7. performance measurement where the change affects a hot path.
 
 Tests are not automatically retried. A flaky test is a defect to diagnose, not a
 condition to mask.
@@ -122,7 +121,7 @@ condition to mask.
 ### 5.1 Local fast checks
 
 During development, run formatting, affected unit and integration tests,
-deterministic property cases, and the relevant permanent regression corpus.
+bounded property cases, and the relevant permanent regression corpus.
 Before requesting review, run the complete bounded per-change suite when
 practical.
 
@@ -131,7 +130,7 @@ practical.
 Every implementation pull request runs:
 
 - the bounded unit, integration, and regression suites;
-- small deterministic property budgets;
+- small bounded property budgets with fresh seeds;
 - the relevant conformance fixtures and examples;
 - Debug and ReleaseSafe behavior;
 - ReleaseFast differential behavior once a ReleaseFast, safety-disabled leaf,
@@ -139,11 +138,11 @@ Every implementation pull request runs:
 - public header and client smoke tests once those surfaces exist; and
 - replay of every committed fuzz and regression input.
 
-A separate bounded fuzz-smoke job runs applicable changed or high-risk targets.
-Its explored paths need not be deterministic, but its maximum work is bounded
-and every discovered failure must be reproducible from the saved input. Finding
-a failure fails the pull request. Exhausting the declared budget without finding
-one succeeds but does not claim that fuzzing is complete.
+Live coverage-guided fuzzing does not run as a required pull-request check. Every
+committed fuzz input is still replayed before merge. Changes to a high-risk
+parser, model loader, request parser, kernel lowering, ABI boundary, or fuzz
+harness SHOULD receive a manually launched campaign before merge; nightly
+campaigns continuously cover the complete target set.
 
 The pull-request matrix covers these concerns without taking their full Cartesian
 product. Linux x86-64 runs the deterministic core in Debug, the complete bounded
@@ -158,7 +157,7 @@ pull-request matrix.
 
 Scheduled checks on the latest `main` include:
 
-- larger deterministic property budgets;
+- larger randomized property budgets;
 - multi-core coverage-guided and stateful fuzzing;
 - representative allocation-failure and exact-capacity campaigns at ownership,
   publication, and workspace boundaries;
@@ -181,9 +180,9 @@ full pass completes every two weeks. Assignment deliberately ignores how large a
 cell is, which leaves groups uneven: a cell's group must not depend on what else
 exists, or the schedule reshuffles faster than it advances and stops visiting
 every cell at all. New sources join the rotation without displacing anything.
-Mutation runs use
-`zig build test-mutation` as their oracle, which is the bounded suite without
-the fuzz tier, and they do not fail on survivors. Decision
+Mutation runs use `zig build test-mutation` as their oracle, which contains only
+deterministic tiers: it excludes fuzz replay and the randomized property
+campaign. Mutation runs do not fail on survivors. Decision
 [0005](docs/decisions/0005-mutation-testing-dependency.md) records why.
 
 A surviving mutant is a standing property of the test suite, not a regression in
@@ -305,18 +304,22 @@ uploaded artifact.
 
 ## 8. Property-based testing
 
-Ordinary property tests are deterministic and bounded:
+Ordinary property tests are randomized and bounded:
 
-- pull-request runs use fixed seed sets and size limits;
-- scheduled runs use larger or rotating recorded seed sets;
-- failures report the seed, generator version, generator configuration, build
-  mode, target, and failing property;
+- ordinary and pull-request runs leave the seed unspecified so each invocation
+  explores a fresh stream;
+- the standard budget is 100 cases per property, with larger per-property
+  budgets used where the input space justifies their cost;
+- scheduled runs use larger case budgets;
+- failures report the selected seed, generator version, generator configuration,
+  build mode, target, and failing property;
+- an explicit seed is used only to reproduce a reported failure;
 - shrinking preserves the original failure until the minimized case is known;
   and
 - minimized failures become permanent regression fixtures.
 
 Coverage-guided fuzzing may mutate the same Phaser-owned generators, but it does
-not replace deterministic property tests.
+not replace bounded property tests.
 
 Property generators remain behind the Phaser-owned harness in `test/property/`.
 Minish is the approved property-testing dependency, recorded in

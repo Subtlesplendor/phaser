@@ -321,10 +321,11 @@ invariant interaction from representation data instead of generating arbitrary
 components and rejecting nearly every sample. Also generate near-valid objects to
 exercise each validation boundary.
 
-All property failures record a seed. Shrunk failures become ordinary regression
-tests. The harness always supplies an explicit seed; a framework default derived
-from address-space layout is not acceptable, because a pull-request run must be
-reproducible.
+Ordinary property campaigns do not pin a seed. Each run explores a fresh stream,
+and every failure reports the selected seed and shrunk input so it can be
+reproduced deliberately. The minimized counterexample then becomes an ordinary
+deterministic regression test; permanent coverage does not depend on repeatedly
+running the random seed that first found it.
 
 ### Ownership and lifetime tests
 
@@ -380,23 +381,12 @@ Fuzz targets must check more than crashes. They also check:
 - Agreement between independent implementations.
 - Invariants before and after every transformation.
 
-Run a small deterministic fuzz budget on each change, longer multi-core fuzzing in
-scheduled CI, and indefinite fuzzing where resources permit. Preserve every crash
-input and run the saved corpus in normal CI.
-
-TODO: the scheduled tier does not exist yet. Only the per-change smoke budget
-runs, at 1000 iterations per target, which is far below saturation: raising a
-measurement run to 20000 iterations per target still produced two to four times
-more unique runs and new coverage on every target, so the per-change job is on
-the steep part of the curve and is not expected to find defects. Outstanding
-work, specified by
-[Development Workflow](DEVELOPMENT_WORKFLOW.md#53-nightly-checks):
-
-- add the scheduled nightly workflow with its 10 to 30 minute budget, including
-  the allocation-failure and exact-capacity campaigns;
-- measure the iteration count that fits that budget rather than guessing it; and
-- add per-target build steps, since `zig build fuzz` currently runs every target
-  and cannot select one, which the weekly per-target campaigns require.
+Replay every saved corpus input on each change. Live coverage-guided fuzzing runs
+in nightly or manually launched campaigns, where its exploration budget is large
+enough to justify the instrumented builds. A high-risk parser, model-loader,
+request-parser, kernel-lowering, ABI, or fuzz-harness change SHOULD receive a
+manual campaign before merge. Preserve every crash input and run the saved corpus
+in normal CI.
 
 ### Differential and metamorphic tests
 
@@ -848,7 +838,9 @@ zig build bench
 ```
 
 The exact steps are added only when they run real work. The default `test` step
-must run all bounded deterministic tests suitable for ordinary development.
+must run all bounded tests suitable for ordinary development. Deterministic
+suites remain reproducible; randomized property failures report enough state to
+reproduce and minimize the counterexample.
 
 Tests write diagnostics through the test facilities rather than ordinary standard
 output, because the Zig build runner and test runner use standard streams for

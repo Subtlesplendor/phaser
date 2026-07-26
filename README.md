@@ -27,7 +27,7 @@ Build the static library:
 zig build
 ```
 
-Run the bounded deterministic suite in the two supported development modes:
+Run the bounded suite in the two supported development modes:
 
 ```text
 zig build test -Doptimize=Debug
@@ -82,8 +82,8 @@ Zig 0.16.0's live fuzzer currently requires ReleaseSafe on the supported macOS
 ARM64 toolchain because its Debug test runner fails to compile before the target
 executes. Ordinary seed replay remains part of both Debug and ReleaseSafe tests.
 
-The expression, JSON, and scalar-model fuzz targets replay permanent seeds in
-the default suite. Live fuzzing remains a separately bounded campaign.
+Every fuzz target replays its permanent corpus in the default suite. Live
+coverage-guided fuzzing runs nightly or as a manually launched campaign.
 
 ## Current scope
 
@@ -101,7 +101,8 @@ Milestones 0 and 1 provide:
 - deterministic SHA-256 model fingerprints and inspection output;
 - public phi4 and multi-scalar examples;
 - expression, JSON, scalar-model, and capacity fuzz targets; and
-- Debug, ReleaseSafe, and bounded fuzz CI on the required native platforms.
+- Debug and ReleaseSafe CI on the required native platforms, with live fuzzing
+  in nightly and manually launched campaigns.
 
 Milestone 2 adds the tree-level vertical slice: calculation requests, the
 classical-potential artifact with exact gradients and Hessians, symbolic export
@@ -129,14 +130,21 @@ git config core.hooksPath .githooks
 Build steps:
 
 ```sh
-zig build test               # all bounded deterministic tests
-zig build test-property      # bounded deterministic property tests
+zig build test               # all bounded tests
+zig build test-property      # 100 freshly seeded cases per property
 zig build test-differential  # independent implementations of the same quantity
 zig build test-conformance   # scientific conformance fixtures
 zig build fuzz               # replay corpora, or add --fuzz=N for a campaign
 zig build examples           # public example workflows
 zig build bench              # representative measurements (informational)
 zig build mutation           # mutation campaign (nightly tier; see below)
+```
+
+Ordinary property runs do not pin a seed. If a property fails, Minish prints the
+selected seed and minimized input; reproduce that stream with:
+
+```sh
+zig build test-property -- --seed SEED
 ```
 
 ## Mutation testing
@@ -160,11 +168,11 @@ group:
 zig build mutation -- run --operator comparison_boundary --jobs 4
 ```
 
-The oracle is `zig build test-mutation`, which is `zig build test` without the
-fuzz tier; fuzzing is deliberately not part of this tier. The dependency is
-lazy, so no other build step or pull-request job fetches it, and nothing about
-mutation testing runs on a pull request. Configuration lives in `zentinel.toml`,
-and decision
+The oracle is `zig build test-mutation`, the deterministic subset of
+`zig build test`; fuzz replay and freshly seeded property campaigns are
+deliberately not part of this tier. The dependency is lazy, so no other build
+step or pull-request job fetches it, and nothing about mutation testing runs on
+a pull request. Configuration lives in `zentinel.toml`, and decision
 [0005](docs/decisions/0005-mutation-testing-dependency.md) records the rest.
 
 The C ABI and
