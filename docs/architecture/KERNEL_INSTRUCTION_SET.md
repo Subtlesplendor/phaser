@@ -133,6 +133,24 @@ contract. It MUST NOT pass through a less capable intermediate representation.
 Conversion happens at lowering, never during evaluation. Evaluation therefore
 performs no exact arithmetic.
 
+### 6.1 Milestone 2 conversion policy
+
+A rational converts by rounding its numerator and its denominator each through
+the correctly rounded decimal-to-`f64` path, then performing one rounded
+division. The result is therefore within 1.5 units in the last place of the
+exact value.
+
+Conversion fails when either part overflows to infinity, when a nonzero part
+underflows to zero, or when the quotient does. A rational whose parts are
+individually outside the representable range but whose quotient would be
+representable is consequently rejected rather than approximated. Rejecting a
+representable value is a conservative failure and is preferred to returning a
+value the policy cannot justify.
+
+Exactly rounded conversion of arbitrary big rationals is deferred. It becomes
+necessary only when a supported model produces coefficients outside the range
+this policy accepts.
+
 ## 7. Workspace
 
 A kernel answers an exact workspace query before execution:
@@ -149,6 +167,12 @@ For the Milestone 2 serial reference backend the requirement is
 bytes     = temporary_slot_count * @sizeOf(f64)
 alignment = @alignOf(f64)
 ```
+
+Lowering assigns temporary slots with live-range reuse, so the slot count is
+generally smaller than the instruction count. Workspace is accepted as an
+unaligned byte slice and its alignment is checked at the call boundary rather
+than assumed from its type, because alignment is a contract a foreign caller
+can violate.
 
 independent of `point_count`, because the reference backend evaluates points one
 at a time and reuses the same temporaries. Callers MUST NOT rely on that
