@@ -233,21 +233,44 @@ For every failure:
 1. Preserve the original input and campaign metadata.
 2. Reproduce it using the pinned toolchain and recorded configuration.
 3. Minimize the input where practical without losing the failure.
-4. Add the minimized input to `test/corpus/<target>/`.
+4. Add the minimized input to `test/corpus/<target>/` and to that target's
+   `.corpus` list, so ordinary pull-request runs replay it.
 5. Add a separate focused deterministic regression test when it materially
    improves locality, clarity, or execution cost; the minimized corpus input may
    itself be the regression.
 6. Correct the defect without weakening the originating property.
 7. Rerun the original target and the broader affected suite.
 
-The original CI input and logs are uploaded as temporary workflow artifacts when
-possible. Workflow artifacts are not the permanent record: the minimized input,
-reproduction metadata, and regression remain in the repository.
+A campaign that crashes leaves the input in the build cache at `f/crash`, in the
+same format a committed corpus entry uses. Scheduled campaigns print it
+base64-encoded into the job log, because a hosted runner is discarded when the
+job ends. That log is the reproduction path, not the record: the minimized input,
+reproduction metadata, and regression remain in the repository. No workflow
+artifact is uploaded, and none would be the permanent record if one were.
 
 Regression corpora only shrink under the redundancy rule in
 [Verification and Testing](docs/architecture/VERIFICATION_AND_TESTING.md#18-golden-files-and-regression-corpora).
 Coverage-increasing nonfailure corpora MAY be curated periodically, but generated
 corpus growth is not committed automatically.
+
+Curation is local and deliberate. The toolchain accumulates a coverage-guided
+corpus in the build cache and only across runs that preserve it, so a hosted
+runner begins every campaign from the committed corpus alone. Restoring a
+generated corpus into CI is deliberately not done: it would make a scheduled
+failure depend on unreviewed binary state that no commit describes, when the
+reproducibility the workflow promises rests on commit, toolchain, and recorded
+configuration. Growing the permanent corpus therefore means running a long local
+campaign with the cache preserved and reviewing what it found:
+
+```sh
+zig build fuzz -Doptimize=ReleaseSafe --fuzz=2M
+zig build corpus -- list
+zig build corpus -- stage
+```
+
+`zig build corpus` reports what the cache holds against what the repository
+commits and writes uncommitted inputs to a scratch directory. It never writes
+into `test/corpus/`; an input becomes permanent by the judgment above.
 
 Fuzz jobs use only repository fixtures or generated data. Private user models,
 credentials, tokens, and unrelated host data MUST NOT enter a corpus, log, or

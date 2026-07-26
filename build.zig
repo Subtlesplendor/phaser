@@ -1,6 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// The fuzz target names live beside the targets themselves so that the build
+// graph, the corpus tool, and the targets cannot disagree about them.
+const fuzz_targets = @import("test/fuzz/targets.zig");
+
 const required_zig_version = std.SemanticVersion{
     .major = 0,
     .minor = 16,
@@ -207,17 +211,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_property_campaign.step);
 
     const fuzz_step = b.step("fuzz", "Replay every fuzz target or run with --fuzz=N");
-    const fuzz_target_names = [_][]const u8{
-        "foundation_capacity",
-        "expression_parser",
-        "scalar_model_parser",
-        "value_ir_builder",
-        "calculation_request_parser",
-        "symbolic_exporter",
-        "kernel_lowering",
-        "parameter_point_parser",
-    };
-    for (fuzz_target_names) |target_name| {
+    for (fuzz_targets.names) |target_name| {
         const filtered_tests = b.addTest(.{
             .root_module = fuzz_module,
             .filters = &.{target_name},
@@ -263,6 +257,36 @@ pub fn build(b: *std.Build) void {
         "Run representative performance measurements (informational)",
     );
     bench_step.dependOn(&run_bench.step);
+
+    // Corpus maintenance reads the local build cache and the committed corpus,
+    // so it runs from the source directory and takes its arguments after `--`.
+    const corpus_module = b.createModule(.{
+        .root_source_file = b.path("tools/corpus/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{
+                .name = "fuzz_targets",
+                .module = b.createModule(.{
+                    .root_source_file = b.path("test/fuzz/targets.zig"),
+                }),
+            },
+        },
+    });
+    const corpus = b.addExecutable(.{
+        .name = "phaser-corpus",
+        .root_module = corpus_module,
+    });
+    const run_corpus = b.addRunArtifact(corpus);
+    run_corpus.setCwd(b.path("."));
+    // It reads the cache and writes staged candidates, so it is never cacheable.
+    run_corpus.has_side_effects = true;
+    if (b.args) |args| run_corpus.addArgs(args);
+    const corpus_step = b.step(
+        "corpus",
+        "Inspect and stage generated fuzz corpus entries (list | stage)",
+    );
+    corpus_step.dependOn(&run_corpus.step);
 
     const examples_step = b.step("examples", "Run public example workflows");
     examples_step.dependOn(&run_model_inspection.step);

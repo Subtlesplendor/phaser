@@ -987,3 +987,58 @@ fn expectSameDiagnostic(
         else => return error.TestUnexpectedResult,
     }
 }
+
+// Keeps `targets.zig` honest.
+//
+// `build.zig` runs one filtered test binary per name in that file and
+// `tools/corpus` derives each target's cache directory from it, so a target
+// declared here but missing there is never fuzzed on its own and its generated
+// corpus is invisible to the maintenance tool. Neither failure is loud, so the
+// list is checked against the names the test runner actually reports.
+test "the shared target list matches the declared fuzz targets" {
+    const builtin = @import("builtin");
+    const targets = @import("targets.zig");
+
+    const guard = targets.test_name_prefix ++
+        "the shared target list matches the declared fuzz targets";
+
+    for (targets.names) |name| {
+        const qualified = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{s}{s}",
+            .{ targets.test_name_prefix, name },
+        );
+        defer std.testing.allocator.free(qualified);
+
+        var found = false;
+        for (builtin.test_functions) |function| {
+            if (std.mem.eql(u8, function.name, qualified)) {
+                found = true;
+                break;
+            }
+        }
+        // A declared name with no test behind it: the filtered build step runs
+        // nothing and the tool reports an empty corpus for a target that has
+        // been renamed or removed.
+        try std.testing.expect(found);
+    }
+
+    for (builtin.test_functions) |function| {
+        // `test/fuzz.zig` contributes an unnamed aggregating test that carries
+        // no target, and this guard is not a target either.
+        if (!std.mem.startsWith(u8, function.name, targets.test_name_prefix)) continue;
+        if (std.mem.eql(u8, function.name, guard)) continue;
+
+        const name = function.name[targets.test_name_prefix.len..];
+        var declared = false;
+        for (targets.names) |candidate| {
+            if (std.mem.eql(u8, candidate, name)) {
+                declared = true;
+                break;
+            }
+        }
+        // A target the runner knows about that `targets.zig` does not: it never
+        // gets its own campaign and its corpus is never staged for review.
+        try std.testing.expect(declared);
+    }
+}
