@@ -1,0 +1,38 @@
+{
+  "schema": "phaser.qft-model/0.1",
+  "spacetime_dimension": 4,
+  "conventions": {
+    "metric": "mostly_plus",
+    "scalar_representation": "real_components",
+    "fermions": "two_component_weyl"
+  },
+  "parameters": {
+    "c111": { "domain": "real", "mass_dimension": 1 },
+    "c112": { "domain": "real", "mass_dimension": 1 },
+    "c113": { "domain": "real", "mass_dimension": 1 },
+    "c122": { "domain": "real", "mass_dimension": 1 },
+    "c123": { "domain": "real", "mass_dimension": 1 },
+    "c133": { "domain": "real", "mass_dimension": 1 }
+  },
+  "fields": {
+    "real_scalars": [
+      { "id": "r" },
+      { "id": "s" },
+      { "id": "t" }
+    ],
+    "weyl_fermions": [],
+    "gauge_vectors": []
+  },
+  "tensors": {
+    "scalar_cubic": {
+      "components": [
+        { "indices": ["r", "r", "r"], "value": "c111" },
+        { "indices": ["r", "r", "s"], "value": "c112" },
+        { "indices": ["r", "r", "t"], "value": "c113" },
+        { "indices": ["r", "s", "s"], "value": "c122" },
+        { "indices": ["r", "s", "t"], "value": "c123" },
+        { "indices": ["r", "t", "t"], "value": "c133" }
+      ]
+    }
+  }
+}

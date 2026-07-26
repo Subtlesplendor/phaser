@@ -117,11 +117,12 @@ or at a point that failed, is outside every policy in this catalog.
 | `near_degenerate` | eigenvalues, masses, or scales approach each other but remain separated |
 | `zero_mode` | a quantity vanishes exactly, and the comparison concerns the limit or the status taken there |
 
-Only `well_conditioned` policies are declared here. The `cancellation` regime is
-reached today by declaring the conditioning scale rather than by a separate
-policy: §6.2 applies at any point precisely because it is compared at the scale
-that bounds its error. The remaining regimes belong to the one-loop spectral
-work and are specified in §7 rather than declared with invented numbers.
+The `cancellation` regime is reached by declaring the conditioning scale rather
+than by a separate policy: §6.2 and the spectral value policies apply at any
+point precisely because they use the unsigned sum that bounds their error.
+Sections 6.6 and 6.7 declare the measured near-degenerate and zero-mode
+policies; neither may be generalized to a more severe regime without new
+evidence.
 
 ## 6. Catalog
 
@@ -243,42 +244,155 @@ literal on its own. Under this policy the worst observed comparison uses 19% of
 the permitted budget, a margin of a factor of five, and every other committed
 point uses less than 6%.
 
-### 6.5 Cross-platform application
+### 6.5 `spectral_value_known_spectrum`
+
+- **Context and regime**: `independent_reference`, `well_conditioned` and
+  `cancellation`.
+- **Quantity and operation**: the real or imaginary component of a complex
+  scalar one-loop value against the direct test-only evaluator over an
+  analytically known eigenvalue multiset.
+- **Absolute tolerance**: none.
+- **Relative tolerance**: `5e-15`.
+- **ULP bound**: none declared.
+- **Reference precision**: Zig `f64`, using `@log` for each nonzero eigenvalue.
+  The reference deliberately shares this primitive with production; it does not
+  claim to verify libm or provide higher precision.
+- **Expected conditioning or scale**: separately for each component, the sum of
+  the magnitudes of that component of every individual eigenvalue contribution.
+  This is the unsigned contribution sum, not the magnitude of the final value.
+- **Zero, subnormal, non-finite, complex**: §3 applies. An exact zero eigenvalue
+  contributes `(0, 0)` before a logarithm is formed. Real and imaginary
+  components compare independently.
+- **Permitted point statuses**: `ok` on both sides, compared first.
+- **Branch policy**: principal complex logarithm with
+  `Arg(z) in (-pi, pi]`; negative real eigenvalues have positive imaginary
+  contribution `x^2/(64*pi)`.
+
+Evidence. The prototype compares the independent evaluator with the hand
+expressions for the existing phi4 and two-scalar positive, negative,
+indefinite, and repeated-negative cases. It also compares permutations of the
+dense three-scalar spectrum. The largest observed component error is reported
+in §7. The declared bound is also more than seven times the elementary
+three-term `3 * eps` rounding estimate.
+
+### 6.6 Near-degenerate spectral policies
+
+The measured case has exact binary separation `2^-20` between the two lowest
+eigenvalues. This is close enough to exercise the near-degenerate regime while
+remaining distinguishable by more than four billion binary64 spacings near one.
+It is not evidence for arbitrarily smaller separations.
+
+| Policy | Quantity and operation | Absolute | Relative | Reference-error multiple |
+|---|---|---:|---:|---:|
+| `spectral_value_near_degenerate` | complex value against a reordered explicit known-spectrum sum | none | `1e-14` | none |
+| `spectral_gradient_near_degenerate` | analytic known-spectrum gradient against a central value difference | none | `2e-8` | `10` |
+| `spectral_hessian_near_degenerate` | analytic known-spectrum Hessian against a central second value difference | none | `2e-6` | `10` |
+
+For all three:
+
+- **Context and regime**: `independent_reference`, `near_degenerate`.
+- **ULP bound**: none declared.
+- **Reference precision**: Zig `f64`. The value reference directly sums the
+  known eigenvalues. The gradient uses step `eps^(1/3)` and the Hessian uses
+  `eps^(1/4)`; each difference reports the roundoff inherited from the values
+  it cancels.
+- **Expected conditioning or scale**: the value uses the unsigned contribution
+  sum component by component. Derivatives use the larger compared derivative
+  magnitude plus the reference's separately reported error.
+- **Zero, subnormal, non-finite, complex**: §3 applies. Value components compare
+  independently. The measured derivative case is real and contains no zero
+  eigenvalue.
+- **Permitted point statuses**: `ok` at the named point and at every sampled
+  neighbor.
+- **Branch policy**: the principal branch of §6.5.
+
+Evidence. `test/reference/scalar_one_loop.zig` fixes the spectrum, its
+background derivatives, the two step rules, and the exact separation. Section 7
+records the observed errors and budget use.
+
+### 6.7 Zero-mode spectral policies
+
+| Policy | Quantity and operation | Absolute | Relative | Reference-error multiple |
+|---|---|---:|---:|---:|
+| `spectral_value_zero_mode` | complex value with an exact zero eigenvalue | none | `5e-15` | none |
+| `spectral_gradient_zero_mode` | finite first-derivative zero-mode limit | none | `2e-8` | `10` |
+| `spectral_hessian_zero_mode` | finite analytic cancellation, or exact singular status | none | `2e-6` | `10` |
+
+For all three:
+
+- **Context and regime**: `independent_reference`, `zero_mode`.
+- **ULP bound**: none declared.
+- **Reference precision**: Zig `f64`, with the exact analytic value and
+  first-derivative limits established before numerical evaluation. A numerical
+  derivative reference uses its coarse-to-fine change plus inherited roundoff
+  as an error estimate.
+- **Expected conditioning or scale**: the value uses the component-wise unsigned
+  contribution sum, including zero for the zero-mode term. A finite derivative
+  uses the unsigned derivative scale; an isolated exact zero is therefore an
+  exact comparison unless a reference supplies a nonzero error estimate.
+- **Zero, subnormal, non-finite, complex**: an exact zero contribution is formed
+  without evaluating `log(0)`. Components compare independently under §3.
+- **Permitted point statuses**: value and gradient require `ok`. Hessian permits
+  `ok` only after an analytic finite cancellation, or
+  `singular_derivative` when a required spectral second derivative diverges.
+  Status is exact and no number is compared in the singular case.
+- **Branch policy**: the principal branch of §6.5.
+
+Evidence. The prototype checks the exact value and gradient limits, the singular
+linear zero-mode Hessian, the finite quadratic zero-mode cancellation, and a
+seeded implementation that forms floating-point zero times infinity. The last
+produces non-finite output and is rejected before a numerical comparison.
+
+### 6.8 Cross-platform application
 
 Cross-platform agreement is not a policy of its own. A quantity's cross-platform
 requirement is discharged by requiring every supported target to satisfy that
-quantity's operation-specific policy, from §6.2 to §6.4, against the same
+quantity's operation-specific policy, from §6.2 to §6.7, against the same
 target-independent reference. A direct cross-target differential, when one
 exists, uses the same operation-specific bounds; it does not receive a separate,
 looser cross-platform tolerance.
 
 What is currently observed is stronger and is deliberately not promised: on the
-two required native platforms, Linux x86-64 and macOS ARM64, the committed
+two required native platforms, Linux x86-64 and macOS ARM64, the pre-one-loop
 conformance and differential comparisons agree bitwise, because the lowered
-program is the same and every `f64` operation in it is correctly rounded. That is
-a measurement on two platforms, not a contract. It will not survive a target
-whose libm differs once the one-loop logarithm enters, which is exactly why the
-requirement is stated per operation rather than as one universal bound.
+program is the same and every `f64` operation in it is correctly rounded. The
+Milestone 3 policies apply in cross-platform context with the same bounds; their
+current prototype evidence is native macOS ARM64, and the pull-request matrix
+supplies the required Linux x86-64 measurement.
 
-## 7. Entries not yet declared
+## 7. Milestone 3 measurement
 
-The one-loop work needs policies this document deliberately does not yet
-contain, because their bounds must be measured before they are declared. Each
-MUST arrive with the §2 key, the nine §9.3 fields, and the measurement that
-justifies its numbers:
+The committed prototype uses:
 
-- `spectral_value_known_spectrum`, comparing a complex one-loop value against a
-  simple evaluator over an analytically known eigenvalue multiset. Real and
-  imaginary components compare independently, and the conditioning scale is the
-  magnitude of the unsigned sum of the individual contributions, because a
-  spectral sum over eigenvalues of both signs cancels.
-- Operation-specific `near_degenerate` policies for values, gradients, and
-  Hessians, separately, since a divided difference between nearly equal
-  eigenvalues loses accuracy that the value does not.
-- Operation-specific `zero_mode` policies, which are as much about the permitted
-  status as about a tolerance: a required derivative at a zero mode is
-  `singular_derivative`, not a large number.
-- The cross-platform applications of each of those, under §6.5.
+- exact spectra with positive, negative, repeated, zero, indefinite, and
+  near-degenerate eigenvalues;
+- a dense three-scalar matrix related to its diagonal spectrum by an explicitly
+  recorded orthogonal matrix;
+- hand expressions from the existing phi4 and two-scalar fixtures;
+- central differences of the independent known-spectrum evaluator; and
+- component-wise unsigned contribution sums for cancellation scales.
+
+The test records a near-degenerate separation of `2^-20`, gradient step
+`eps^(1/3)`, and Hessian step `eps^(1/4)`. On macOS ARM64 with the pinned Zig
+0.16.0 toolchain, every hand-expression and value-reordering comparison was
+bitwise equal. The near-degenerate analytic gradient and central difference
+differed by `1.78e-13`, using 0.34% of its total policy budget after the
+reference-error term. The analytic Hessian and central second difference
+differed by `2.78e-10`, using 4.12% of its budget. These measurements are
+evidence for the bounds, not a second contract. At the zero-mode cases, the
+refined central gradient was `-7.53e-9` in the imaginary component and used
+10.0% of the budget supplied by its coarse-to-fine error estimate. The finite
+quadratic-zero-mode Hessian reference was `-2.47e-10` and used 3.66% of its
+budget.
+
+The executable acceptance criterion is stronger: each committed case must
+continue to satisfy its named policy in Debug and ReleaseSafe, and every seeded
+defect must continue to be rejected.
+
+These measurements prove the declared policies only for the named conditioning
+regimes. A production eigensolver residual larger than the prototype error, a
+smaller near-degenerate separation, or a derivative with more severe
+cancellation requires a new measurement; it does not inherit these bounds.
 
 ## 8. Executable mirror
 
@@ -302,7 +416,11 @@ Naming a policy today:
 - `test/property/properties.zig`, for the metamorphic relabelling and
   zero-coupling properties and for every same-kernel comparison; and
 - `test/differential/finite_differences.zig`, for the gradient, Hessian, and
-  transcribed-identity comparisons.
+  transcribed-identity comparisons;
+- `test/reference/scalar_one_loop.zig`, for the independent known-spectrum,
+  near-degenerate, and zero-mode prototype; and
+- `test/conformance/scalar_one_loop.zig`, for the existing hand-transcription
+  smoke checks.
 
 Still carrying local literals, deliberately:
 
@@ -313,13 +431,9 @@ Still carrying local literals, deliberately:
   [Conformance Models](CONFORMANCE_MODELS.md) already requires every case to
   state its precision and comparison policy. They are retrofitted when the
   fixture format carries that field.
-- `test/conformance/scalar_one_loop.zig`, whose transcription smoke tests are
-  the Milestone 0 precursor of the spectral policies §7 describes. It is
-  retrofitted with them, not before them.
 
 ## 10. Deferred
 
-- The measured bounds for every entry in §7.
 - The first ULP bound, and with it the ULP field in the executable mirror. No
   cataloged policy needs one: each is scale-aware instead.
 - A higher-precision reference. Every policy here compares `f64` against `f64`,

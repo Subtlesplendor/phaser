@@ -8,12 +8,9 @@
 //! point statuses, and branch policy — are prose. They live in that document and
 //! are summarized in each constant's doc comment here.
 //!
-//! Two deliberate omissions. No cataloged policy declares a ULP bound, so
-//! `Policy` has no ULP field; it gains one with the first policy that needs one,
-//! rather than carrying a field with no agreed meaning. And no policy is
-//! declared for a conditioning regime that has not been measured, so the
-//! near-degenerate, zero-mode, and spectral entries the one-loop work needs are
-//! absent rather than guessed.
+//! One deliberate omission remains. No cataloged policy declares a ULP bound,
+//! so `Policy` has no ULP field; it gains one with the first policy that needs
+//! one rather than carrying a field with no agreed meaning.
 //!
 //! Comparisons are on `f64`, which is the kernel's version 0.1 scalar type.
 
@@ -234,6 +231,84 @@ pub const finite_difference_hessian_well_conditioned = Policy{
     .reference_error_multiple = 10,
 };
 
+/// A complex scalar one-loop value against the direct evaluator over an
+/// analytically known eigenvalue multiset.
+///
+/// Real and imaginary components are compared separately. The caller supplies
+/// the component's unsigned contribution sum as its magnitude, so cancellation
+/// between spectral terms does not make the comparison artificially strict.
+/// Reference precision: Zig `f64` and `@log`. Statuses must be `ok`; the
+/// principal branch is required.
+pub const spectral_value_known_spectrum = Policy{
+    .name = "spectral_value_known_spectrum",
+    .relative = 5e-15,
+};
+
+/// A one-loop value at the measured near-degenerate spectrum.
+///
+/// The unsigned contribution sum is the comparison magnitude. Reference
+/// precision, statuses, complex treatment, and branch are as for
+/// `spectral_value_known_spectrum`.
+pub const spectral_value_near_degenerate = Policy{
+    .name = "spectral_value_near_degenerate",
+    .relative = 1e-14,
+};
+
+/// A one-loop gradient at the measured near-degenerate spectrum.
+///
+/// The reference is an `f64` central difference and reports its inherited
+/// roundoff. Both the analytic and sampled points must have `ok` status.
+pub const spectral_gradient_near_degenerate = Policy{
+    .name = "spectral_gradient_near_degenerate",
+    .relative = 2e-8,
+    .reference_error_multiple = 10,
+};
+
+/// A one-loop Hessian at the measured near-degenerate spectrum.
+///
+/// As for the gradient, using a central second difference and its separately
+/// reported roundoff. The looser relative bound reflects the second
+/// difference's greater cancellation.
+pub const spectral_hessian_near_degenerate = Policy{
+    .name = "spectral_hessian_near_degenerate",
+    .relative = 2e-6,
+    .reference_error_multiple = 10,
+};
+
+/// A one-loop value with an exact zero eigenvalue.
+///
+/// The zero contribution is established analytically before evaluating a
+/// logarithm. Other contributions use their unsigned sum as the magnitude.
+/// Status must be `ok`.
+pub const spectral_value_zero_mode = Policy{
+    .name = "spectral_value_zero_mode",
+    .relative = 5e-15,
+};
+
+/// A one-loop gradient with an exact zero eigenvalue.
+///
+/// The finite first-derivative limit is zero. Finite-difference references use
+/// coarse-to-fine variation plus inherited roundoff as their error estimate;
+/// status must be `ok`.
+pub const spectral_gradient_zero_mode = Policy{
+    .name = "spectral_gradient_zero_mode",
+    .relative = 2e-8,
+    .reference_error_multiple = 10,
+};
+
+/// A one-loop Hessian whose spectrum contains an exact zero.
+///
+/// Status is compared first and may be `ok` only for an analytically
+/// established finite cancellation, or `singular_derivative` when a required
+/// term diverges. A finite-difference reference uses coarse-to-fine variation
+/// plus inherited roundoff as its error estimate. Numbers are compared only for
+/// the `ok` case.
+pub const spectral_hessian_zero_mode = Policy{
+    .name = "spectral_hessian_zero_mode",
+    .relative = 2e-6,
+    .reference_error_multiple = 10,
+};
+
 test "the catalog carries the bounds recorded in the specification" {
     try std.testing.expectEqual(
         @as(f64, 1e-14),
@@ -251,10 +326,37 @@ test "the catalog carries the bounds recorded in the specification" {
         @as(f64, 1e-7),
         finite_difference_hessian_well_conditioned.relative,
     );
+    try std.testing.expectEqual(
+        @as(f64, 5e-15),
+        spectral_value_known_spectrum.relative,
+    );
+    try std.testing.expectEqual(
+        @as(f64, 1e-14),
+        spectral_value_near_degenerate.relative,
+    );
+    try std.testing.expectEqual(
+        @as(f64, 2e-8),
+        spectral_gradient_near_degenerate.relative,
+    );
+    try std.testing.expectEqual(
+        @as(f64, 2e-6),
+        spectral_hessian_near_degenerate.relative,
+    );
+    try std.testing.expectEqual(
+        @as(f64, 5e-15),
+        spectral_value_zero_mode.relative,
+    );
     for ([_]Policy{
         reordered_value_well_conditioned,
         finite_difference_gradient_well_conditioned,
         finite_difference_hessian_well_conditioned,
+        spectral_value_known_spectrum,
+        spectral_value_near_degenerate,
+        spectral_gradient_near_degenerate,
+        spectral_hessian_near_degenerate,
+        spectral_value_zero_mode,
+        spectral_gradient_zero_mode,
+        spectral_hessian_zero_mode,
     }) |policy| {
         // Every policy is keyed by a name that appears in the catalog, and none
         // declares an absolute tolerance: each is scale-aware instead.
