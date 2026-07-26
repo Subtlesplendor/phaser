@@ -42,6 +42,10 @@ pub const Kernel = struct {
     model_fingerprint: [32]u8,
     request_fingerprint: [32]u8,
     background_mode: calculation.BackgroundMode,
+    /// Present when the artifact declared a renormalization scheme. Binding
+    /// rejects a parameter point whose scheme differs, so one evaluation cannot
+    /// mix schemes.
+    scheme: ?calculation.Scheme,
     parameters: []const Channel,
     coordinates: []const Channel,
 
@@ -178,6 +182,7 @@ pub fn compile(
         .model_fingerprint = artifact.model_fingerprint.bytes,
         .request_fingerprint = artifact.request_fingerprint.bytes,
         .background_mode = artifact.background_mode,
+        .scheme = artifact.scheme,
         .parameters = parameters,
         .coordinates = coordinates,
     };

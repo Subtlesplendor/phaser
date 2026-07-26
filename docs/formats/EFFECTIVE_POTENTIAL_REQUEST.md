@@ -159,8 +159,12 @@ Because the parameters of one evaluation must all be renormalized in one scheme,
 binding MUST reject a parameter point whose declared scheme differs from a
 scheme declared by the artifact. Contributions within one artifact MUST share
 one scheme context; a single potential MUST NOT combine contributions
-renormalized in different schemes. The binding-time check is specified with the
-parameter-point implementation.
+renormalized in different schemes.
+
+The check is implemented. It is also vacuous while `MSbar` is the only
+supported scheme, because no pair of declarations can differ. It becomes
+effective when a second scheme is supported, and a conformance tripwire fails at
+that point so the mismatch case is not left untested.
 
 ## 6. Gauge fixing
 

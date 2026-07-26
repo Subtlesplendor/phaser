@@ -40,6 +40,15 @@ pub const Code = enum(u32) {
     invalid_background_mode = 0x0014_0006,
     invalid_background_coordinate = 0x0014_0007,
     duplicate_background_coordinate = 0x0014_0008,
+    invalid_parameter_point_schema = 0x0015_0001,
+    unsupported_mass_unit = 0x0015_0002,
+    unsupported_scheme = 0x0015_0003,
+    invalid_scale = 0x0015_0004,
+    invalid_number = 0x0015_0005,
+    number_not_representable = 0x0015_0006,
+    missing_parameter_value = 0x0015_0007,
+    unknown_parameter_value = 0x0015_0008,
+    scheme_mismatch = 0x0015_0009,
 };
 
 pub const Category = enum {

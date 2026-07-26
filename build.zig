@@ -122,6 +122,7 @@ pub fn build(b: *std.Build) void {
         "calculation_request_parser",
         "symbolic_exporter",
         "kernel_lowering",
+        "parameter_point_parser",
     };
     for (fuzz_target_names) |target_name| {
         const filtered_tests = b.addTest(.{

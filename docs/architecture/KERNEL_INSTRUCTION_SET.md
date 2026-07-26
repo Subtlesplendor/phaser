@@ -174,6 +174,23 @@ unaligned byte slice and its alignment is checked at the call boundary rather
 than assumed from its type, because alignment is a contract a foreign caller
 can violate.
 
+### 7.1 Binding stages
+
+Instructions are partitioned so that every instruction depending only on
+constants and bound parameters precedes every instruction depending on a
+background coordinate. The partition is a valid topological order, because a
+parameter-stage instruction never has a background-dependent operand.
+
+A binding executes the first section once and retains the resulting temporaries.
+Each evaluation restores them and executes only the second section per point, so
+parameter-dependent work is not repeated across a batch.
+
+Slot reuse respects the partition: a parameter-stage value read by the
+background section is live for the whole program, since that section reruns for
+every point. A staged evaluation and an unstaged one execute the same
+instructions on the same inputs in the same order, and therefore MUST agree
+bitwise.
+
 independent of `point_count`, because the reference backend evaluates points one
 at a time and reuses the same temporaries. Callers MUST NOT rely on that
 independence: the query exists so a later backend may return a point-count- or

@@ -64,7 +64,7 @@ pub fn evaluate(
     // The workspace is deliberately an unaligned slice rather than an aligned
     // type: alignment is a contract a foreign caller can violate, and the
     // specification requires it to be detected rather than assumed.
-    try validateCall(program, inputs, point_count, workspace, outputs);
+    try validateCall(program, inputs, point_count, workspace, outputs, .direct);
 
     const required = @as(usize, program.temporary_count) * @sizeOf(Scalar);
     const aligned: []align(@alignOf(Scalar)) u8 = @alignCast(workspace[0..required]);
@@ -73,36 +73,47 @@ pub fn evaluate(
 
     for (0..point_count) |point| {
         const backgrounds = inputs.backgrounds[point * program.background_count ..][0..program.background_count];
-        const status = run(program, inputs.parameters, backgrounds, temporaries);
+        const status = run(
+            program,
+            program.instructions,
+            inputs.parameters,
+            backgrounds,
+            temporaries,
+        );
 
-        outputs.values[point] = temporaries[program.outputs.value];
-        if (outputs.gradients.len != 0) {
-            for (program.outputs.gradient, 0..) |slot, index| {
-                outputs.gradients[point * coordinates + index] = temporaries[slot];
-            }
-        }
-        if (outputs.hessians.len != 0) {
-            const stride = coordinates * coordinates;
-            for (program.outputs.hessian, 0..) |slot, index| {
-                outputs.hessians[point * stride + index] = temporaries[slot];
-            }
-        }
-
+        writeOutputs(program, temporaries, outputs, point, coordinates);
         outputs.statuses[point] = if (status != .ok)
             status
         else
-            finiteStatus(program, temporaries, outputs, point);
+            finiteStatus(program, temporaries);
+    }
+}
+
+fn writeOutputs(
+    program: *const Program,
+    temporaries: []const Scalar,
+    outputs: OutputBuffers,
+    point: usize,
+    coordinates: usize,
+) void {
+    outputs.values[point] = temporaries[program.outputs.value];
+    if (outputs.gradients.len != 0) {
+        for (program.outputs.gradient, 0..) |slot, index| {
+            outputs.gradients[point * coordinates + index] = temporaries[slot];
+        }
+    }
+    if (outputs.hessians.len != 0) {
+        const stride = coordinates * coordinates;
+        for (program.outputs.hessian, 0..) |slot, index| {
+            outputs.hessians[point * stride + index] = temporaries[slot];
+        }
     }
 }
 
 fn finiteStatus(
     program: *const Program,
     temporaries: []const Scalar,
-    outputs: OutputBuffers,
-    point: usize,
 ) Status {
-    _ = outputs;
-    _ = point;
     if (!std.math.isFinite(temporaries[program.outputs.value])) return .non_finite;
     for (program.outputs.gradient) |slot| {
         if (!std.math.isFinite(temporaries[slot])) return .non_finite;
@@ -113,15 +124,16 @@ fn finiteStatus(
     return .ok;
 }
 
-/// Executes the instruction stream for one point.
+/// Executes a contiguous range of the instruction stream.
 fn run(
     program: *const Program,
+    instructions: []const Instruction,
     parameters: []const Scalar,
     backgrounds: []const Scalar,
     temporaries: []Scalar,
 ) Status {
     var status: Status = .ok;
-    for (program.instructions) |instruction| {
+    for (instructions) |instruction| {
         switch (instruction) {
             .load_constant => |payload| {
                 temporaries[payload.result] = program.constants[payload.source];
@@ -168,6 +180,70 @@ fn run(
     return status;
 }
 
+/// Executes only the parameter stage, leaving its results in `temporaries`.
+///
+/// This is the work a binding performs once. It reads no background coordinate,
+/// which the instruction partition guarantees structurally rather than by
+/// convention.
+pub fn runParameterStage(
+    program: *const Program,
+    parameters: []const Scalar,
+    temporaries: []Scalar,
+) Status {
+    return run(
+        program,
+        program.instructions[0..program.parameter_stage_count],
+        parameters,
+        &.{},
+        temporaries,
+    );
+}
+
+/// Evaluates points from a precomputed parameter-stage snapshot.
+///
+/// `prologue` is the temporary array as `runParameterStage` left it. It is
+/// copied in once per call and the background section then runs per point, so
+/// the parameter-dependent work is not repeated across a batch.
+///
+/// Results are bitwise identical to `evaluate`, which repeats that work for
+/// every point: the instructions, their order, and their inputs are the same.
+pub fn evaluateStaged(
+    program: *const Program,
+    prologue: []const Scalar,
+    backgrounds: []const Scalar,
+    point_count: usize,
+    workspace: []u8,
+    outputs: OutputBuffers,
+) CallError!void {
+    try validateCall(
+        program,
+        .{ .parameters = &.{}, .backgrounds = backgrounds },
+        point_count,
+        workspace,
+        outputs,
+        .staged,
+    );
+    if (prologue.len != program.temporary_count) return error.ShapeMismatch;
+
+    const required = @as(usize, program.temporary_count) * @sizeOf(Scalar);
+    const aligned: []align(@alignOf(Scalar)) u8 = @alignCast(workspace[0..required]);
+    const temporaries = std.mem.bytesAsSlice(Scalar, aligned);
+    @memcpy(temporaries, prologue);
+
+    const suffix = program.instructions[program.parameter_stage_count..];
+    const coordinates = program.coordinate_count;
+
+    for (0..point_count) |point| {
+        const slice = backgrounds[point * program.background_count ..][0..program.background_count];
+        const status = run(program, suffix, &.{}, slice, temporaries);
+        writeOutputs(program, temporaries, outputs, point, coordinates);
+        outputs.statuses[point] = if (status != .ok)
+            status
+        else
+            finiteStatus(program, temporaries);
+    }
+}
+
 /// Binary exponentiation over the bits of the exponent, least significant
 /// first.
 ///
@@ -186,12 +262,15 @@ pub fn integerPower(base: Scalar, exponent: u32) Scalar {
     return result;
 }
 
+const CallKind = enum { direct, staged };
+
 fn validateCall(
     program: *const Program,
     inputs: Inputs,
     point_count: usize,
     workspace: []const u8,
     outputs: OutputBuffers,
+    kind: CallKind,
 ) CallError!void {
     const layout = program.workspaceLayout(point_count);
     if (workspace.len < layout.bytes) return error.WorkspaceTooSmall;
@@ -199,7 +278,10 @@ fn validateCall(
         return error.WorkspaceMisaligned;
     }
 
-    if (inputs.parameters.len != program.parameter_count) return error.ShapeMismatch;
+    // A staged call supplies parameters through its binding, not here.
+    if (kind == .direct and inputs.parameters.len != program.parameter_count) {
+        return error.ShapeMismatch;
+    }
     if (inputs.backgrounds.len != point_count * program.background_count) {
         return error.ShapeMismatch;
     }
