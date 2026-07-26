@@ -52,12 +52,28 @@ jobs:
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build fuzz -Doptimize=ReleaseSafe --fuzz=2M'
 
-      # A discovered failure is only useful with its input. Uploading it as a
-      # workflow artifact needs actions/upload-artifact, which is an external
-      # developer-tool dependency requiring its own approval under
-      # DEVELOPMENT_WORKFLOW.md section 9. Until that approval exists, a failure
-      # is reproduced from the logged seed and its minimized input is committed
-      # to test/corpus, which is the permanent record in any case.
+      # A discovered failure is only useful with its input, and the runner is
+      # discarded when the job ends. The toolchain saves a crashing input at
+      # .zig-cache/f/crash in exactly the format a committed corpus entry uses,
+      # so printing it here carries the whole reproduction out in the job log
+      # and no workflow artifact is needed. The failing step's log names the
+      # target the input belongs to.
+      - name: Report the crashing input
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .zig-cache/f/crash ]; then
+            echo "No .zig-cache/f/crash present."
+            echo "The failure was not a crashing input; read the campaign log above."
+            exit 0
+          fi
+          echo "Crashing input, $(wc -c < .zig-cache/f/crash) bytes, base64:"
+          base64 < .zig-cache/f/crash
+          echo
+          echo "To reproduce, decode into test/corpus/<target>/ and add the file to"
+          echo "that target's .corpus list in test/fuzz/root.zig, then run:"
+          echo "  zig build fuzz"
 
   property:
     name: Extended property campaign

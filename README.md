@@ -62,6 +62,18 @@ No bounded command claims to complete fuzzing. A discovered failure must be
 preserved, minimized where practical, and committed to the corresponding
 `test/corpus/` directory.
 
+Review what a campaign found, and stage the inputs the permanent corpus does not
+have yet:
+
+```text
+zig build corpus -- list
+zig build corpus -- stage
+```
+
+A campaign accumulates its corpus in the build cache only across runs that
+preserve it, so this reports on local runs. Staged inputs are written to
+`.corpus-candidates/` for review; nothing enters `test/corpus/` automatically.
+
 After the pinned Zig archive is installed, the build, deterministic tests,
 corpus replay, and fuzz target invoke no network clients and require no network
 resources. CI does not claim to reconfigure the hosted runner's firewall.
