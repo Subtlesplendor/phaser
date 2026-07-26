@@ -89,6 +89,17 @@ jobs:
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseSafe'
 
+      - name: Test ReleaseFast
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseFast'
+
+      - name: Compare differential implementations
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zig/zig" build test-differential -Doptimize=Debug
+          "$RUNNER_TEMP/zig/zig" build test-differential -Doptimize=ReleaseFast
+
       - name: Run public examples
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build examples -Doptimize=ReleaseSafe'

@@ -94,4 +94,21 @@ an operation whose derivative rule cannot be expressed symbolically in the
 Typed Value IR.
 
 Milestone 2 measures and records derivative-graph node counts so that this
-trigger is evaluated against data.
+trigger is evaluated against data. `zig build bench` reports them.
+
+The first measurement, on the Milestone 2 conformance models:
+
+| Model | Coordinates | Value only | Plus gradient | Plus Hessian |
+|---|---:|---:|---:|---:|
+| \(\phi^4\) | 1 | 15 | 30 | 43 |
+| multi-scalar | 2 | 61 | 124 | 184 |
+
+Growth is well below the bound this decision assumed. A naive accounting would
+predict \((1+n+n^2)\) copies of the source graph, which is 427 nodes for the
+two-coordinate model against the 184 observed. Interning is the reason: the
+directional derivatives of one graph share most of their structure, and the
+mixed partials share more again.
+
+The trigger is therefore further away than the reasoning above suggested, and
+build-time reverse mode is not warranted by any model Phaser currently
+supports.

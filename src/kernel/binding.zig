@@ -30,8 +30,16 @@ pub const BindError = error{
 
 pub const Binding = struct {
     arena: *std.heap.ArenaAllocator,
-    /// Borrowed. The kernel must outlive the binding.
-    kernel: *const Kernel,
+    /// Copy of the kernel's lowered program.
+    ///
+    /// The struct is copied but its instructions, constants, and output tables
+    /// are not: those live in the kernel's arena. Holding the program by value
+    /// rather than holding a pointer to the kernel means a binding survives the
+    /// kernel struct being moved, which is the ordinary thing to do with a value
+    /// returned from `compile`. The requirement is that the kernel's storage
+    /// outlive the binding, not that its address stay fixed.
+    program: program_module.Program,
+    coordinate_count: usize,
     /// Packed parameter channel values, in kernel channel order.
     parameters: []const Scalar,
     /// The temporary array after the parameter stage has run. Copied into
@@ -51,7 +59,11 @@ pub const Binding = struct {
         self: *const Binding,
         point_count: usize,
     ) program_module.WorkspaceLayout {
-        return self.kernel.workspaceLayout(point_count);
+        return self.program.workspaceLayout(point_count);
+    }
+
+    pub fn coordinateCount(self: *const Binding) usize {
+        return self.coordinate_count;
     }
 
     /// Evaluates background points against this bound parameter context.
@@ -67,7 +79,7 @@ pub const Binding = struct {
         outputs: interpret_module.OutputBuffers,
     ) interpret_module.CallError!void {
         return interpret_module.evaluateStaged(
-            &self.kernel.program,
+            &self.program,
             self.prologue,
             backgrounds,
             point_count,
@@ -117,7 +129,8 @@ pub fn bind(
 
     return .{
         .arena = arena,
-        .kernel = kernel,
+        .program = kernel.program,
+        .coordinate_count = kernel.coordinateCount(),
         .parameters = parameters,
         .prologue = prologue,
         .scheme = point.scheme,

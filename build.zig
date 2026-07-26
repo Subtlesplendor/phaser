@@ -123,6 +123,23 @@ pub fn build(b: *std.Build) void {
     );
     test_conformance_step.dependOn(&run_conformance_tests.step);
 
+    const differential_module = b.createModule(.{
+        .root_source_file = b.path("test/differential/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phaser", .module = phaser_module },
+            .{ .name = "example_data", .module = example_data_module },
+        },
+    });
+    const differential_tests = b.addTest(.{ .root_module = differential_module });
+    const run_differential_tests = b.addRunArtifact(differential_tests);
+    const test_differential_step = b.step(
+        "test-differential",
+        "Compare independent implementations of the same quantity",
+    );
+    test_differential_step.dependOn(&run_differential_tests.step);
+
     const fuzz_module = b.createModule(.{
         .root_source_file = b.path("test/fuzz.zig"),
         .target = target,
@@ -141,6 +158,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_suite_tests.step);
     test_step.dependOn(&run_fuzz_tests.step);
     test_step.dependOn(&run_cli_tests.step);
+    test_step.dependOn(&run_differential_tests.step);
 
     const fuzz_step = b.step("fuzz", "Replay every fuzz target or run with --fuzz=N");
     const fuzz_target_names = [_][]const u8{
@@ -175,6 +193,31 @@ pub fn build(b: *std.Build) void {
         .root_module = example_module,
     });
     const run_model_inspection = b.addRunArtifact(model_inspection);
+    const bench_module = b.createModule(.{
+        .root_source_file = b.path("tools/bench/main.zig"),
+        .target = target,
+        // Benchmarks measure optimized code unless told otherwise.
+        .optimize = if (b.option(
+            bool,
+            "bench-debug",
+            "Build benchmarks in the selected optimize mode instead of ReleaseFast",
+        ) orelse false) optimize else .ReleaseFast,
+        .imports = &.{
+            .{ .name = "phaser", .module = phaser_module },
+            .{ .name = "example_data", .module = example_data_module },
+        },
+    });
+    const bench = b.addExecutable(.{
+        .name = "phaser-bench",
+        .root_module = bench_module,
+    });
+    const run_bench = b.addRunArtifact(bench);
+    const bench_step = b.step(
+        "bench",
+        "Run representative performance measurements (informational)",
+    );
+    bench_step.dependOn(&run_bench.step);
+
     const examples_step = b.step("examples", "Run public example workflows");
     examples_step.dependOn(&run_model_inspection.step);
 

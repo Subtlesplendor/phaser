@@ -107,6 +107,17 @@ zig build
 Worked inputs and golden outputs live in [examples/phi4](examples/phi4/README.md)
 and [examples/multi_scalar](examples/multi_scalar/README.md).
 
+Build steps:
+
+```sh
+zig build test               # all bounded deterministic tests
+zig build test-differential  # independent implementations of the same quantity
+zig build test-conformance   # scientific conformance fixtures
+zig build fuzz               # replay corpora, or add --fuzz=N for a campaign
+zig build examples           # public example workflows
+zig build bench              # representative measurements (informational)
+```
+
 The C ABI and
 language bindings are not implemented yet.
 
