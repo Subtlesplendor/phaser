@@ -342,6 +342,40 @@ none exercised the move, and the defect surfaced as an unrelated shape mismatch.
 Prefer holding the stable part by value over holding a pointer to the container.
 Where a pointer is genuinely required, say so and require the test.
 
+### Error-path injection
+
+Tripwire is the adopted dependency for named, deterministic error injection,
+recorded in [decision 0006](docs/decisions/0006-tripwire-error-injection-experiment.md).
+Its Phaser-owned boundary is `src/testing/error_injection.zig`; production
+subsystems MUST NOT import the vendored source directly or export a Tripwire
+type.
+
+Use Tripwire for a meaningful transactional checkpoint that ordinary valid input
+or allocator failure cannot target reliably, especially after ownership has
+partially transferred or immediately before publication. Use
+`std.testing.FailingAllocator` instead when the requirement is exhaustive
+coverage of allocation sites. The two mechanisms are complementary.
+
+When adding Tripwire coverage:
+
+- declare one private fail-point module per failable operation;
+- name stable semantic transitions, not implementation details;
+- put each check immediately before the transition whose predecessor state is
+  under test, rather than before every `try`;
+- inject only errors already present in the operation's natural error set;
+- iterate the complete fail-point enum when every checkpoint has the same
+  expected outcome;
+- run the operation with a leak-detecting allocator and verify that no partial
+  result was published;
+- call `end(.reset)` so a renamed or unreachable checkpoint fails the test, and
+  also install a defensive `defer reset()` for early test exits; and
+- never configure the same fail-point module concurrently, because its test
+  state is shared.
+
+Tripwire instrumentation MUST compile away outside Zig test builds. A dependency
+update or a change to the wrapper, compiler, or build topology that could alter
+that property requires a production-artifact comparison before merge.
+
 ### Requirements that cannot be reached
 
 A specified behavior sometimes has no reachable code path in the current

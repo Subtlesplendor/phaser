@@ -12,6 +12,7 @@
 const std = @import("std");
 const calculation = @import("../calculation/root.zig");
 const model_module = @import("../model/root.zig");
+const error_injection = @import("../testing/error_injection.zig");
 const program_module = @import("program.zig");
 const interpret_module = @import("interpret.zig");
 const potential_module = @import("potential.zig");
@@ -27,6 +28,12 @@ pub const BindError = error{
     /// The point's scheme differs from the one the artifact declared.
     SchemeMismatch,
 };
+
+const bind_tw = error_injection.module(enum {
+    parameter_storage,
+    prologue_storage,
+    publish,
+}, error{OutOfMemory});
 
 pub const Binding = struct {
     arena: *std.heap.ArenaAllocator,
@@ -117,6 +124,7 @@ pub fn bind(
     arena.* = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
+    try bind_tw.check(.parameter_storage);
     const parameters = try arena.allocator().alloc(Scalar, kernel.parameters.len);
     for (kernel.parameters, parameters) |channel, *slot| {
         // Channel names come from the model, so coverage validation above
@@ -124,6 +132,7 @@ pub fn bind(
         slot.* = point.lookup(channel.name) orelse return error.MissingParameterValue;
     }
 
+    try bind_tw.check(.prologue_storage);
     const prologue = try arena.allocator().alloc(
         Scalar,
         kernel.program.temporary_count,
@@ -135,6 +144,7 @@ pub fn bind(
         prologue,
     );
 
+    try bind_tw.check(.publish);
     return .{
         .arena = arena,
         .program = kernel.program,
@@ -145,4 +155,64 @@ pub fn bind(
         .scheme = point.scheme,
         .reference_scale = point.reference_scale,
     };
+}
+
+test "tripwires exercise every parameter binding rollback boundary" {
+    const channels = [_]potential_module.Channel{.{
+        .name = "lambda",
+        .offset = 0,
+        .mass_dimension = 0,
+    }};
+    const source_parameters = [_]model_module.Parameter{.{
+        .id = 0,
+        .name = "lambda",
+        .mass_dimension = 0,
+    }};
+    const entries = [_]calculation.parameter_point.Entry{.{
+        .name = "lambda",
+        .value = 0.25,
+    }};
+
+    const kernel = Kernel{
+        .arena = undefined,
+        .program = .{
+            .arena = undefined,
+            .instructions = &.{},
+            .constants = &.{},
+            .outputs = .{ .value = 0, .gradient = &.{}, .hessian = &.{} },
+            .capability = .value,
+            .parameter_stage_count = 0,
+            .temporary_count = 1,
+            .parameter_count = 1,
+            .background_count = 1,
+            .coordinate_count = 1,
+        },
+        .model_fingerprint = [_]u8{0} ** 32,
+        .request_fingerprint = [_]u8{0} ** 32,
+        .background_mode = .full_scalar_space,
+        .scheme = null,
+        .parameters = &channels,
+        .coordinates = &.{},
+    };
+    var source_model: model_module.Model = undefined;
+    source_model.parameters = &source_parameters;
+    var point: calculation.ParameterPoint = undefined;
+    point.scheme = .msbar;
+    point.reference_scale = 125.0;
+    point.entries = &entries;
+
+    for (std.meta.tags(bind_tw.FailPoint)) |fail_point| {
+        bind_tw.errorAlways(fail_point, error.OutOfMemory);
+        defer bind_tw.reset();
+        try std.testing.expectError(
+            error.OutOfMemory,
+            bind(
+                std.testing.allocator,
+                &kernel,
+                &source_model,
+                &point,
+            ),
+        );
+        try bind_tw.end(.reset);
+    }
 }

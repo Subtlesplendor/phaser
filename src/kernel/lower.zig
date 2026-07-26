@@ -6,6 +6,7 @@
 //! order, and temporary-slot assignment with live-range reuse.
 
 const std = @import("std");
+const error_injection = @import("../testing/error_injection.zig");
 const value = @import("../value/root.zig");
 const program_module = @import("program.zig");
 
@@ -46,6 +47,15 @@ pub const Request = struct {
     coordinate_count: u32,
 };
 
+const lower_tw = error_injection.module(enum {
+    collect_roots,
+    mark_reachable,
+    classify_stages,
+    assign_slots,
+    emit,
+    publish,
+}, lower);
+
 /// Lowers `request` into a validated program.
 pub fn lower(
     allocator: std.mem.Allocator,
@@ -65,12 +75,18 @@ pub fn lower(
     };
     defer builder.deinit();
 
+    try lower_tw.check(.collect_roots);
     try builder.collectRoots(request);
+    try lower_tw.check(.mark_reachable);
     try builder.markReachable();
+    try lower_tw.check(.classify_stages);
     try builder.classifyStages();
+    try lower_tw.check(.assign_slots);
     try builder.assignSlots();
+    try lower_tw.check(.emit);
     try builder.emit();
 
+    try lower_tw.check(.publish);
     const outputs = program_module.Outputs{
         .value = builder.slotOf(request.value_root),
         .gradient = try builder.slotsOf(request.gradient_roots),
@@ -610,5 +626,38 @@ test "lowering is deterministic" {
             @as(program_module.Opcode, right),
         );
         try std.testing.expectEqual(left.result(), right.result());
+    }
+}
+
+test "tripwires exercise every lowering rollback boundary" {
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const phi = try builder.background(0, "phi", 1);
+    const lambda = try builder.parameter(0, "lambda", 0);
+    const quartic = try builder.multiply(&.{
+        lambda,
+        try builder.power(phi, 4),
+    });
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    const request = Request{
+        .graph = &graph,
+        .capability = .value,
+        .value_root = quartic,
+        .gradient_roots = &.{},
+        .hessian_roots = &.{},
+        .parameter_count = 1,
+        .background_count = 1,
+        .coordinate_count = 1,
+    };
+
+    for (std.meta.tags(lower_tw.FailPoint)) |point| {
+        lower_tw.errorAlways(point, error.OutOfMemory);
+        defer lower_tw.reset();
+        try std.testing.expectError(
+            error.OutOfMemory,
+            lower(std.testing.allocator, request, .{}),
+        );
+        try lower_tw.end(.reset);
     }
 }

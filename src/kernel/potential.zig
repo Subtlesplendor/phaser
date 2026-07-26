@@ -7,6 +7,8 @@
 
 const std = @import("std");
 const calculation = @import("../calculation/root.zig");
+const error_injection = @import("../testing/error_injection.zig");
+const value = @import("../value/root.zig");
 const program_module = @import("program.zig");
 const lower_module = @import("lower.zig");
 const interpret_module = @import("interpret.zig");
@@ -26,6 +28,14 @@ pub const Configuration = struct {
     capability: Capability = .value_gradient_hessian,
     lowering: lower_module.LowerOptions = .{},
 };
+
+const compile_tw = error_injection.module(enum {
+    parameter_channels,
+    coordinate_channels,
+    lower_program,
+    validate_program,
+    publish,
+}, error{OutOfMemory});
 
 /// Describes one packed input channel, so callers can pack by semantic
 /// identity rather than by guessing an offset.
@@ -129,6 +139,7 @@ pub fn compile(
         }
     }
 
+    try compile_tw.check(.parameter_channels);
     const parameters = try arena.allocator().alloc(Channel, highest_parameter);
     for (parameters, 0..) |*channel, index| {
         channel.* = .{ .name = "", .offset = @intCast(index), .mass_dimension = 0 };
@@ -144,6 +155,7 @@ pub fn compile(
         }
     }
 
+    try compile_tw.check(.coordinate_channels);
     const coordinates = try arena.allocator().alloc(Channel, coordinate_count);
     for (artifact.coordinates, coordinates, 0..) |declared, *channel, index| {
         channel.* = .{
@@ -162,6 +174,7 @@ pub fn compile(
     else
         &.{};
 
+    try compile_tw.check(.lower_program);
     var program = try lower_module.lower(allocator, .{
         .graph = &artifact.graph,
         .capability = configuration.capability,
@@ -174,8 +187,10 @@ pub fn compile(
     }, configuration.lowering);
     errdefer program.deinit();
 
+    try compile_tw.check(.validate_program);
     try program.validate(allocator, configuration.lowering.exponent_limit);
 
+    try compile_tw.check(.publish);
     return .{
         .arena = arena,
         .program = program,
@@ -186,4 +201,60 @@ pub fn compile(
         .parameters = parameters,
         .coordinates = coordinates,
     };
+}
+
+fn testArtifact(allocator: std.mem.Allocator) !calculation.Artifact {
+    const arena = try allocator.create(std.heap.ArenaAllocator);
+    errdefer allocator.destroy(arena);
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
+    var builder = try value.Builder.init(allocator, .{});
+    errdefer builder.deinit();
+    const phi = try builder.background(0, "phi", 1);
+    const lambda = try builder.parameter(0, "lambda", 0);
+    const total = try builder.multiply(&.{
+        lambda,
+        try builder.power(phi, 4),
+    });
+    var graph = try builder.finish();
+    errdefer graph.deinit();
+
+    const coordinates = try arena.allocator().alloc(calculation.Coordinate, 1);
+    coordinates[0] = .{
+        .id = "phi",
+        .scalar_index = 0,
+        .mass_dimension = 1,
+        .node = phi,
+    };
+
+    return .{
+        .arena = arena,
+        .graph = graph,
+        .model_fingerprint = .{ .bytes = [_]u8{0} ** 32 },
+        .request_fingerprint = .{ .bytes = [_]u8{0} ** 32 },
+        .background_mode = .full_scalar_space,
+        .scheme = null,
+        .coordinates = coordinates,
+        .contributions = &.{},
+        .absences = &.{},
+        .total = total,
+        .gradient = &.{},
+        .hessian = &.{},
+    };
+}
+
+test "tripwires exercise every kernel compilation rollback boundary" {
+    var artifact = try testArtifact(std.testing.allocator);
+    defer artifact.deinit();
+
+    for (std.meta.tags(compile_tw.FailPoint)) |point| {
+        compile_tw.errorAlways(point, error.OutOfMemory);
+        defer compile_tw.reset();
+        try std.testing.expectError(
+            error.OutOfMemory,
+            compile(std.testing.allocator, &artifact, .{ .capability = .value }),
+        );
+        try compile_tw.end(.reset);
+    }
 }

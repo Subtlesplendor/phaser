@@ -417,6 +417,17 @@ test for every internal allocation site. Fault injection MUST NOT remain enabled
 accidentally in production behavior. The test path uses the same ownership and
 rollback code as ordinary execution.
 
+Named injection through the approved Tripwire dependency SHOULD be used when a
+stable semantic checkpoint cannot be selected reliably with allocator failure or
+valid input. Checks belong immediately before meaningful ownership, validation,
+or publication transitions and MUST NOT be scattered before every fallible
+operation. Tests configure every declared checkpoint, prove that it was reached,
+exercise the ordinary rollback path with leak detection, and reset the shared
+test state. Exhaustive allocation-site campaigns continue to use a failing
+allocator. Decision [0006](../decisions/0006-tripwire-error-injection-experiment.md)
+records the dependency boundary and compile-away evidence; the contributor rules
+are in [Phaser Engineering Style](../../ENGINEERING_STYLE.md#error-path-injection).
+
 Randomized scheduling tests preserve a replayable seed or explicit schedule.
 
 ## 15. Interoperability verification
