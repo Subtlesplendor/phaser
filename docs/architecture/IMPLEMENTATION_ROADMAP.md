@@ -254,7 +254,9 @@ Each exit criterion and the evidence that closes it:
 Common-gate items: specifications reviewed in the Milestone 2 documentation
 change; supported and unsupported cases stated in each new specification;
 `zig build bench` provides the representative measurements; Debug, ReleaseSafe,
-and ReleaseFast all run in continuous integration.
+and ReleaseFast all run in continuous integration. The pull-request tier covers
+Debug and ReleaseFast on the primary Linux platform and ReleaseSafe on both
+native platforms; the nightly tier exercises their full Cartesian product.
 
 ### Requirements satisfied only trivially
 

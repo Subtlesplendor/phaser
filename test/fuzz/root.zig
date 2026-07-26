@@ -1041,4 +1041,17 @@ test "the shared target list matches the declared fuzz targets" {
         // gets its own campaign and its corpus is never staged for review.
         try std.testing.expect(declared);
     }
+
+    for (targets.smoke_names) |smoke_name| {
+        var declared = false;
+        for (targets.names) |name| {
+            if (std.mem.eql(u8, name, smoke_name)) {
+                declared = true;
+                break;
+            }
+        }
+        // A misspelled smoke target would silently remove live pull-request
+        // coverage from the boundary it was meant to protect.
+        try std.testing.expect(declared);
+    }
 }

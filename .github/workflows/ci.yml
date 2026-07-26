@@ -53,19 +53,10 @@ jobs:
           "$RUNNER_TEMP/zig/zig" version
           [[ "$("$RUNNER_TEMP/zig/zig" version)" == "$(< .zigversion)" ]]
 
-  build-test:
-    name: Build and test (${{ matrix.name }})
-    runs-on: ${{ matrix.runner }}
+  build-test-linux:
+    name: Build and test (Linux x86-64)
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux x86-64
-            runner: ubuntu-24.04
-          - name: macOS ARM64
-            runner: macos-15
 
     steps:
       - name: Check out repository
@@ -79,25 +70,19 @@ jobs:
 
       - name: Build library
         shell: bash
-        run: '"$RUNNER_TEMP/zig/zig" build'
+        run: '"$RUNNER_TEMP/zig/zig" build -Doptimize=ReleaseSafe'
 
-      - name: Test Debug
+      - name: Test deterministic core in Debug
+        if: github.event_name == 'pull_request'
         shell: bash
-        run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=Debug'
+        run: '"$RUNNER_TEMP/zig/zig" build test-core -Doptimize=Debug'
 
-      - name: Test ReleaseSafe
+      - name: Test full suite in ReleaseSafe
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseSafe'
 
-      - name: Test ReleaseFast
-        shell: bash
-        run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseFast'
-
-      - name: Run property tests
-        shell: bash
-        run: '"$RUNNER_TEMP/zig/zig" build test-property -Doptimize=ReleaseSafe'
-
       - name: Compare differential implementations
+        if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
@@ -105,15 +90,37 @@ jobs:
           "$RUNNER_TEMP/zig/zig" build test-differential -Doptimize=ReleaseFast
 
       - name: Run public examples
+        if: github.event_name == 'pull_request'
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build examples -Doptimize=ReleaseSafe'
 
-      - name: Run command-line client tests
+  build-test-macos:
+    name: Build and test (macOS ARM64)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Zig toolchain
         shell: bash
-        run: '"$RUNNER_TEMP/zig/zig" build test-cli -Doptimize=ReleaseSafe'
+        run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
+
+      - name: Build library
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build -Doptimize=ReleaseSafe'
+
+      - name: Test full suite in ReleaseSafe
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseSafe'
 
   fuzz-smoke:
     name: Bounded fuzz smoke
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -127,6 +134,6 @@ jobs:
         shell: bash
         run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
 
-      - name: Run bounded fuzz campaign across every target
+      - name: Run bounded fuzz campaign over high-risk targets
         shell: bash
-        run: '"$RUNNER_TEMP/zig/zig" build fuzz -Doptimize=ReleaseSafe --fuzz=1000'
+        run: '"$RUNNER_TEMP/zig/zig" build fuzz-smoke -Doptimize=ReleaseSafe --fuzz=1000'

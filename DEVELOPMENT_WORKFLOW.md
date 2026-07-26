@@ -145,6 +145,15 @@ and every discovered failure must be reproducible from the saved input. Finding
 a failure fails the pull request. Exhausting the declared budget without finding
 one succeeds but does not claim that fuzzing is complete.
 
+The pull-request matrix covers these concerns without taking their full Cartesian
+product. Linux x86-64 runs the deterministic core in Debug, the complete bounded
+suite in ReleaseSafe, and the differential suite in ReleaseFast. macOS ARM64 runs
+the complete bounded suite in ReleaseSafe, including the standard property
+budget. Broader build-mode and native-platform combinations remain scheduled
+checks. A push to `main` repeats repository checks and the Linux ReleaseSafe
+suite against the published commit, rather than repeating the complete
+pull-request matrix.
+
 ### 5.3 Nightly checks
 
 Scheduled checks on the latest `main` include:
