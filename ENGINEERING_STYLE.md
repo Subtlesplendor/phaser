@@ -344,6 +344,20 @@ Run a small deterministic fuzz budget on each change, longer multi-core fuzzing 
 scheduled CI, and indefinite fuzzing where resources permit. Preserve every crash
 input and run the saved corpus in normal CI.
 
+TODO: the scheduled tier does not exist yet. Only the per-change smoke budget
+runs, at 1000 iterations per target, which is far below saturation: raising a
+measurement run to 20000 iterations per target still produced two to four times
+more unique runs and new coverage on every target, so the per-change job is on
+the steep part of the curve and is not expected to find defects. Outstanding
+work, specified by
+[Development Workflow](DEVELOPMENT_WORKFLOW.md#53-nightly-checks):
+
+- add the scheduled nightly workflow with its 10 to 30 minute budget, including
+  the allocation-failure and exact-capacity campaigns;
+- measure the iteration count that fits that budget rather than guessing it; and
+- add per-target build steps, since `zig build fuzz` currently runs every target
+  and cannot select one, which the weekly per-target campaigns require.
+
 ### Differential and metamorphic tests
 
 Prefer comparisons that are unlikely to repeat the same implementation error:
