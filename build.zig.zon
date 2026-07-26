@@ -8,6 +8,14 @@
             .url = "https://github.com/CogitatorTech/minish/archive/refs/tags/v0.3.0.tar.gz",
             .hash = "minish-0.3.0-SQtSTYI3AgCxWdWbKxS_lvmfbp0wJk29ZW5C9CozJaxm",
         },
+        // Mutation-testing client, recorded in decision 0005. Lazy, so no
+        // ordinary build, pull-request job, or offline checkout resolves it;
+        // only `zig build mutation` fetches it.
+        .zentinel = .{
+            .url = "https://github.com/oly-wan-kenobi/zentinel/archive/refs/tags/v0.1.0.tar.gz",
+            .hash = "zentinel-0.1.0-5AYzkNjbFgACOK2B2Jy_5KWt33VnlrhNKIiC52b2R8xh",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

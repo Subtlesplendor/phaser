@@ -164,13 +164,31 @@ Scheduled checks on the latest `main` include:
   publication, and workspace boundaries;
 - larger conformance fixtures;
 - broader native platform and build-mode coverage;
-- generated-file reproducibility checks; and
-- selected numerical and concurrency stress tests.
+- generated-file reproducibility checks;
+- selected numerical and concurrency stress tests; and
+- one rotation group of the mutation campaign.
 
 An initial target budget of roughly 10 to 30 minutes is appropriate for nightly
 fuzzing. If the number of targets makes that too expensive, targets rotate on a
 documented schedule while the most important trust boundaries continue to run
 nightly.
+
+The mutation campaign rotates under exactly that allowance, because a mutant
+costs a full rebuild of the oracle and the whole repository would take hours.
+`tools/ci/mutation_rotation.sh` assigns every (source file, mutation operator)
+cell to a group by hashing the cell's name, and each night runs one group, so a
+full pass completes every two weeks. Assignment deliberately ignores how large a
+cell is, which leaves groups uneven: a cell's group must not depend on what else
+exists, or the schedule reshuffles faster than it advances and stops visiting
+every cell at all. New sources join the rotation without displacing anything.
+Mutation runs use
+`zig build test-mutation` as their oracle, which is the bounded suite without
+the fuzz tier, and they do not fail on survivors. Decision
+[0005](docs/decisions/0005-mutation-testing-dependency.md) records why.
+
+A surviving mutant is a standing property of the test suite, not a regression in
+the commit that happened to be current. Treat it as a gap to close deliberately,
+in its own change, the way a missing property or conformance fixture is treated.
 
 ### 5.4 Weekly and manually launched campaigns
 

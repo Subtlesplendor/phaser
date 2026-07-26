@@ -138,6 +138,20 @@ under explicit resource bounds.
 A regression test permanently records a minimized previously failing case. It
 does not replace the broader property or fuzz target that found the failure.
 
+### 5.8 Mutation testing
+
+Mutation testing measures the other categories rather than the library. It
+applies one single-token change to a source file at a time, reruns the bounded
+suite, and reports the changes no test noticed.
+
+A surviving mutant is a statement about the suite, not about the commit under
+test: some line is executed without its result being constrained. It is
+scheduled, rotated, and reported under
+[Development Workflow](../../DEVELOPMENT_WORKFLOW.md#53-nightly-checks), and it
+never gates a pull request. Decision
+[0005](../decisions/0005-mutation-testing-dependency.md) records the tool and
+its boundary.
+
 ## 6. Independent reference implementations
 
 Phaser SHOULD maintain simple test-only reference implementations for important
