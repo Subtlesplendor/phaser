@@ -260,7 +260,7 @@ native platforms; the nightly tier exercises their full Cartesian product.
 
 ### Requirements satisfied only trivially
 
-Three requirements are implemented but cannot currently be exercised, and are
+Two requirements are implemented but cannot currently be exercised, and are
 recorded here rather than counted as verified.
 
 - **Scheme mismatch at binding.** Rejecting a parameter point whose scheme
@@ -269,17 +269,26 @@ recorded here rather than counted as verified.
 - **Complex results and branch policy.** The instruction set is real-valued, so
   the prohibitions on silently taking a real part or an absolute value have no
   reachable code path yet. They become testable with the one-loop calculation.
-- **Cross-platform numerical agreement.** Bitwise agreement is observed on
-  Linux x86-64 and macOS ARM64, which is two platforms rather than a policy. The
-  operation-aware comparison policy of
-  [Potential Kernel §15.3](POTENTIAL_KERNEL.md) is not yet written.
 
-  This gap is now concrete rather than theoretical. The first metamorphic
-  property adopted after the milestone showed that relabelling model fields
-  preserves results only to floating-point rounding, because the transformation
-  changes canonical accumulation order and floating-point addition is not
-  associative. The property asserts a locally chosen tolerance because no declared
-  policy exists to appeal to.
+A third was recorded here and has since been discharged.
+
+- **Cross-platform numerical agreement.** The operation-aware comparison policy
+  of [Potential Kernel §15.3](POTENTIAL_KERNEL.md) is now written, in
+  [Numerical Comparison](NUMERICAL_COMPARISON.md), and the metamorphic and
+  finite-difference comparisons name policies from it instead of locally chosen
+  literals.
+
+  Writing it found that one of those literals was not merely undeclared but
+  wrong in kind: the relabelling property compared a cancelling sum at the
+  magnitude of its result rather than of its terms, and the generated
+  backgrounds already reach points where those differ by seven orders of
+  magnitude. Both facts are recorded with their measurements in that document.
+
+  What remains a measurement rather than a contract is the cross-platform
+  evidence itself: results still agree bitwise on Linux x86-64 and macOS ARM64,
+  which is two platforms whose arithmetic happens to be identical, and no
+  operation yet in the kernel can distinguish them. The one-loop logarithm is
+  the first that can.
 
 ### Known characteristics
 
@@ -329,11 +338,14 @@ the end of Milestone 3 that nothing independent exists to check against would be
 materially worse than the unreachable-requirement findings of Milestone 2,
 because a wrong spectral function produces entirely plausible numbers.
 
-A declared numerical-comparison policy is also required, as recorded under
-Milestone 2's requirements satisfied only trivially. The first metamorphic
-property showed that field relabelling preserves results only to floating-point
-rounding, so "agree" needs a defined meaning before it can be asserted across
-representations, platforms, or reference sources.
+A declared numerical-comparison policy was also required, as recorded under
+Milestone 2's requirements satisfied only trivially, because "agree" needs a
+defined meaning before it can be asserted across representations, platforms, or
+reference sources. [Numerical Comparison](NUMERICAL_COMPARISON.md) now supplies
+it for the quantities Milestone 2 compares, and fixes the form the spectral,
+near-degenerate, and zero-mode entries this milestone adds must take. Their
+bounds are measured with the calculation that needs them; the oracle decision
+above remains open.
 
 ### Objective
 

@@ -88,7 +88,10 @@ client matrix.
   silently. Either handle them according to an explicit calculation policy or
   return a diagnostic.
 - Numerical tolerances must be named, documented, scale-aware, and tested. Avoid
-  unexplained literals such as `1e-8` in scientific code.
+  unexplained literals such as `1e-8` in scientific code. The declared policies
+  are cataloged in
+  [Numerical Comparison](docs/architecture/NUMERICAL_COMPARISON.md); a test names
+  one rather than choosing its own.
 - Prefer algorithms that remain well-defined at degeneracies. Tests must include
   exact and near degeneracies, zero masses, hierarchies, and cancellation.
 
@@ -850,6 +853,7 @@ The top-level `test/` directory has different responsibilities:
 - `conformance/`: language-neutral format and scientific reference cases.
 - `reference/`: simple independent test-only implementations.
 - `differential/`: comparisons between independent implementations or tools.
+- `support/`: shared test-only policy and helper modules used by several tiers.
 - `fuzz/`: Zig fuzz entry points and structured smiths.
 - `corpus/`: minimized permanent fuzz inputs.
 - `fixtures/`: shared source models and expected artifacts.

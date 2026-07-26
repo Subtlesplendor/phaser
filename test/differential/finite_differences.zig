@@ -14,14 +14,24 @@
 //!
 //! Finite differences are used here as a test oracle only. They are never a
 //! derivative capability the library falls back to.
+//!
+//! What counts as agreement is not decided here. Each comparison names a policy
+//! from `docs/architecture/NUMERICAL_COMPARISON.md`, mirrored in
+//! `test/support/numerical_comparison.zig`, and supplies the conditioning that
+//! policy declares.
 
 const std = @import("std");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
+const policies = @import("numerical_comparison");
 
 const calculation = phaser.calculation;
 const kernel_module = phaser.kernel;
 const Scalar = kernel_module.Scalar;
+
+const gradient_policy = policies.finite_difference_gradient_well_conditioned;
+const hessian_policy = policies.finite_difference_hessian_well_conditioned;
+const transcribed_policy = policies.reordered_value_well_conditioned;
 
 fn testContext() phaser.Context {
     return switch (phaser.Context.init(std.testing.allocator, .{
@@ -184,19 +194,35 @@ fn stepSecond(magnitude: Scalar) Scalar {
     return scale * std.math.pow(Scalar, std.math.floatEps(Scalar), 1.0 / 4.0);
 }
 
+/// A difference quotient together with the roundoff it inherits.
+///
+/// A central difference subtracts values that agree to several decimal places
+/// and then divides by a small step, so each value's own rounding, of order
+/// `eps` times its magnitude, is amplified by the inverse step. That floor is a
+/// property of the reference rather than of the derivative being checked, and
+/// the comparison policies apply their reference-error term to it.
+const Estimate = struct {
+    value: Scalar,
+    reference_error: Scalar,
+};
+
 fn centralFirst(
     subject: *Subject,
     point: []const Scalar,
     index: usize,
     scratch: []Scalar,
-) !Scalar {
+) !Estimate {
     const h = stepFirst(point[index]);
     @memcpy(scratch, point);
     scratch[index] = point[index] + h;
     const forward = try subject.value(scratch);
     scratch[index] = point[index] - h;
     const backward = try subject.value(scratch);
-    return (forward - backward) / (2 * h);
+    const magnitude = @max(@abs(forward), @abs(backward));
+    return .{
+        .value = (forward - backward) / (2 * h),
+        .reference_error = std.math.floatEps(Scalar) * magnitude / h,
+    };
 }
 
 fn centralSecond(
@@ -205,7 +231,7 @@ fn centralSecond(
     row: usize,
     column: usize,
     scratch: []Scalar,
-) !Scalar {
+) !Estimate {
     const hr = stepSecond(point[row]);
     if (row == column) {
         @memcpy(scratch, point);
@@ -215,29 +241,51 @@ fn centralSecond(
         const backward = try subject.value(scratch);
         @memcpy(scratch, point);
         const middle = try subject.value(scratch);
-        return (forward - 2 * middle + backward) / (hr * hr);
+        const magnitude = @max(@abs(forward), @max(@abs(backward), @abs(middle)));
+        return .{
+            .value = (forward - 2 * middle + backward) / (hr * hr),
+            .reference_error = std.math.floatEps(Scalar) * magnitude / (hr * hr),
+        };
     }
 
     const hc = stepSecond(point[column]);
     var total: Scalar = 0;
+    var magnitude: Scalar = 0;
     for ([_]Scalar{ 1, -1 }) |row_sign| {
         for ([_]Scalar{ 1, -1 }) |column_sign| {
             @memcpy(scratch, point);
             scratch[row] = point[row] + row_sign * hr;
             scratch[column] = point[column] + column_sign * hc;
-            total += row_sign * column_sign * try subject.value(scratch);
+            const sampled = try subject.value(scratch);
+            magnitude = @max(magnitude, @abs(sampled));
+            total += row_sign * column_sign * sampled;
         }
     }
-    return total / (4 * hr * hc);
+    return .{
+        .value = total / (4 * hr * hc),
+        .reference_error = std.math.floatEps(Scalar) * magnitude / (hr * hc),
+    };
 }
 
-/// Compares exact and numerical derivatives at one point.
+/// Compares one derivative against its difference quotient under `policy`.
 ///
-/// The tolerance accommodates error on the reference side, which is the inexact
-/// one. With a step chosen for each derivative order the reference is accurate to
-/// roughly eight significant figures, so a tolerance near 1e-7 still rejects any
-/// plausible structural error: a wrong orbit coefficient or a dropped product
-/// rule term shifts a derivative by a factor, not by a part in ten million.
+/// The reference is the inexact side, and the policy's two terms answer the two
+/// ways it loses accuracy: the relative term covers the truncation error of the
+/// difference formula, and the reference-error term covers the roundoff the
+/// quotient inherits from the values it cancelled. Neither bound is near a
+/// structural error, which shifts a derivative by a factor rather than by a part
+/// in ten million.
+fn expectAgreement(
+    policy: policies.Policy,
+    estimate: Estimate,
+    exact: Scalar,
+) !void {
+    try policy.expectCloseAt(estimate.value, exact, .{
+        .magnitude = @max(@abs(estimate.value), @abs(exact)),
+        .reference_error = estimate.reference_error,
+    });
+}
+
 fn expectAgreementAt(subject: *Subject, point: []const Scalar) !void {
     const n = subject.coordinates;
     const gradient = try std.testing.allocator.alloc(Scalar, n);
@@ -251,15 +299,15 @@ fn expectAgreementAt(subject: *Subject, point: []const Scalar) !void {
 
     for (0..n) |index| {
         const numerical = try centralFirst(subject, point, index, scratch);
-        try std.testing.expectApproxEqRel(numerical, gradient[index], 1e-7);
+        try expectAgreement(gradient_policy, numerical, gradient[index]);
     }
     for (0..n) |row| {
         for (0..n) |column| {
             const numerical = try centralSecond(subject, point, row, column, scratch);
-            try std.testing.expectApproxEqRel(
+            try expectAgreement(
+                hessian_policy,
                 numerical,
                 hessian[row * n + column],
-                1e-7,
             );
         }
     }
@@ -314,7 +362,7 @@ test "finite differences confirm the orbit coefficients numerically" {
 
     var scratch: [2]Scalar = undefined;
     const numerical_mixed = try centralSecond(&subject, &point, 0, 1, &scratch);
-    try std.testing.expectApproxEqRel(numerical_mixed, hessian[1], 1e-7);
+    try expectAgreement(hessian_policy, numerical_mixed, hessian[1]);
 
     // The exact mixed partial of the tree potential, assembled independently
     // from the model's declared parameter values:
@@ -327,9 +375,28 @@ test "finite differences confirm the orbit coefficients numerically" {
     const l2: Scalar = 0.1;
     const l3: Scalar = -0.02;
     const m_hs2: Scalar = 500.0;
-    const expected = m_hs2 + b * h + c * s +
-        l3 * h * h / 2 + l2 * h * s + l1 * s * s / 2;
-    try std.testing.expectApproxEqRel(expected, hessian[1], 1e-12);
+    const terms = [_]Scalar{
+        m_hs2,
+        b * h,
+        c * s,
+        l3 * h * h / 2,
+        l2 * h * s,
+        l1 * s * s / 2,
+    };
+    var expected: Scalar = 0;
+    var unsigned: Scalar = 0;
+    for (terms) |term| {
+        expected += term;
+        unsigned += @abs(term);
+    }
+
+    // Both sides are exact in the reals and inexact only in how they sum. The
+    // policy's scale is therefore the sum of the terms' magnitudes rather than
+    // the magnitude of their total, which at this point is about two and a half
+    // times smaller.
+    try transcribed_policy.expectCloseAt(expected, hessian[1], .{
+        .magnitude = unsigned,
+    });
 }
 
 test "the Hessian is symmetric under numerical comparison" {
@@ -345,6 +412,7 @@ test "the Hessian is symmetric under numerical comparison" {
     try subject.derivatives(&point, &gradient, &hessian);
 
     // Interning makes this an identifier equality upstream, but the requirement
-    // is on the produced numbers, so it is asserted on the numbers.
-    try std.testing.expectEqual(hessian[1], hessian[2]);
+    // is on the produced numbers, so it is asserted on the numbers, and on one
+    // evaluation of one kernel it is asserted bitwise.
+    try policies.same_kernel_bitwise.expectEqual(hessian[1], hessian[2]);
 }
