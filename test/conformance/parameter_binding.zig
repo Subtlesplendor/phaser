@@ -574,6 +574,88 @@ test "the scheme mismatch branch is unreachable while one scheme exists" {
     );
 }
 
+/// Returns a kernel and a binding over it together, by value.
+///
+/// This is the ordinary shape of a helper that sets up both, and it moves the
+/// kernel struct out of the frame it was compiled in.
+const Bound = struct {
+    model: phaser.Model,
+    request: calculation.Request,
+    artifact: calculation.Artifact,
+    kernel: kernel_module.Kernel,
+    binding: kernel_module.Binding,
+
+    fn init() !Bound {
+        var model = try loadModel(example_data.phi4_model);
+        errdefer model.deinit();
+        var request = try parseRequest(full_space_request);
+        errdefer request.deinit();
+        var artifact = try derive(&model, &request);
+        errdefer artifact.deinit();
+        var kernel = try kernel_module.compile(std.testing.allocator, &artifact, .{
+            .capability = .value,
+        });
+        errdefer kernel.deinit();
+        var point = try parsePoint(phi4_point);
+        defer point.deinit();
+        const binding = try kernel_module.bind(
+            std.testing.allocator,
+            &kernel,
+            &model,
+            &point,
+        );
+        return .{
+            .model = model,
+            .request = request,
+            .artifact = artifact,
+            .kernel = kernel,
+            .binding = binding,
+        };
+    }
+
+    fn deinit(self: *Bound) void {
+        self.binding.deinit();
+        self.kernel.deinit();
+        self.artifact.deinit();
+        self.request.deinit();
+        self.model.deinit();
+    }
+};
+
+test "a binding survives its kernel struct being moved" {
+    // A binding holds the lowered program by value rather than a pointer to the
+    // kernel, so returning both from a helper — which copies the kernel struct
+    // out of the frame it was compiled in — leaves the binding usable.
+    //
+    // Holding a kernel pointer instead made this silently read a dead stack
+    // slot, which surfaced as a shape mismatch rather than as a lifetime error.
+    var bound = try Bound.init();
+    defer bound.deinit();
+
+    const layout = bound.binding.workspaceLayout(1);
+    const workspace = try std.testing.allocator.alignedAlloc(
+        u8,
+        .of(Scalar),
+        layout.bytes,
+    );
+    defer std.testing.allocator.free(workspace);
+
+    var values: [1]Scalar = undefined;
+    var statuses: [1]kernel_module.Status = undefined;
+    try bound.binding.evaluate(&.{246.0}, 1, workspace, .{
+        .values = &values,
+        .statuses = &statuses,
+    });
+    try std.testing.expectEqual(kernel_module.Status.ok, statuses[0]);
+    try std.testing.expectEqual(@as(usize, 1), bound.binding.coordinateCount());
+
+    // The moved kernel and the binding still describe the same program.
+    try std.testing.expectEqual(
+        bound.kernel.workspaceLayout(1).bytes,
+        layout.bytes,
+    );
+}
+
 test "representative allocation failures never publish a partial binding" {
     var fixture = try Fixture.init(example_data.phi4_model, .value);
     defer fixture.deinit();

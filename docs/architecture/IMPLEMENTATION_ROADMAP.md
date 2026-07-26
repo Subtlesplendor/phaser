@@ -171,6 +171,8 @@ multi-scalar model. Preserve these fixtures for the later notebook.
 
 ## 6. Milestone 2: tree-level scalar vertical slice
 
+Status: implemented
+
 ### Objective
 
 Deliver the first complete model-to-symbolic-and-numerical calculation.
@@ -235,6 +237,53 @@ the data and expected behavior for the first Python notebook in Milestone 4.
 The delivered workflows are `phaser inspect`, `phaser export`, and
 `phaser evaluate`, with committed inputs and golden outputs under
 `examples/phi4/` and `examples/multi_scalar/`.
+
+### Gate accounting
+
+Each exit criterion and the evidence that closes it:
+
+| Criterion | Evidence |
+|---|---|
+| \(\phi^4\) and multi-scalar examples run end to end | `examples/*/`, golden equations and sampled data, compared byte for byte |
+| Fresh and rebound bindings agree | `test/conformance/parameter_binding.zig` |
+| Scalar, batch-of-one, arbitrary batch partitions, and permutations agree | `test/conformance/potential_kernel.zig`, every prefix/suffix split of a seven-point batch plus a permutation |
+| Symbolic derivatives and direct polynomial references agree | `test/conformance/classical_scalar.zig` against transcribed fixture identities, and `test/differential/finite_differences.zig` against central differences |
+| Kernel evaluation is allocation-free at exact workspace boundaries | `evaluate` takes no allocator; workspace sufficient at exactly the queried size and rejected one byte below |
+| Exported equations preserve exact coefficients and background embedding | `test/integration/symbolic_export.zig` and the committed golden equations |
+
+Common-gate items: specifications reviewed in the Milestone 2 documentation
+change; supported and unsupported cases stated in each new specification;
+`zig build bench` provides the representative measurements; Debug, ReleaseSafe,
+and ReleaseFast all run in continuous integration.
+
+### Requirements satisfied only trivially
+
+Three requirements are implemented but cannot currently be exercised, and are
+recorded here rather than counted as verified.
+
+- **Scheme mismatch at binding.** Rejecting a parameter point whose scheme
+  differs from the artifact's cannot fire while `MSbar` is the only supported
+  scheme. A conformance tripwire fails when a second scheme is added.
+- **Complex results and branch policy.** The instruction set is real-valued, so
+  the prohibitions on silently taking a real part or an absolute value have no
+  reachable code path yet. They become testable with the one-loop calculation.
+- **Cross-platform numerical agreement.** Bitwise agreement is observed on
+  Linux x86-64 and macOS ARM64, which is two platforms rather than a policy. The
+  operation-aware comparison policy of
+  [Potential Kernel §15.3](POTENTIAL_KERNEL.md) is not yet written.
+
+### Known characteristics
+
+Not defects, but measured behavior a later milestone should know about.
+
+- Derivation costs roughly 0.1 ms for \(\phi^4\) and 0.8 ms for the
+  multi-scalar model, two orders of magnitude more than lowering. Exact rational
+  arithmetic and string-keyed interning dominate. This is irrelevant at present
+  scale, because derivation happens once, and it is the first thing to examine
+  if derivation ever appears in a hot path.
+- Staged binding reduces per-point cost by roughly a fifth at large batch sizes
+  and is neutral at a single point, where copying the parameter-stage prologue
+  costs about what it saves.
 
 ## 7. Milestone 3: zero-temperature one-loop scalar potential
 
