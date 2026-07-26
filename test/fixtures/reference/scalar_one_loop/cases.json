@@ -1,0 +1,45 @@
+{
+  "purpose": "milestone_3_oracle_prototype",
+  "model_file": "three_scalar_model.json",
+  "model_schema": "phaser.qft-model/0.1",
+  "cases": [
+    {
+      "id": "positive_dense",
+      "parameters": {
+        "c111": "53",
+        "c112": "26",
+        "c113": "-4",
+        "c122": "44",
+        "c123": "-22",
+        "c133": "29"
+      },
+      "background": { "r": "1", "s": "0", "t": "0" },
+      "mass_matrix": [
+        ["53", "26", "-4"],
+        ["26", "44", "-22"],
+        ["-4", "-22", "29"]
+      ],
+      "eigenvalues": ["9", "36", "81"],
+      "characteristic_polynomial": "(lambda - 9) * (lambda - 36) * (lambda - 81)"
+    },
+    {
+      "id": "exact_zero_mode",
+      "parameters": {
+        "c111": "1",
+        "c112": "1",
+        "c113": "0",
+        "c122": "1",
+        "c123": "0",
+        "c133": "4"
+      },
+      "background": { "r": "1", "s": "0", "t": "0" },
+      "mass_matrix": [
+        ["1", "1", "0"],
+        ["1", "1", "0"],
+        ["0", "0", "4"]
+      ],
+      "eigenvalues": ["0", "2", "4"],
+      "characteristic_polynomial": "lambda * (lambda - 2) * (lambda - 4)"
+    }
+  ]
+}

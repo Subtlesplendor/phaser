@@ -54,6 +54,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const scalar_oracle_fixture_module = b.createModule(.{
+        .root_source_file = b.path(
+            "test/fixtures/reference/scalar_one_loop/data.zig",
+        ),
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Executable mirror of `docs/architecture/NUMERICAL_COMPARISON.md`. Test
     // tiers name a policy from it instead of carrying separately editable
@@ -102,6 +109,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phaser", .module = phaser_module },
             .{ .name = "example_data", .module = example_data_module },
             .{ .name = "commands", .module = cli_commands_module },
+            .{
+                .name = "scalar_oracle_fixture",
+                .module = scalar_oracle_fixture_module,
+            },
+            .{
+                .name = "numerical_comparison",
+                .module = numerical_comparison_module,
+            },
         },
     });
     const suite_tests = b.addTest(.{
@@ -117,6 +132,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phaser", .module = phaser_module },
             .{ .name = "example_data", .module = example_data_module },
             .{ .name = "commands", .module = cli_commands_module },
+            .{
+                .name = "scalar_oracle_fixture",
+                .module = scalar_oracle_fixture_module,
+            },
         },
     });
     const integration_tests = b.addTest(.{ .root_module = integration_module });
@@ -134,6 +153,10 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "phaser", .module = phaser_module },
             .{ .name = "example_data", .module = example_data_module },
+            .{
+                .name = "numerical_comparison",
+                .module = numerical_comparison_module,
+            },
         },
     });
     const conformance_tests = b.addTest(.{ .root_module = conformance_module });
@@ -143,6 +166,25 @@ pub fn build(b: *std.Build) void {
         "Run language-neutral scientific conformance tests",
     );
     test_conformance_step.dependOn(&run_conformance_tests.step);
+
+    const reference_module = b.createModule(.{
+        .root_source_file = b.path("test/reference/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{
+                .name = "numerical_comparison",
+                .module = numerical_comparison_module,
+            },
+        },
+    });
+    const reference_tests = b.addTest(.{ .root_module = reference_module });
+    const run_reference_tests = b.addRunArtifact(reference_tests);
+    const test_reference_step = b.step(
+        "test-reference",
+        "Run independent test-only reference implementations",
+    );
+    test_reference_step.dependOn(&run_reference_tests.step);
 
     const property_module = b.createModule(.{
         .root_source_file = b.path("test/property/root.zig"),
@@ -234,6 +276,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all bounded tests");
     test_step.dependOn(test_core_step);
     test_step.dependOn(&run_cli_tests.step);
+    test_step.dependOn(&run_reference_tests.step);
     test_step.dependOn(&run_differential_tests.step);
     test_step.dependOn(&run_property_tests.step);
     test_step.dependOn(&run_property_campaign.step);
@@ -258,6 +301,7 @@ pub fn build(b: *std.Build) void {
     test_mutation_step.dependOn(&run_unit_tests.step);
     test_mutation_step.dependOn(&run_suite_tests.step);
     test_mutation_step.dependOn(&run_cli_tests.step);
+    test_mutation_step.dependOn(&run_reference_tests.step);
     test_mutation_step.dependOn(&run_differential_tests.step);
     test_mutation_step.dependOn(&run_property_tests.step);
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
+const scalar_oracle_fixture = @import("scalar_oracle_fixture");
 
 fn context() phaser.Context {
     return switch (phaser.Context.init(std.testing.allocator, .{
@@ -36,6 +37,32 @@ test "public loader accepts the phi4 and multi-scalar conformance models" {
     try std.testing.expectEqual(@as(usize, 1), phi4.real_scalars.len);
     try std.testing.expectEqual(@as(usize, 2), multi.real_scalars.len);
     try std.testing.expectEqual(@as(usize, 15), multi.parameters.len);
+}
+
+test "public loader accepts the three-scalar oracle prototype model" {
+    var model = try load(scalar_oracle_fixture.three_scalar_model);
+    defer model.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), model.real_scalars.len);
+    try std.testing.expectEqual(@as(usize, 6), model.parameters.len);
+    const cubic = model.tensor(.scalar_cubic) orelse
+        return error.MissingCubicTensor;
+    try std.testing.expectEqual(@as(usize, 6), cubic.components.len);
+}
+
+test "three-scalar oracle prototype cases remain valid language-neutral JSON" {
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        scalar_oracle_fixture.cases,
+        .{
+            .duplicate_field_behavior = .@"error",
+            .parse_numbers = false,
+            .allocate = .alloc_always,
+        },
+    );
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
 }
 
 test "sparse symmetric tensor lookup agrees across dense permutations" {

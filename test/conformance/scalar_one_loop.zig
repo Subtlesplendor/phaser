@@ -1,4 +1,5 @@
 const std = @import("std");
+const comparison = @import("numerical_comparison");
 
 // Numerical transcription smoke tests for the exact language-neutral fixtures.
 // Milestone 0 intentionally has no fixture or model parser.
@@ -64,9 +65,21 @@ fn oneLoopSecondSpectralDerivative(
     };
 }
 
-fn expectComplexApprox(expected: Complex64, actual: Complex64, tolerance: f64) !void {
-    try std.testing.expectApproxEqAbs(expected.re, actual.re, tolerance);
-    try std.testing.expectApproxEqAbs(expected.im, actual.im, tolerance);
+fn expectComplexApprox(
+    expected: Complex64,
+    actual: Complex64,
+    scale: Complex64,
+) !void {
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        expected.re,
+        actual.re,
+        .{ .magnitude = scale.re },
+    );
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        expected.im,
+        actual.im,
+        .{ .magnitude = scale.im },
+    );
 }
 
 fn symmetricEigenvalues2x2(a: f64, b: f64, d: f64) [2]f64 {
@@ -76,10 +89,21 @@ fn symmetricEigenvalues2x2(a: f64, b: f64, d: f64) [2]f64 {
     return .{ center + radius, center - radius };
 }
 
-fn spectralSum(eigenvalues: []const f64) Complex64 {
-    var sum = Complex64{ .re = 0, .im = 0 };
+const SpectralSum = struct {
+    value: Complex64,
+    unsigned_scale: Complex64,
+};
+
+fn spectralSum(eigenvalues: []const f64) SpectralSum {
+    var sum = SpectralSum{
+        .value = .{ .re = 0, .im = 0 },
+        .unsigned_scale = .{ .re = 0, .im = 0 },
+    };
     for (eigenvalues) |eigenvalue| {
-        sum = sum.add(oneLoopEigenvalue(eigenvalue, 1));
+        const contribution = oneLoopEigenvalue(eigenvalue, 1);
+        sum.value = sum.value.add(contribution);
+        sum.unsigned_scale.re += @abs(contribution.re);
+        sum.unsigned_scale.im += @abs(contribution.im);
     }
     return sum;
 }
@@ -89,12 +113,15 @@ test "positive and negative scalar masses preserve the principal branch" {
     try expectComplexApprox(
         .{ .re = expected_real, .im = 0 },
         oneLoopEigenvalue(1, 1),
-        1e-15,
+        .{ .re = @abs(expected_real), .im = 0 },
     );
     try expectComplexApprox(
         .{ .re = expected_real, .im = 1.0 / (64.0 * std.math.pi) },
         oneLoopEigenvalue(-1, 1),
-        1e-15,
+        .{
+            .re = @abs(expected_real),
+            .im = 1.0 / (64.0 * std.math.pi),
+        },
     );
 }
 
@@ -102,12 +129,18 @@ test "value and first derivative have zero limits from both sides" {
     try expectComplexApprox(
         .{ .re = 0, .im = 0 },
         oneLoopEigenvalue(0, 1),
-        0,
-    );
-    try expectComplexApprox(
         .{ .re = 0, .im = 0 },
-        oneLoopFirstSpectralDerivative(0, 1),
+    );
+    const first_derivative = oneLoopFirstSpectralDerivative(0, 1);
+    try comparison.spectral_gradient_zero_mode.expectCloseAt(
         0,
+        first_derivative.re,
+        .{ .magnitude = 0 },
+    );
+    try comparison.spectral_gradient_zero_mode.expectCloseAt(
+        0,
+        first_derivative.im,
+        .{ .magnitude = 0 },
     );
 
     const epsilon = 1e-100;
@@ -130,8 +163,8 @@ test "negative degeneracy preserves multiplicity" {
     const repeated = spectralSum(&.{ -2, -2 });
     try expectComplexApprox(
         .{ .re = 2.0 * single.re, .im = 2.0 * single.im },
-        repeated,
-        1e-15,
+        repeated.value,
+        repeated.unsigned_scale,
     );
 }
 
@@ -143,6 +176,16 @@ test "field permutation and orthogonal basis changes preserve complex spectral s
     const rotated = symmetricEigenvalues2x2(1.5, 2.5, 1.5);
 
     const expected = spectralSum(&original);
-    try expectComplexApprox(expected, spectralSum(&permuted), 1e-15);
-    try expectComplexApprox(expected, spectralSum(&rotated), 1e-15);
+    const permuted_sum = spectralSum(&permuted);
+    const rotated_sum = spectralSum(&rotated);
+    try expectComplexApprox(
+        expected.value,
+        permuted_sum.value,
+        expected.unsigned_scale,
+    );
+    try expectComplexApprox(
+        expected.value,
+        rotated_sum.value,
+        expected.unsigned_scale,
+    );
 }
