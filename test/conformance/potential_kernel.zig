@@ -517,6 +517,61 @@ test "wrong buffer shapes are rejected before unsafe use" {
     );
 }
 
+test "inputs outputs and workspace must be pairwise disjoint" {
+    var harness = try Harness.init(
+        example_data.phi4_model,
+        full_space_request,
+        .value,
+    );
+    defer harness.deinit();
+
+    var parameters = [_]Scalar{ 0.5, -2.0, 3.25 };
+    var backgrounds = [_]Scalar{1.25};
+    var output_value: [1]Scalar = undefined;
+    var statuses: [1]kernel_module.Status = undefined;
+
+    try std.testing.expectError(error.ForbiddenAliasing, harness.kernel.evaluate(
+        .{ .parameters = &parameters, .backgrounds = &backgrounds },
+        1,
+        harness.workspace,
+        .{ .values = backgrounds[0..], .statuses = &statuses },
+    ));
+    try std.testing.expectError(error.ForbiddenAliasing, harness.kernel.evaluate(
+        .{ .parameters = &parameters, .backgrounds = &backgrounds },
+        1,
+        harness.workspace,
+        .{ .values = parameters[0..1], .statuses = &statuses },
+    ));
+
+    const workspace_scalars = std.mem.bytesAsSlice(Scalar, harness.workspace);
+    workspace_scalars[0] = 1.25;
+    try std.testing.expectError(error.ForbiddenAliasing, harness.kernel.evaluate(
+        .{ .parameters = &parameters, .backgrounds = workspace_scalars[0..1] },
+        1,
+        harness.workspace,
+        .{ .values = &output_value, .statuses = &statuses },
+    ));
+}
+
+test "overflowing batch shapes are rejected before arithmetic wraps" {
+    var harness = try Harness.init(
+        example_data.multi_scalar_model,
+        full_space_request,
+        .value,
+    );
+    defer harness.deinit();
+
+    const parameters: [15]Scalar = @splat(1);
+    var output_value: [1]Scalar = undefined;
+    var status: [1]kernel_module.Status = undefined;
+    try std.testing.expectError(error.SizeOverflow, harness.kernel.evaluate(
+        .{ .parameters = &parameters, .backgrounds = &.{} },
+        std.math.maxInt(usize),
+        harness.workspace,
+        .{ .values = &output_value, .statuses = &status },
+    ));
+}
+
 test "evaluation performs no allocation" {
     var harness = try Harness.init(
         example_data.multi_scalar_model,

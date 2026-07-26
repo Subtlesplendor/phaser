@@ -32,6 +32,7 @@ pub const ByteSize = capacity.ByteSize;
 pub const CapacityResult = capacity.Result;
 pub const Budget = capacity.Budget;
 pub const Reservation = capacity.Reservation;
+pub const LimitedAllocator = capacity.LimitedAllocator;
 
 pub const Limits = context.Limits;
 pub const Context = context.Context;

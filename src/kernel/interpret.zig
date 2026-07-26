@@ -22,7 +22,9 @@ pub const CallError = error{
     WorkspaceMisaligned,
     /// An input or output buffer has the wrong length for the point count.
     ShapeMismatch,
-    /// An output buffer overlaps the workspace or another output.
+    /// A point-count-dependent buffer size cannot be represented by `usize`.
+    SizeOverflow,
+    /// Inputs, outputs, and workspace are pairwise disjoint by contract.
     ForbiddenAliasing,
     /// The requested output is not part of this kernel's capability.
     UnavailableCapability,
@@ -64,7 +66,15 @@ pub fn evaluate(
     // The workspace is deliberately an unaligned slice rather than an aligned
     // type: alignment is a contract a foreign caller can violate, and the
     // specification requires it to be detected rather than assumed.
-    try validateCall(program, inputs, point_count, workspace, outputs, .direct);
+    try validateCall(
+        program,
+        inputs,
+        &.{},
+        point_count,
+        workspace,
+        outputs,
+        .direct,
+    );
 
     const required = @as(usize, program.temporary_count) * @sizeOf(Scalar);
     const aligned: []align(@alignOf(Scalar)) u8 = @alignCast(workspace[0..required]);
@@ -210,6 +220,7 @@ pub fn runParameterStage(
 pub fn evaluateStaged(
     program: *const Program,
     prologue: []const Scalar,
+    prologue_status: Status,
     backgrounds: []const Scalar,
     point_count: usize,
     workspace: []u8,
@@ -218,6 +229,7 @@ pub fn evaluateStaged(
     try validateCall(
         program,
         .{ .parameters = &.{}, .backgrounds = backgrounds },
+        prologue,
         point_count,
         workspace,
         outputs,
@@ -237,7 +249,9 @@ pub fn evaluateStaged(
         const slice = backgrounds[point * program.background_count ..][0..program.background_count];
         const status = run(program, suffix, &.{}, slice, temporaries);
         writeOutputs(program, temporaries, outputs, point, coordinates);
-        outputs.statuses[point] = if (status != .ok)
+        outputs.statuses[point] = if (prologue_status != .ok)
+            prologue_status
+        else if (status != .ok)
             status
         else
             finiteStatus(program, temporaries);
@@ -267,6 +281,7 @@ const CallKind = enum { direct, staged };
 fn validateCall(
     program: *const Program,
     inputs: Inputs,
+    prologue: []const Scalar,
     point_count: usize,
     workspace: []const u8,
     outputs: OutputBuffers,
@@ -282,35 +297,46 @@ fn validateCall(
     if (kind == .direct and inputs.parameters.len != program.parameter_count) {
         return error.ShapeMismatch;
     }
-    if (inputs.backgrounds.len != point_count * program.background_count) {
+    const background_values = std.math.mul(
+        usize,
+        point_count,
+        @as(usize, program.background_count),
+    ) catch return error.SizeOverflow;
+    if (inputs.backgrounds.len != background_values) {
         return error.ShapeMismatch;
     }
-    if (outputs.values.len != program.valueCount(point_count)) return error.ShapeMismatch;
+    if (outputs.values.len != point_count) return error.ShapeMismatch;
     if (outputs.statuses.len != point_count) return error.ShapeMismatch;
 
     if (outputs.gradients.len != 0) {
         if (!program.capability.includesGradient()) return error.UnavailableCapability;
-        if (outputs.gradients.len != program.gradientCount(point_count)) {
+        const gradient_values = program.gradientCount(point_count) catch
+            return error.SizeOverflow;
+        if (outputs.gradients.len != gradient_values) {
             return error.ShapeMismatch;
         }
     }
     if (outputs.hessians.len != 0) {
         if (!program.capability.includesHessian()) return error.UnavailableCapability;
-        if (outputs.hessians.len != program.hessianCount(point_count)) {
+        const hessian_values = program.hessianCount(point_count) catch
+            return error.SizeOverflow;
+        if (outputs.hessians.len != hessian_values) {
             return error.ShapeMismatch;
         }
     }
 
-    // Outputs must not overlap the workspace or one another.
+    // Inputs, outputs, and workspace are pairwise disjoint. In particular,
+    // writing an earlier point must not mutate a later point's input.
     const regions = [_][]const u8{
+        std.mem.sliceAsBytes(inputs.parameters),
+        std.mem.sliceAsBytes(inputs.backgrounds),
+        std.mem.sliceAsBytes(prologue),
+        workspace,
         std.mem.sliceAsBytes(outputs.values),
         std.mem.sliceAsBytes(outputs.gradients),
         std.mem.sliceAsBytes(outputs.hessians),
         std.mem.sliceAsBytes(outputs.statuses),
     };
-    for (regions) |region| {
-        if (overlaps(region, workspace)) return error.ForbiddenAliasing;
-    }
     for (regions, 0..) |left, index| {
         for (regions[index + 1 ..]) |right| {
             if (overlaps(left, right)) return error.ForbiddenAliasing;
@@ -322,7 +348,10 @@ fn overlaps(left: []const u8, right: []const u8) bool {
     if (left.len == 0 or right.len == 0) return false;
     const left_start = @intFromPtr(left.ptr);
     const right_start = @intFromPtr(right.ptr);
-    return left_start < right_start + right.len and right_start < left_start + left.len;
+    return if (left_start <= right_start)
+        right_start - left_start < left.len
+    else
+        left_start - right_start < right.len;
 }
 
 // -- tests -----------------------------------------------------------------

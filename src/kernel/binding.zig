@@ -45,6 +45,9 @@ pub const Binding = struct {
     /// The temporary array after the parameter stage has run. Copied into
     /// workspace at the start of each evaluation.
     prologue: []const Scalar,
+    /// Status produced while constructing `prologue`. It applies to every
+    /// background point evaluated from this binding.
+    prologue_status: program_module.Status,
     scheme: calculation.Scheme,
     reference_scale: Scalar,
 
@@ -81,6 +84,7 @@ pub const Binding = struct {
         return interpret_module.evaluateStaged(
             &self.program,
             self.prologue,
+            self.prologue_status,
             backgrounds,
             point_count,
             workspace,
@@ -125,7 +129,11 @@ pub fn bind(
         kernel.program.temporary_count,
     );
     @memset(prologue, 0);
-    _ = interpret_module.runParameterStage(&kernel.program, parameters, prologue);
+    const prologue_status = interpret_module.runParameterStage(
+        &kernel.program,
+        parameters,
+        prologue,
+    );
 
     return .{
         .arena = arena,
@@ -133,6 +141,7 @@ pub fn bind(
         .coordinate_count = kernel.coordinateCount(),
         .parameters = parameters,
         .prologue = prologue,
+        .prologue_status = prologue_status,
         .scheme = point.scheme,
         .reference_scale = point.reference_scale,
     };

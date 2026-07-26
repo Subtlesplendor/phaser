@@ -253,7 +253,16 @@ pub fn evaluate(
     defer binding.deinit();
 
     const coordinates = kernel.coordinateCount();
-    if (options.points.len != options.point_count * coordinates) {
+    const background_values = std.math.mul(
+        usize,
+        options.point_count,
+        coordinates,
+    ) catch {
+        errors.writeAll("error:arguments: point count is too large\n") catch
+            return error.WriteFailed;
+        return error.InvalidArguments;
+    };
+    if (options.points.len != background_values) {
         errors.print(
             "error:arguments: expected {d} values per point\n",
             .{coordinates},
@@ -272,13 +281,17 @@ pub fn evaluate(
     defer allocator.free(values);
     const gradients = try allocator.alloc(
         Scalar,
-        if (options.outputs == .value) 0 else options.point_count * coordinates,
+        if (options.outputs == .value) 0 else background_values,
     );
     defer allocator.free(gradients);
     const hessians = try allocator.alloc(
         Scalar,
         if (options.outputs == .hessian)
-            options.point_count * coordinates * coordinates
+            std.math.mul(usize, background_values, coordinates) catch {
+                errors.writeAll("error:arguments: output size is too large\n") catch
+                    return error.WriteFailed;
+                return error.InvalidArguments;
+            }
         else
             0,
     );

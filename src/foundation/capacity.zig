@@ -114,6 +114,126 @@ pub const Budget = struct {
     }
 };
 
+/// Allocator wrapper that enforces a byte ceiling over live allocations.
+///
+/// This is used at externally controlled construction boundaries where a
+/// resource limit must constrain actual allocation, rather than an estimate
+/// computed after construction has already succeeded.
+pub const LimitedAllocator = struct {
+    child: std.mem.Allocator,
+    limit: usize,
+    current: usize = 0,
+    peak: usize = 0,
+    limit_exceeded: bool = false,
+
+    pub fn init(child: std.mem.Allocator, limit: usize) LimitedAllocator {
+        return .{ .child = child, .limit = limit };
+    }
+
+    pub fn allocator(self: *LimitedAllocator) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = alloc,
+                .resize = resize,
+                .remap = remap,
+                .free = free,
+            },
+        };
+    }
+
+    fn reserve(self: *LimitedAllocator, amount: usize) bool {
+        if (amount > self.limit - self.current) {
+            self.limit_exceeded = true;
+            return false;
+        }
+        self.current += amount;
+        self.peak = @max(self.peak, self.current);
+        return true;
+    }
+
+    fn alloc(
+        context: *anyopaque,
+        len: usize,
+        alignment: std.mem.Alignment,
+        return_address: usize,
+    ) ?[*]u8 {
+        const self: *LimitedAllocator = @ptrCast(@alignCast(context));
+        if (!self.reserve(len)) return null;
+        return self.child.rawAlloc(len, alignment, return_address) orelse {
+            self.current -= len;
+            return null;
+        };
+    }
+
+    fn resize(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        new_len: usize,
+        return_address: usize,
+    ) bool {
+        const self: *LimitedAllocator = @ptrCast(@alignCast(context));
+        if (new_len > memory.len) {
+            const growth = new_len - memory.len;
+            if (!self.reserve(growth)) return false;
+            if (!self.child.rawResize(memory, alignment, new_len, return_address)) {
+                self.current -= growth;
+                return false;
+            }
+        } else {
+            if (!self.child.rawResize(memory, alignment, new_len, return_address)) {
+                return false;
+            }
+            self.current -= memory.len - new_len;
+        }
+        return true;
+    }
+
+    fn remap(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        new_len: usize,
+        return_address: usize,
+    ) ?[*]u8 {
+        const self: *LimitedAllocator = @ptrCast(@alignCast(context));
+        if (new_len > memory.len) {
+            const growth = new_len - memory.len;
+            if (!self.reserve(growth)) return null;
+            return self.child.rawRemap(
+                memory,
+                alignment,
+                new_len,
+                return_address,
+            ) orelse {
+                self.current -= growth;
+                return null;
+            };
+        }
+        const result = self.child.rawRemap(
+            memory,
+            alignment,
+            new_len,
+            return_address,
+        ) orelse return null;
+        self.current -= memory.len - new_len;
+        return result;
+    }
+
+    fn free(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        return_address: usize,
+    ) void {
+        const self: *LimitedAllocator = @ptrCast(@alignCast(context));
+        self.child.rawFree(memory, alignment, return_address);
+        std.debug.assert(memory.len <= self.current);
+        self.current -= memory.len;
+    }
+};
+
 fn overflow(
     resource: diagnostic.Resource,
     current: usize,
@@ -251,4 +371,21 @@ test "budget overflow preserves committed state" {
     }
     try std.testing.expectEqual(std.math.maxInt(usize), budget.current);
     try std.testing.expectEqual(std.math.maxInt(usize), budget.peak);
+}
+
+test "limited allocator enforces live and peak byte ceilings" {
+    var limited = LimitedAllocator.init(std.testing.allocator, 8);
+    const allocator = limited.allocator();
+
+    const exact = try allocator.alloc(u8, 8);
+    try std.testing.expectEqual(@as(usize, 8), limited.current);
+    try std.testing.expectEqual(@as(usize, 8), limited.peak);
+    try std.testing.expectError(error.OutOfMemory, allocator.alloc(u8, 1));
+    try std.testing.expect(limited.limit_exceeded);
+
+    allocator.free(exact);
+    try std.testing.expectEqual(@as(usize, 0), limited.current);
+    const reused = try allocator.alloc(u8, 8);
+    allocator.free(reused);
+    try std.testing.expectEqual(@as(usize, 8), limited.peak);
 }

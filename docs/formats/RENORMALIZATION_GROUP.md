@@ -148,6 +148,25 @@ conversion.
 Version 0.1 parameter points contain real values. Complex parameter encoding is
 deferred until complex model parameters are specified.
 
+### 4.1 Resource limits
+
+Parameter-point parsing uses caller-selected limits with the following version
+0.1 defaults and hard ceilings:
+
+```text
+limit                 default       hard ceiling
+source_bytes          64 KiB        1 MiB
+json_tokens           4096          65536
+json_nesting          16            64
+significant_digits    40            4096
+decimal_exponent      300           4096
+```
+
+A zero limit or a value above its hard ceiling is rejected with
+`invalid_limit` before parsing. Exceeding a source, token, nesting, digit, or
+exponent limit during parsing produces a capacity diagnostic and never
+publishes a partial parameter point.
+
 ## 5. Renormalization schemes
 
 Scheme identifiers are case-sensitive. The calculation request, RG-function

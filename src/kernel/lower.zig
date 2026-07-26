@@ -216,14 +216,14 @@ const Builder = struct {
                 if (!included or self.stageOf(index) != stage) continue;
                 switch (self.graph.values[index].node) {
                     .add, .multiply => |children| {
-                        for (children) |child| self.last_use[child.toUsize()] = position;
+                        for (children) |child| self.noteUse(child, position, stage);
                     },
                     .divide => |binary| {
-                        self.last_use[binary.numerator.toUsize()] = position;
-                        self.last_use[binary.denominator.toUsize()] = position;
+                        self.noteUse(binary.numerator, position, stage);
+                        self.noteUse(binary.denominator, position, stage);
                     },
                     .power => |power_node| {
-                        self.last_use[power_node.base.toUsize()] = position;
+                        self.noteUse(power_node.base, position, stage);
                     },
                     else => {},
                 }
@@ -238,30 +238,22 @@ const Builder = struct {
         // A parameter-stage value consumed by the background section must
         // survive every point, not just its first reader: the background
         // section reruns per point while the parameter section does not.
-        for (self.reachable, 0..) |included, index| {
-            if (!included or self.background_dependent[index]) continue;
-            if (self.consumedByBackground(index)) self.last_use[index] = position;
+        for (self.last_use) |*last| {
+            if (last.* == std.math.maxInt(usize)) last.* = position;
         }
     }
 
-    fn consumedByBackground(self: *const Builder, produced: usize) bool {
-        for (self.reachable, 0..) |included, index| {
-            if (!included or !self.background_dependent[index]) continue;
-            const reads = switch (self.graph.values[index].node) {
-                .add, .multiply => |children| blk: {
-                    for (children) |child| {
-                        if (child.toUsize() == produced) break :blk true;
-                    }
-                    break :blk false;
-                },
-                .divide => |binary| binary.numerator.toUsize() == produced or
-                    binary.denominator.toUsize() == produced,
-                .power => |power_node| power_node.base.toUsize() == produced,
-                else => false,
-            };
-            if (reads) return true;
+    fn noteUse(self: *Builder, operand: ValueId, position: usize, stage: u1) void {
+        const index = operand.toUsize();
+        if (stage == 1 and !self.background_dependent[index]) {
+            // The background stage reruns for every point, so a value produced
+            // by the parameter stage must remain live through the entire
+            // program. Mark this during the ordinary operand traversal rather
+            // than rescanning every background node for every producer.
+            self.last_use[index] = std.math.maxInt(usize);
+        } else {
+            self.last_use[index] = position;
         }
-        return false;
     }
 
     fn emit(self: *Builder) LowerError!void {
