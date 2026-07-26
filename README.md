@@ -140,6 +140,14 @@ zig build bench              # representative measurements (informational)
 zig build mutation           # mutation campaign (nightly tier; see below)
 ```
 
+`zig build bench` measures the production `ReleaseSafe` mode by default,
+calibrates each timing to repeated minimum-duration samples, and reports the
+median and observed range. It measures separately compiled value-only and fused
+value/gradient/Hessian kernels and compares value throughput with direct C
+expressions compiled by the pinned Zig toolchain. No system C compiler is
+required. Use `-Dbench-optimize=ReleaseFast` for an explicitly diagnostic
+`ReleaseFast` run.
+
 Ordinary property runs do not pin a seed. If a property fails, Minish prints the
 selected seed and minimized input; reproduce that stream with:
 

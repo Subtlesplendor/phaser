@@ -284,24 +284,60 @@ pub fn build(b: *std.Build) void {
         .root_module = example_module,
     });
     const run_model_inspection = b.addRunArtifact(model_inspection);
+    // A module retains its own optimization mode when imported. The benchmark
+    // therefore needs benchmark-specific Phaser and fixture modules: importing
+    // the ordinary modules above would silently benchmark their default Debug
+    // implementations inside an optimized driver.
+    const bench_optimize = b.option(
+        std.builtin.OptimizeMode,
+        "bench-optimize",
+        "Optimization mode for benchmarks (default: ReleaseSafe)",
+    ) orelse .ReleaseSafe;
+    const bench_phaser_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+    });
+    const bench_example_data_module = b.createModule(.{
+        .root_source_file = b.path("examples/data.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+    });
     const bench_module = b.createModule(.{
         .root_source_file = b.path("tools/bench/main.zig"),
         .target = target,
-        // Benchmarks measure optimized code unless told otherwise.
-        .optimize = if (b.option(
-            bool,
-            "bench-debug",
-            "Build benchmarks in the selected optimize mode instead of ReleaseFast",
-        ) orelse false) optimize else .ReleaseFast,
+        // ReleaseSafe is Phaser's production mode. An explicit override keeps
+        // diagnostic ReleaseFast and Debug measurements available without
+        // making either the benchmark's undocumented default.
+        .optimize = bench_optimize,
         .imports = &.{
-            .{ .name = "phaser", .module = phaser_module },
-            .{ .name = "example_data", .module = example_data_module },
+            .{ .name = "phaser", .module = bench_phaser_module },
+            .{ .name = "example_data", .module = bench_example_data_module },
+            .{ .name = "numerical_comparison", .module = numerical_comparison_module },
         },
     });
     const bench = b.addExecutable(.{
         .name = "phaser-bench",
         .root_module = bench_module,
     });
+    bench.root_module.addCSourceFile(.{
+        .file = b.path("tools/bench/direct.c"),
+        .flags = &.{
+            "-std=c17",
+            "-O3",
+            "-fno-fast-math",
+            "-ffp-contract=off",
+        },
+    });
+    const bench_tests = b.addTest(.{ .root_module = bench_module });
+    const run_bench_tests = b.addRunArtifact(bench_tests);
+    const test_bench_step = b.step(
+        "test-bench",
+        "Run benchmark-driver unit tests",
+    );
+    test_bench_step.dependOn(&run_bench_tests.step);
+    test_step.dependOn(&run_bench_tests.step);
+
     const run_bench = b.addRunArtifact(bench);
     const bench_step = b.step(
         "bench",
