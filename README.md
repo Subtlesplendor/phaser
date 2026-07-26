@@ -91,7 +91,23 @@ Milestones 0 and 1 provide:
 - expression, JSON, scalar-model, and capacity fuzz targets; and
 - Debug, ReleaseSafe, and bounded fuzz CI on the required native platforms.
 
-Numerical potential evaluation begins in Milestone 2. The CLI, C ABI, and
+Milestone 2 adds the tree-level vertical slice: calculation requests, the
+classical-potential artifact with exact gradients and Hessians, symbolic export
+in Phaser notation and MathJax LaTeX, a safe numerical kernel, immutable
+parameter bindings, and a command-line client.
+
+```sh
+zig build
+./zig-out/bin/phaser export examples/phi4/model.json examples/phi4/request.json \
+    --target=phaser --gradient
+./zig-out/bin/phaser evaluate examples/phi4/model.json examples/phi4/request.json \
+    examples/phi4/point.json --outputs=hessian --scan=0:0:600:13
+```
+
+Worked inputs and golden outputs live in [examples/phi4](examples/phi4/README.md)
+and [examples/multi_scalar](examples/multi_scalar/README.md).
+
+The C ABI and
 language bindings are not implemented yet.
 
 The architecture and milestone contracts are documented in

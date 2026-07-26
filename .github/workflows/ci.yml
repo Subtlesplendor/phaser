@@ -93,6 +93,10 @@ jobs:
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build examples -Doptimize=ReleaseSafe'
 
+      - name: Run command-line client tests
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build test-cli -Doptimize=ReleaseSafe'
+
   fuzz-smoke:
     name: Bounded fuzz smoke
     runs-on: ubuntu-24.04

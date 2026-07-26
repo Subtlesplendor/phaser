@@ -1,0 +1,22 @@
+{
+  "schema": "phaser.parameter-point/0.1",
+  "units": { "mass": "GeV" },
+  "renormalization": { "scheme": "MSbar", "reference_scale": 125.0 },
+  "values": {
+    "a": 25.0,
+    "b": -5.0,
+    "c": 2.5,
+    "d": 10.0,
+    "l1": 0.05,
+    "l2": 0.1,
+    "l3": -0.02,
+    "lh": 0.26,
+    "ls": 0.3,
+    "m_h2": -7812.5,
+    "m_hs2": 500.0,
+    "m_s2": 2500.0,
+    "omega": 0,
+    "t_h": 0,
+    "t_s": 0
+  }
+}

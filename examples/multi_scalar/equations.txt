@@ -1,0 +1,11 @@
+background full_scalar_space
+  0 h -> scalar 0
+  1 s -> scalar 1
+V^(0)[vacuum_energy](h, s) = omega
+V^(0)[scalar_tadpole](h, s) = t_h * h + t_s * s
+V^(0)[scalar_mass_squared](h, s) = 1/2 * m_h2 * h^2 + m_hs2 * h * s + 1/2 * m_s2 * s^2
+V^(0)[scalar_cubic](h, s) = 1/6 * a * h^3 + 1/2 * b * h^2 * s + 1/2 * c * h * s^2 + 1/6 * d * s^3
+V^(0)[scalar_quartic](h, s) = 1/24 * lh * h^4 + 1/6 * l3 * h^3 * s + 1/4 * l2 * h^2 * s^2 + 1/6 * l1 * h * s^3 + 1/24 * ls * s^4
+V^(0)(h, s) = omega + t_h * h + t_s * s + 1/2 * m_h2 * h^2 + m_hs2 * h * s + 1/2 * m_s2 * s^2 + 1/6 * a * h^3 + 1/2 * b * h^2 * s + 1/2 * c * h * s^2 + 1/6 * d * s^3 + 1/24 * lh * h^4 + 1/6 * l3 * h^3 * s + 1/4 * l2 * h^2 * s^2 + 1/6 * l1 * h * s^3 + 1/24 * ls * s^4
+dV/dh = t_h + m_h2 * h + m_hs2 * s + 1/2 * a * h^2 + b * h * s + 1/2 * c * s^2 + 1/6 * lh * h^3 + 1/2 * l3 * h^2 * s + 1/2 * l2 * h * s^2 + 1/6 * l1 * s^3
+dV/ds = t_s + m_hs2 * h + m_s2 * s + 1/2 * b * h^2 + c * h * s + 1/2 * d * s^2 + 1/6 * l3 * h^3 + 1/2 * l2 * h^2 * s + 1/2 * l1 * h * s^2 + 1/6 * ls * s^3
