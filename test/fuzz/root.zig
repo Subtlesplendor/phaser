@@ -774,6 +774,113 @@ fn fuzzExporter(_: void, smith: *std.testing.Smith) !void {
     }
 }
 
+test "kernel_lowering" {
+    try std.testing.fuzz({}, fuzzKernel, .{
+        .corpus = &.{
+            @embedFile("../corpus/kernel_lowering/leaves.bin"),
+            @embedFile("../corpus/kernel_lowering/polynomial.bin"),
+            @embedFile("../corpus/kernel_lowering/deep.bin"),
+        },
+    });
+}
+
+/// Lowers generated value graphs and compares the reference backend against
+/// direct evaluation of the same graph.
+///
+/// The properties are the ones the potential-kernel contract requires: a
+/// published program validates, evaluation stays inside its queried workspace,
+/// and scalar and batch evaluation agree.
+fn fuzzKernel(_: void, smith: *std.testing.Smith) !void {
+    const count = smith.valueRangeLessThan(u16, 0, max_steps + 1);
+    var steps: [max_steps]Step = undefined;
+    for (steps[0..count]) |*step| {
+        step.* = .{
+            .kind = smith.value(u8),
+            .a = smith.value(u8),
+            .b = smith.value(u8),
+            .c = smith.value(u8),
+        };
+    }
+
+    var graph = try replay(steps[0..count], std.testing.allocator);
+    defer graph.deinit();
+
+    const root = phaser.value.ValueId.fromUsize(graph.values.len - 1) catch return;
+    var program = phaser.kernel.lower(std.testing.allocator, .{
+        .graph = &graph,
+        .capability = .value,
+        .value_root = root,
+        .gradient_roots = &.{},
+        .hessian_roots = &.{},
+        .parameter_count = 8,
+        .background_count = 2,
+        .coordinate_count = 2,
+    }, .{}) catch |err| switch (err) {
+        // A constant outside the conversion policy is an ordinary failure.
+        error.ConstantNotRepresentable, error.CapacityExceeded => return,
+        else => return err,
+    };
+    defer program.deinit();
+
+    // A published program always satisfies every validation rule.
+    try program.validate(std.testing.allocator, 64);
+
+    const layout = program.workspaceLayout(2);
+    const workspace = try std.testing.allocator.alignedAlloc(
+        u8,
+        .of(phaser.kernel.Scalar),
+        layout.bytes,
+    );
+    defer std.testing.allocator.free(workspace);
+
+    var parameters: [8]phaser.kernel.Scalar = undefined;
+    for (&parameters, 0..) |*slot, index| {
+        slot.* = 0.5 + @as(phaser.kernel.Scalar, @floatFromInt(index)) * 0.25;
+    }
+    const backgrounds = [_]phaser.kernel.Scalar{ 1.25, -0.75, 2.5, 0.5 };
+
+    var values: [2]phaser.kernel.Scalar = undefined;
+    var statuses: [2]phaser.kernel.Status = undefined;
+    try phaser.kernel.evaluate(
+        &program,
+        .{ .parameters = &parameters, .backgrounds = &backgrounds },
+        2,
+        workspace,
+        .{ .values = &values, .statuses = &statuses },
+    );
+
+    // Each point evaluated alone agrees with its place in the batch.
+    for (0..2) |point| {
+        var single: [1]phaser.kernel.Scalar = undefined;
+        var single_status: [1]phaser.kernel.Status = undefined;
+        try phaser.kernel.evaluate(
+            &program,
+            .{
+                .parameters = &parameters,
+                .backgrounds = backgrounds[point * 2 ..][0..2],
+            },
+            1,
+            workspace,
+            .{ .values = &single, .statuses = &single_status },
+        );
+        try std.testing.expectEqual(statuses[point], single_status[point - point]);
+        if (statuses[point] == .ok) {
+            try std.testing.expectEqual(values[point], single[0]);
+        }
+    }
+
+    // One byte below the queried size is always rejected.
+    if (layout.bytes > 0) {
+        try std.testing.expectError(error.WorkspaceTooSmall, phaser.kernel.evaluate(
+            &program,
+            .{ .parameters = &parameters, .backgrounds = &backgrounds },
+            2,
+            workspace[0 .. layout.bytes - 1],
+            .{ .values = &values, .statuses = &statuses },
+        ));
+    }
+}
+
 fn expectSameDiagnostic(
     first: foundation.Diagnostic,
     second: foundation.Diagnostic,

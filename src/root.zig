@@ -9,6 +9,7 @@ pub const expression = @import("expression/root.zig");
 pub const value = @import("value/root.zig");
 pub const calculation = @import("calculation/root.zig");
 pub const symbolic = @import("export/root.zig");
+pub const kernel = @import("kernel/root.zig");
 
 pub const Context = foundation.Context;
 pub const Limits = foundation.Limits;
@@ -55,4 +56,5 @@ test {
     _ = value;
     _ = calculation;
     _ = symbolic;
+    _ = kernel;
 }
