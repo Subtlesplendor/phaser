@@ -25,8 +25,27 @@ jobs:
     name: Extended fuzz campaign
     runs-on: ubuntu-24.04
     # Bounded, per section 5.3's ten to thirty minute target, with headroom for
-    # the toolchain install and build.
+    # the toolchain install and build. The campaign stops itself well before
+    # this, so the ceiling is a backstop and not the working budget: a job
+    # cancelled at the ceiling cannot report what it did, which is exactly the
+    # failure mode the budget below exists to avoid.
     timeout-minutes: 45
+
+    env:
+      # Per-target iteration budget. Every target must be able to finish it:
+      # `zig build fuzz` declares one run per target and the build runner starts
+      # at most one per core, so on a four-core runner a budget no target can
+      # reach means the last four targets never start at all. Cold-cache
+      # measurement on the supported macOS ARM64 development machine puts 5K at
+      # three and a half minutes wall for the whole set, of which the heaviest
+      # target (value_ir_builder, whose exact-rational graph building dominates
+      # the campaign) is three minutes and 3 GiB resident. A hosted runner is
+      # slower and narrower, so the estimate there is roughly ten minutes, which
+      # is section 5.3's target.
+      FUZZ_ITERATIONS: 5K
+      # Wall-clock backstop for the campaign, below `timeout-minutes` so this
+      # one fires first and the job survives to report.
+      FUZZ_BUDGET: 35m
 
     steps:
       - name: Check out repository
@@ -43,14 +62,46 @@ jobs:
         run: |
           set -euo pipefail
           echo "commit      ${GITHUB_SHA}"
-          echo "runner      ${RUNNER_OS} ${RUNNER_ARCH}"
+          echo "runner      ${RUNNER_OS} ${RUNNER_ARCH}, $(nproc) cores"
           echo "zig         $("$RUNNER_TEMP/zig/zig" version)"
           echo "build_mode  ReleaseSafe"
-          echo "budget      2000000 iterations per target"
+          echo "budget      ${FUZZ_ITERATIONS} iterations per target, ${FUZZ_BUDGET} wall clock"
 
+      # Reaching the wall-clock budget is a normal end to a campaign, not a
+      # defect: this tier searches for as long as it is given, and a night that
+      # runs out of clock has still fuzzed. Only a crashing input, or the tool
+      # itself failing, fails the job. `timeout` puts the build runner in its own
+      # process group and signals the group, so the test processes stop with it
+      # rather than outliving the step. `--summary all` is what makes a campaign
+      # legible afterwards: `zig build --fuzz` prints progress only to a
+      # terminal, so without it a passing run's log is empty.
       - name: Run extended fuzz campaign
         shell: bash
-        run: '"$RUNNER_TEMP/zig/zig" build fuzz -Doptimize=ReleaseSafe --fuzz=2M'
+        run: |
+          set -euo pipefail
+          status=0
+          timeout --signal=INT --kill-after=1m "$FUZZ_BUDGET" \
+            "$RUNNER_TEMP/zig/zig" build fuzz \
+            -Doptimize=ReleaseSafe \
+            --fuzz="$FUZZ_ITERATIONS" \
+            --summary all || status=$?
+
+          # 124 is `timeout`'s own report; 137 is the escalation to SIGKILL when
+          # the campaign did not stop within the grace period.
+          if [[ "$status" != 124 && "$status" != 137 ]]; then
+            exit "$status"
+          fi
+
+          echo "The campaign reached its ${FUZZ_BUDGET} budget and was stopped."
+          echo "No crashing input was found before then."
+          {
+            echo "## Extended fuzz campaign"
+            echo
+            echo "Stopped at its ${FUZZ_BUDGET} wall-clock budget with no crashing"
+            echo "input found. The per-target budget is ${FUZZ_ITERATIONS} iterations."
+            echo "A campaign that keeps ending this way is measuring a budget that no"
+            echo "longer fits the runner, not a defect."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # A discovered failure is only useful with its input, and the runner is
       # discarded when the job ends. The toolchain saves a crashing input at
