@@ -243,15 +243,21 @@ Their outputs use that same coordinate order; the Hessian instruction writes
 the full dense row-major candidate required by the Potential Kernel interface.
 
 Both operations evaluate invariant spectral divided differences or another
-method with identical mathematical semantics. They MUST be invariant under
-eigenvalue reordering, eigenvector sign, and rotations inside a degenerate
-eigenspace; they MUST NOT differentiate the stored eigenvalue order.
+method with identical mathematical semantics, as fixed by
+[Decision 0009](../decisions/0009-scalar-spectral-derivatives.md). The
+implementation uses the eigensystem-basis gradient and Hessian formulas,
+deterministic same-sign nonzero clusters, and the stable close-pair divided
+difference specified there. It MUST be invariant under eigenvalue reordering,
+eigenvector sign, and rotations inside a degenerate eigenspace; it MUST NOT
+differentiate the stored eigenvalue order.
 
 The operations apply the analytic zero-mode value and first-derivative limits
-before generating floating-point logarithms. A required divergent second
-derivative produces `singular_derivative`. An analytically established finite
-cancellation remains `ok`. Candidate derivative outputs remain in workspace
-until the complete requested point operation succeeds.
+before generating floating-point logarithms. The Hessian applies Decision
+0009's exact projected zero-block criterion before evaluating a zero/zero
+coefficient. A required divergent second derivative produces
+`singular_derivative`; a zero block proven termwise exact remains `ok`.
+Candidate derivative outputs remain in workspace until the complete requested
+point operation succeeds.
 
 ## 6. Exact conversion at lowering
 
@@ -424,11 +430,11 @@ already been symbolically differentiated, per
 Scalar one-loop spectral derivatives remain invariant operations. Lowering
 supplies the mass matrix and the required first- and second-background
 derivative matrices to the backend's spectral derivative operation. That
-operation implements invariant spectral divided differences or another method
-with identical semantics; it MUST NOT differentiate the output order of
-`symmetric_eigensystem` or an eigenvector sign convention. Its candidate
-`Complex64` gradient and Hessian outputs use the same workspace and point-atomic
-publication boundary as the value.
+operation implements
+[Decision 0009](../decisions/0009-scalar-spectral-derivatives.md); it MUST NOT
+differentiate the output order of `symmetric_eigensystem` or an eigenvector sign
+convention. Its candidate `Complex64` gradient and Hessian outputs use the same
+workspace and point-atomic publication boundary as the value.
 
 A fused capability such as `value_gradient_hessian` lowers to one program whose
 common subexpressions are shared across the value and derivative outputs, and
