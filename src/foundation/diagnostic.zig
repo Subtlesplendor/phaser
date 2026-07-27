@@ -91,6 +91,7 @@ pub const Resource = enum {
     request_bytes,
     background_coordinates,
     contributions,
+    loop_order,
 };
 
 pub const LimitName = enum {

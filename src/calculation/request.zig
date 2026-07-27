@@ -14,8 +14,11 @@ const limits_module = @import("limits.zig");
 
 pub const CalculationLimits = limits_module.CalculationLimits;
 
-/// Highest loop order Milestone 2 derives. Milestone 3 raises this to 1.
-pub const supported_loop_order: u32 = 0;
+/// Highest loop order Phaser derives.
+///
+/// Milestone 3 adds the zero-temperature scalar one-loop contribution, so a
+/// request may truncate at order one. Higher orders remain explicit failures.
+pub const supported_loop_order: u32 = 1;
 
 pub const BackgroundMode = enum { full_scalar_space, component_slice };
 
@@ -128,6 +131,7 @@ const Failure = error{
     UnsupportedEnvironment,
     UnsupportedGaugeFixing,
     UnsupportedLoopOrder,
+    UnsupportedScheme,
     InvalidBackgroundMode,
     InvalidBackgroundCoordinate,
     DuplicateBackgroundCoordinate,
@@ -161,6 +165,10 @@ fn failureInfo(failure: Failure) struct {
         },
         error.UnsupportedLoopOrder => .{
             .code = .unsupported_loop_order,
+            .category = .calculation,
+        },
+        error.UnsupportedScheme => .{
+            .code = .unsupported_scheme,
             .category = .calculation,
         },
         error.InvalidBackgroundMode => .{
@@ -239,18 +247,17 @@ pub fn parseRequest(
     arena.* = std.heap.ArenaAllocator.init(context.allocator);
     errdefer arena.deinit();
 
-    const built = build(root, options, arena.allocator()) catch |err| switch (err) {
+    // Set by a failure that can say more than its code does.
+    var detail: foundation.Detail = .none;
+    const built = build(root, options, arena.allocator(), &detail) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             arena.deinit();
             context.allocator.destroy(arena);
             const info = failureInfo(@errorCast(err));
-            return .{ .diagnostics = try simpleDiagnostics(
-                context,
-                source,
-                info.code,
-                info.category,
-            ) };
+            var diagnostic = diagnosticAt(source, info.code, info.category, 0);
+            diagnostic.detail = detail;
+            return .{ .diagnostics = try oneDiagnostic(context, diagnostic) };
         },
     };
 
@@ -276,6 +283,7 @@ fn build(
     root: std.json.ObjectMap,
     options: ParseOptions,
     allocator: std.mem.Allocator,
+    detail: *foundation.Detail,
 ) !Built {
     try rejectUnknown(root, &.{
         "schema",
@@ -298,7 +306,7 @@ fn build(
     // gauge family. Presence is rejected rather than silently ignored.
     if (root.get("gauge_fixing") != null) return error.UnsupportedGaugeFixing;
 
-    const loop_order = try parseOrders(root);
+    const loop_order = try parseOrders(root, detail);
     const environment = try parseEnvironment(root);
     const scheme = try parseRenormalization(root, loop_order);
     const background = try parseBackground(root, options, allocator);
@@ -312,13 +320,23 @@ fn build(
     };
 }
 
-fn parseOrders(root: std.json.ObjectMap) !u32 {
+fn parseOrders(root: std.json.ObjectMap, detail: *foundation.Detail) !u32 {
     const orders = try requiredObject(root, "orders");
     try rejectUnknown(orders, &.{"loop"});
     const loop = try requiredObject(orders, "loop");
     try rejectUnknown(loop, &.{"through"});
     const through = try requiredInteger(u32, loop, "through");
-    if (through > supported_loop_order) return error.UnsupportedLoopOrder;
+    if (through > supported_loop_order) {
+        // The diagnostic names the highest supported order, so a caller does
+        // not have to consult the specification to learn what to ask for.
+        detail.* = .{ .capacity = .{
+            .resource = .loop_order,
+            .limit = supported_loop_order,
+            .current = 0,
+            .requested = through,
+        } };
+        return error.UnsupportedLoopOrder;
+    }
     return through;
 }
 
@@ -342,7 +360,10 @@ fn parseRenormalization(root: std.json.ObjectMap, loop_order: u32) !?Scheme {
     };
     try rejectUnknown(object, &.{"scheme"});
     const scheme = try requiredString(object, "scheme");
-    if (!std.mem.eql(u8, scheme, "MSbar")) return error.UnsupportedCalculationKind;
+    // `MSbar` is the only scheme the scalar one-loop formula version is
+    // defined in. Another declared scheme is unsupported, not an unsupported
+    // calculation kind.
+    if (!std.mem.eql(u8, scheme, "MSbar")) return error.UnsupportedScheme;
     return .msbar;
 }
 
@@ -603,6 +624,27 @@ fn parseForTest(source: []const u8) !ParseResult {
     }, .{});
 }
 
+/// The rejection names the highest supported order, so a caller learns what to
+/// ask for without consulting the specification.
+fn expectLoopOrderDetail(source: []const u8) !void {
+    const result = try parseForTest(source);
+    switch (result) {
+        .request => |request| {
+            var owned = request;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            defer owned.deinit();
+            const detail = owned.items[0].detail.capacity;
+            try std.testing.expectEqual(foundation.Resource.loop_order, detail.resource);
+            try std.testing.expectEqual(@as(usize, supported_loop_order), detail.limit);
+            try std.testing.expectEqual(@as(usize, 2), detail.requested);
+        },
+    }
+}
+
 fn expectDiagnostic(source: []const u8, code: foundation.Code) !void {
     const result = try parseForTest(source);
     switch (result) {
@@ -792,8 +834,29 @@ test "each unsupported combination reports its own diagnostic" {
         \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
         \\"background":{"mode":"full_scalar_space"},"environment":{"kind":"vacuum"},
         \\"renormalization":{"scheme":"MSbar"},
-        \\"orders":{"loop":{"through":1}}}
+        \\"orders":{"loop":{"through":2}}}
     , .unsupported_loop_order);
+    try expectLoopOrderDetail(
+        \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+        \\"background":{"mode":"full_scalar_space"},"environment":{"kind":"vacuum"},
+        \\"renormalization":{"scheme":"MSbar"},
+        \\"orders":{"loop":{"through":2}}}
+    );
+
+    // At order one the scheme is load bearing, so it must be declared and must
+    // be the one the formula version is defined in.
+    try expectDiagnostic(
+        \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+        \\"background":{"mode":"full_scalar_space"},"environment":{"kind":"vacuum"},
+        \\"orders":{"loop":{"through":1}}}
+    , .missing_property);
+
+    try expectDiagnostic(
+        \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+        \\"background":{"mode":"full_scalar_space"},"environment":{"kind":"vacuum"},
+        \\"renormalization":{"scheme":"on_shell"},
+        \\"orders":{"loop":{"through":1}}}
+    , .unsupported_scheme);
 
     try expectDiagnostic(
         \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
@@ -907,4 +970,43 @@ test "representative allocation failures never publish a partial request" {
             },
         }
     }
+}
+
+test "an order-one request records the scheme in its identity" {
+    const source =
+        \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+        \\"background":{"mode":"full_scalar_space"},
+        \\"environment":{"kind":"vacuum"},
+        \\"renormalization":{"scheme":"MSbar"},
+        \\"orders":{"loop":{"through":1}}}
+    ;
+    var request = switch (try parseForTest(source)) {
+        .request => |parsed| parsed,
+        .diagnostics => return error.TestUnexpectedResult,
+    };
+    defer request.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), request.loop_order);
+    try std.testing.expectEqual(Scheme.msbar, request.scheme.?);
+    try std.testing.expect(request.schemeIsLoadBearing());
+
+    // The scheme is load bearing at order one, so the encoding carries it and
+    // the identity differs from the tree request over the same background.
+    var encoded: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer encoded.deinit();
+    try request.writeCanonical(&encoded.writer);
+    try std.testing.expect(
+        std.mem.indexOf(u8, encoded.written(), "scheme:msbar;") != null,
+    );
+
+    var tree = switch (try parseForTest(full_space_request)) {
+        .request => |parsed| parsed,
+        .diagnostics => return error.TestUnexpectedResult,
+    };
+    defer tree.deinit();
+    const loop_fingerprint = try request.fingerprint(std.testing.allocator);
+    const tree_fingerprint = try tree.fingerprint(std.testing.allocator);
+    try std.testing.expect(
+        !std.mem.eql(u8, &loop_fingerprint.bytes, &tree_fingerprint.bytes),
+    );
 }

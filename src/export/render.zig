@@ -38,6 +38,12 @@ pub const Options = struct {
     /// Node ceiling above which a preview reports the size instead of
     /// rendering.
     max_preview_nodes: usize = 192,
+    /// Display names for background coordinates, in canonical order.
+    ///
+    /// A spectral derivative node stores coordinate indices rather than names,
+    /// because names are presentation metadata and must not enter content
+    /// identity. An index outside this table falls back to `b<index>`.
+    coordinate_names: []const []const u8 = &.{},
 };
 
 pub const RenderError = error{
@@ -154,16 +160,10 @@ pub fn countNodes(
         index -= 1;
         if (!reachable[index]) continue;
         total += 1;
-        switch (graph.values[index].node) {
-            .add, .multiply => |children| {
-                for (children) |child| reachable[child.toUsize()] = true;
-            },
-            .divide => |binary| {
-                reachable[binary.numerator.toUsize()] = true;
-                reachable[binary.denominator.toUsize()] = true;
-            },
-            .power => |power_node| reachable[power_node.base.toUsize()] = true,
-            else => {},
+        const node = graph.values[index].node;
+        var operand: usize = 0;
+        while (value.childAt(node, operand)) |child| : (operand += 1) {
+            reachable[child.toUsize()] = true;
         }
     }
     return total;
@@ -233,7 +233,7 @@ fn expand(
     written: *usize,
 ) RenderError!void {
     const item = graph.value(request.id);
-    const own = precedenceOf(options.target, item.node);
+    const own = precedenceOf(graph, options.target, item.node);
     const parenthesize = @intFromEnum(own) < @intFromEnum(request.precedence);
 
     if (parenthesize) try emit("(", options, writer, written);
@@ -322,7 +322,275 @@ fn expand(
             writer,
             written,
         ),
+        .renormalization_scale => |input| try emitIdentifier(
+            input.name,
+            options,
+            pool,
+            writer,
+            written,
+        ),
+        // The promotion into `Complex64` is the exact inclusion of the reals,
+        // so the rendered mathematics is the operand itself. Nothing is
+        // dropped: the export's result-type metadata records that the
+        // containing quantity is complex.
+        .promote_real_to_complex => |operand| try stack.append(allocator, .{ .node = .{
+            .id = operand,
+            .precedence = request.precedence,
+            .negate_coefficient = request.negate_coefficient,
+        } }),
+        .real_symmetric_matrix => |matrix| try expandMatrix(
+            matrix,
+            allocator,
+            pool,
+            options,
+            stack,
+        ),
+        .scalar_one_loop_spectral_value => |spectral| try expandSpectralValue(
+            spectral,
+            allocator,
+            options,
+            stack,
+        ),
+        .scalar_one_loop_spectral_gradient, .scalar_one_loop_spectral_hessian => |derivative| {
+            try expandSpectralDerivative(
+                item.node == .scalar_one_loop_spectral_hessian,
+                derivative,
+                allocator,
+                options,
+                stack,
+            );
+        },
+        .element => |selection| try expandElement(
+            graph,
+            selection,
+            allocator,
+            pool,
+            options,
+            stack,
+        ),
     }
+}
+
+/// Pushes a prepared step sequence so that popping yields it in order.
+fn pushSequence(
+    stack: *std.ArrayList(Step),
+    allocator: std.mem.Allocator,
+    sequence: []const Step,
+) RenderError!void {
+    var index = sequence.len;
+    while (index > 0) {
+        index -= 1;
+        try stack.append(allocator, sequence[index]);
+    }
+}
+
+/// Compact matrix notation.
+///
+/// Both mirrored positions of the authoritative upper triangle are written, so
+/// the reader sees the symmetric matrix the node denotes. No diagonalization,
+/// expansion, or numerical evaluation happens here.
+fn expandMatrix(
+    matrix: value.SymmetricMatrix,
+    allocator: std.mem.Allocator,
+    pool: std.mem.Allocator,
+    options: Options,
+    stack: *std.ArrayList(Step),
+) RenderError!void {
+    var sequence = std.ArrayList(Step).empty;
+    defer sequence.deinit(allocator);
+
+    const dimension = matrix.dimension;
+    const latex = options.target == .latex;
+    if (dimension == 0) {
+        try stack.append(allocator, .{
+            .text = if (latex) "\\left(\\ \\right)" else "[]",
+        });
+        return;
+    }
+
+    if (latex) {
+        const columns = pool.alloc(u8, dimension) catch return error.OutOfMemory;
+        @memset(columns, 'c');
+        const opening = std.fmt.allocPrint(
+            pool,
+            "\\left(\\begin{{array}}{{{s}}}",
+            .{columns},
+        ) catch return error.OutOfMemory;
+        try sequence.append(allocator, .{ .text = opening });
+    } else {
+        try sequence.append(allocator, .{ .text = "[" });
+    }
+
+    for (0..dimension) |row| {
+        if (row != 0) {
+            try sequence.append(allocator, .{ .text = if (latex) " \\\\ " else ", " });
+        }
+        if (!latex) try sequence.append(allocator, .{ .text = "[" });
+        for (0..dimension) |column| {
+            if (column != 0) {
+                try sequence.append(allocator, .{ .text = if (latex) " & " else ", " });
+            }
+            const entry = matrix.entries[
+                value.upperTriangleIndex(
+                    dimension,
+                    @intCast(row),
+                    @intCast(column),
+                )
+            ];
+            try sequence.append(allocator, .{ .node = .{
+                .id = entry,
+                .precedence = .sum,
+            } });
+        }
+        if (!latex) try sequence.append(allocator, .{ .text = "]" });
+    }
+
+    try sequence.append(allocator, .{
+        .text = if (latex) "\\end{array}\\right)" else "]",
+    });
+    try pushSequence(stack, allocator, sequence.items);
+}
+
+/// The named spectral operation.
+///
+/// Symbolic export preserves the operation and its operands rather than
+/// diagonalizing the matrix or expanding a component sum, as section 7 of the
+/// export specification requires.
+fn expandSpectralValue(
+    spectral: value.SpectralValue,
+    allocator: std.mem.Allocator,
+    options: Options,
+    stack: *std.ArrayList(Step),
+) RenderError!void {
+    const opening: []const u8 = switch (options.target) {
+        .phaser => "scalar_one_loop(",
+        .latex => "\\mathrm{Tr}\\,\\Phi^{(1)}_{\\mathrm{scalar}}\\!\\left(",
+    };
+    try pushSequence(stack, allocator, &.{
+        .{ .text = opening },
+        .{ .node = .{ .id = spectral.matrix, .precedence = .sum } },
+        .{ .text = "; " },
+        .{ .node = .{ .id = spectral.scale, .precedence = .sum } },
+        .{ .text = switch (options.target) {
+            .phaser => ")",
+            .latex => "\\right)",
+        } },
+    });
+}
+
+/// A whole spectral gradient or Hessian, as the derivative operator applied to
+/// its parent value. Individual components render through `expandElement`.
+fn expandSpectralDerivative(
+    second_order: bool,
+    derivative: value.SpectralDerivative,
+    allocator: std.mem.Allocator,
+    options: Options,
+    stack: *std.ArrayList(Step),
+) RenderError!void {
+    const opening: []const u8 = switch (options.target) {
+        .phaser => if (second_order) "hess_b[" else "grad_b[",
+        .latex => if (second_order)
+            "\\nabla_{b}^{2}\\!\\left("
+        else
+            "\\nabla_{b}\\!\\left(",
+    };
+    try pushSequence(stack, allocator, &.{
+        .{ .text = opening },
+        .{ .node = .{ .id = derivative.value, .precedence = .sum } },
+        .{ .text = switch (options.target) {
+            .phaser => "]",
+            .latex => "\\right)",
+        } },
+    });
+}
+
+/// One component of a structured value.
+///
+/// A spectral derivative component renders as the corresponding background
+/// partial derivative of the parent value, which is what it denotes.
+fn expandElement(
+    graph: *const Graph,
+    selection: value.Element,
+    allocator: std.mem.Allocator,
+    pool: std.mem.Allocator,
+    options: Options,
+    stack: *std.ArrayList(Step),
+) RenderError!void {
+    const source = graph.value(selection.source).node;
+    const parent: ?ValueId = switch (source) {
+        .scalar_one_loop_spectral_gradient, .scalar_one_loop_spectral_hessian => |derivative| derivative.value,
+        else => null,
+    };
+    if (parent == null) {
+        const suffix = switch (options.target) {
+            .phaser => std.fmt.allocPrint(
+                pool,
+                "[{d},{d}]",
+                .{ selection.row, selection.column },
+            ),
+            .latex => std.fmt.allocPrint(
+                pool,
+                "_{{{d},{d}}}",
+                .{ selection.row, selection.column },
+            ),
+        } catch return error.OutOfMemory;
+        try pushSequence(stack, allocator, &.{
+            .{ .text = "(" },
+            .{ .node = .{ .id = selection.source, .precedence = .sum } },
+            .{ .text = ")" },
+            .{ .text = suffix },
+        });
+        return;
+    }
+
+    const second_order = source == .scalar_one_loop_spectral_hessian;
+    const row = try coordinateName(options, pool, selection.row);
+    const column = try coordinateName(options, pool, selection.column);
+    const opening: []const u8 = switch (options.target) {
+        .phaser => if (second_order) "d2[" else "d[",
+        .latex => if (second_order)
+            std.fmt.allocPrint(
+                pool,
+                "\\frac{{\\partial^{{2}}}}{{\\partial {s} \\partial {s}}}\\!\\left(",
+                .{
+                    try escapeIdentifier(row, options, pool),
+                    try escapeIdentifier(column, options, pool),
+                },
+            ) catch return error.OutOfMemory
+        else
+            std.fmt.allocPrint(
+                pool,
+                "\\frac{{\\partial}}{{\\partial {s}}}\\!\\left(",
+                .{try escapeIdentifier(row, options, pool)},
+            ) catch return error.OutOfMemory,
+    };
+    const closing: []const u8 = switch (options.target) {
+        .phaser => if (second_order)
+            std.fmt.allocPrint(pool, "]/d{s} d{s}", .{ row, column }) catch
+                return error.OutOfMemory
+        else
+            std.fmt.allocPrint(pool, "]/d{s}", .{row}) catch return error.OutOfMemory,
+        .latex => "\\right)",
+    };
+
+    try pushSequence(stack, allocator, &.{
+        .{ .text = opening },
+        .{ .node = .{ .id = parent.?, .precedence = .sum } },
+        .{ .text = closing },
+    });
+}
+
+/// Display name of a background coordinate.
+///
+/// Falls back to the canonical position when the caller supplied no table, so
+/// a component is never rendered ambiguously.
+fn coordinateName(
+    options: Options,
+    pool: std.mem.Allocator,
+    index: u32,
+) RenderError![]const u8 {
+    if (index < options.coordinate_names.len) return options.coordinate_names[index];
+    return std.fmt.allocPrint(pool, "b{d}", .{index}) catch error.OutOfMemory;
 }
 
 fn expandSum(
@@ -394,12 +662,24 @@ const Degree = struct {
     }
 };
 
+/// Looks through an exact promotion into `Complex64`.
+///
+/// A promoted term is displayed as its operand, so every presentation rule that
+/// inspects term shape has to see the same thing the reader does.
+fn underlying(graph: *const Graph, id: ValueId) ValueId {
+    return switch (graph.value(id).node) {
+        .promote_real_to_complex => |operand| operand,
+        else => id,
+    };
+}
+
 /// Background degree of one displayed term.
 ///
 /// Only the shapes a canonical term actually takes are inspected: a coordinate,
 /// an integer power of one, or a product of such factors. Anything else
 /// contributes zero and is separated by the canonical order key instead.
-fn termDegree(graph: *const Graph, id: ValueId) Degree {
+fn termDegree(graph: *const Graph, promoted: ValueId) Degree {
+    const id = underlying(graph, promoted);
     var degree = Degree{};
     switch (graph.value(id).node) {
         .background => |input| degree.addCoordinate(input.index, 1),
@@ -445,7 +725,8 @@ const FactorKey = struct {
     name: []const u8 = "",
 };
 
-fn factorKey(graph: *const Graph, id: ValueId) FactorKey {
+fn factorKey(graph: *const Graph, promoted: ValueId) FactorKey {
+    const id = underlying(graph, promoted);
     return switch (graph.value(id).node) {
         .rational => .{ .rank = .coefficient },
         .pi, .sqrt_rational => .{ .rank = .constant },
@@ -487,6 +768,13 @@ fn lessThanFactorForDisplay(graph: *const Graph, left: ValueId, right: ValueId) 
 }
 
 fn lessThanForDisplay(graph: *const Graph, left: ValueId, right: ValueId) bool {
+    // Loop terms come after the polynomial ones, which is how a perturbative
+    // sum is written. A spectral term has no visible background degree, so
+    // without this it would sort among the constants.
+    const left_spectral = graph.value(left).spectral;
+    const right_spectral = graph.value(right).spectral;
+    if (left_spectral != right_spectral) return right_spectral;
+
     const left_degree = termDegree(graph, left);
     const right_degree = termDegree(graph, right);
     if (left_degree.total != right_degree.total) {
@@ -672,34 +960,43 @@ fn emitIdentifier(
     writer: *std.Io.Writer,
     written: *usize,
 ) RenderError!void {
-    switch (options.target) {
-        .phaser => try emit(name, options, writer, written),
-        .latex => {
-            var escaped = std.ArrayList(u8).empty;
-            defer escaped.deinit(pool);
-            escaped.appendSlice(pool, "\\mathrm{") catch return error.OutOfMemory;
-            for (name) |byte| {
-                switch (byte) {
-                    '#', '$', '%', '&', '_', '{', '}' => {
-                        escaped.append(pool, '\\') catch return error.OutOfMemory;
-                        escaped.append(pool, byte) catch return error.OutOfMemory;
-                    },
-                    '~' => escaped.appendSlice(pool, "\\textasciitilde{}") catch
-                        return error.OutOfMemory,
-                    '^' => escaped.appendSlice(pool, "\\textasciicircum{}") catch
-                        return error.OutOfMemory,
-                    '\\' => escaped.appendSlice(pool, "\\textbackslash{}") catch
-                        return error.OutOfMemory,
-                    else => escaped.append(pool, byte) catch return error.OutOfMemory,
-                }
-            }
-            escaped.append(pool, '}') catch return error.OutOfMemory;
-            try emit(escaped.items, options, writer, written);
-        },
-    }
+    try emit(try escapeIdentifier(name, options, pool), options, writer, written);
 }
 
-fn precedenceOf(target: Target, node: Node) Precedence {
+/// Renders a semantic identifier as target-safe text.
+///
+/// Identifier text is never interpreted as target source. For LaTeX the name is
+/// wrapped in `\mathrm` and every character with target meaning is escaped, so
+/// an arbitrary identifier cannot inject markup.
+fn escapeIdentifier(
+    name: []const u8,
+    options: Options,
+    pool: std.mem.Allocator,
+) RenderError![]const u8 {
+    if (options.target == .phaser) return name;
+
+    var escaped = std.ArrayList(u8).empty;
+    escaped.appendSlice(pool, "\\mathrm{") catch return error.OutOfMemory;
+    for (name) |byte| {
+        switch (byte) {
+            '#', '$', '%', '&', '_', '{', '}' => {
+                escaped.append(pool, '\\') catch return error.OutOfMemory;
+                escaped.append(pool, byte) catch return error.OutOfMemory;
+            },
+            '~' => escaped.appendSlice(pool, "\\textasciitilde{}") catch
+                return error.OutOfMemory,
+            '^' => escaped.appendSlice(pool, "\\textasciicircum{}") catch
+                return error.OutOfMemory,
+            '\\' => escaped.appendSlice(pool, "\\textbackslash{}") catch
+                return error.OutOfMemory,
+            else => escaped.append(pool, byte) catch return error.OutOfMemory,
+        }
+    }
+    escaped.append(pool, '}') catch return error.OutOfMemory;
+    return escaped.items;
+}
+
+fn precedenceOf(graph: *const Graph, target: Target, node: Node) Precedence {
     return switch (node) {
         .add => .sum,
         .multiply => .product,
@@ -717,14 +1014,28 @@ fn precedenceOf(target: Target, node: Node) Precedence {
                 Precedence.product,
             .latex => .atom,
         },
-        .pi, .sqrt_rational, .parameter, .background => .atom,
+        .pi, .sqrt_rational, .parameter, .background, .renormalization_scale => .atom,
+        // Promotion renders as its operand, so it binds exactly as tightly.
+        .promote_real_to_complex => |operand| precedenceOf(graph, target, graph.value(operand).node),
+        // Every structured and spectral form the renderer emits is
+        // self-delimiting except the plain-text derivative suffix, which binds
+        // like a quotient.
+        .real_symmetric_matrix,
+        .scalar_one_loop_spectral_value,
+        .scalar_one_loop_spectral_gradient,
+        .scalar_one_loop_spectral_hessian,
+        => .atom,
+        .element => switch (target) {
+            .phaser => .product,
+            .latex => .atom,
+        },
     };
 }
 
 /// True when the value carries a negative exact rational coefficient, which the
 /// sum renderer turns into a conventional minus sign.
-fn hasNegativeCoefficient(graph: *const Graph, id: ValueId) bool {
-    return switch (graph.value(id).node) {
+fn hasNegativeCoefficient(graph: *const Graph, promoted: ValueId) bool {
+    return switch (graph.value(underlying(graph, promoted)).node) {
         .rational => |rational| isNegative(rational),
         .multiply => |children| blk: {
             for (children) |child| {
@@ -1006,4 +1317,136 @@ test "shared subexpressions are counted once" {
     // power, and the coordinate.
     const total = try countNodes(&graph, doubled, std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 4), total);
+}
+
+// -- Milestone 3 structured and spectral notation ---------------------------
+
+/// A 2x2 mass matrix and its spectral value, built directly so that the
+/// rendering tests do not depend on the derivation path.
+fn buildSpectralFixture(builder: *value.Builder) !struct {
+    matrix: ValueId,
+    spectral: ValueId,
+} {
+    const phi = try builder.background(0, "phi", 1);
+    const m2 = try builder.parameter(0, "m2", 2);
+    const g = try builder.parameter(1, "g", 2);
+    const matrix = try builder.realSymmetricMatrix(
+        2,
+        &.{ m2, g, try builder.multiply(&.{ m2, try builder.power(phi, 0) }) },
+        2,
+    );
+    return .{
+        .matrix = matrix,
+        .spectral = try builder.scalarOneLoopSpectralValue(
+            matrix,
+            try builder.renormalizationScale(0, "muR"),
+        ),
+    };
+}
+
+test "a matrix renders compactly with both mirrored positions" {
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const fixture = try buildSpectralFixture(&builder);
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    // The stored upper triangle is authoritative; the lower triangle shows the
+    // same operands rather than separately rounded values.
+    try expectRender(&graph, fixture.matrix, .phaser, "[[m2, g], [g, m2]]");
+    const latex = try renderForTest(&graph, fixture.matrix, .latex);
+    defer std.testing.allocator.free(latex);
+    try std.testing.expect(
+        std.mem.indexOf(u8, latex, "\\left(\\begin{array}{cc}") != null,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, latex, " & ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, latex, " \\\\ ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, latex, "\\end{array}\\right)") != null);
+}
+
+test "the spectral operation is preserved rather than expanded" {
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const fixture = try buildSpectralFixture(&builder);
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    try expectRender(
+        &graph,
+        fixture.spectral,
+        .phaser,
+        "scalar_one_loop([[m2, g], [g, m2]]; muR)",
+    );
+
+    const latex = try renderForTest(&graph, fixture.spectral, .latex);
+    defer std.testing.allocator.free(latex);
+    // A named spectral head with a trace, not a diagonalization or a component
+    // sum over eigenvalues.
+    try std.testing.expect(
+        std.mem.indexOf(u8, latex, "\\mathrm{Tr}\\,\\Phi^{(1)}_{\\mathrm{scalar}}") != null,
+    );
+    for ([_][]const u8{ "\\log", "\\lambda_", "$", "\\begin{document}" }) |forbidden| {
+        try std.testing.expect(std.mem.indexOf(u8, latex, forbidden) == null);
+    }
+}
+
+test "a spectral derivative component renders as a background partial" {
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const fixture = try buildSpectralFixture(&builder);
+    var first: [1]ValueId = undefined;
+    const background = value.Background{ .order = &.{0}, .mass_dimension = 1 };
+    try value.gradient(&builder, fixture.spectral, background, &first);
+    var second: [1]ValueId = undefined;
+    try value.hessian(&builder, fixture.spectral, background, &second);
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    const options = Options{ .target = .phaser, .coordinate_names = &.{"phi"} };
+    const gradient_text = try renderAlloc(
+        &graph,
+        first[0],
+        std.testing.allocator,
+        options,
+    );
+    defer std.testing.allocator.free(gradient_text);
+    try std.testing.expect(std.mem.startsWith(u8, gradient_text, "d[scalar_one_loop("));
+    try std.testing.expect(std.mem.endsWith(u8, gradient_text, "]/dphi"));
+
+    const hessian_text = try renderAlloc(
+        &graph,
+        second[0],
+        std.testing.allocator,
+        options,
+    );
+    defer std.testing.allocator.free(hessian_text);
+    try std.testing.expect(std.mem.startsWith(u8, hessian_text, "d2[scalar_one_loop("));
+    try std.testing.expect(std.mem.endsWith(u8, hessian_text, "]/dphi dphi"));
+
+    // Without a supplied name table the component still identifies its
+    // coordinate, by canonical position.
+    const unnamed = try renderAlloc(&graph, first[0], std.testing.allocator, .{
+        .target = .phaser,
+    });
+    defer std.testing.allocator.free(unnamed);
+    try std.testing.expect(std.mem.endsWith(u8, unnamed, "]/db0"));
+}
+
+test "a promoted real term renders as the real mathematics it denotes" {
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const phi = try builder.background(0, "phi", 1);
+    const tree = try builder.multiply(&.{
+        try builder.parameter(0, "m2", 2),
+        try builder.power(phi, 2),
+    });
+    const fixture = try buildSpectralFixture(&builder);
+    const total = try builder.add(&.{
+        try builder.promoteRealToComplex(tree),
+        fixture.spectral,
+    });
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    const text = try renderForTest(&graph, total, .phaser);
+    defer std.testing.allocator.free(text);
+    // The inclusion into Complex64 adds no mathematics, and the loop term is
+    // written after the polynomial one, as a perturbative sum is written.
+    try std.testing.expect(std.mem.startsWith(u8, text, "m2 * phi^2 + scalar_one_loop("));
 }

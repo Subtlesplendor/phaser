@@ -129,6 +129,17 @@ fn evaluateDirect(
             evaluateDirect(graph, power_node.base, parameters, backgrounds),
             power_node.exponent,
         ),
+        // This independent evaluator covers the real node subset a tree-only
+        // kernel lowers. A structured or complex node reaching it would mean
+        // the kernel under test had lowered something it cannot yet evaluate.
+        .renormalization_scale,
+        .promote_real_to_complex,
+        .real_symmetric_matrix,
+        .scalar_one_loop_spectral_value,
+        .scalar_one_loop_spectral_gradient,
+        .scalar_one_loop_spectral_hessian,
+        .element,
+        => std.math.nan(Scalar),
     };
 }
 

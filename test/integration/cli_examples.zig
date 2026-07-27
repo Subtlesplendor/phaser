@@ -240,17 +240,17 @@ test "an unsupported request reports its own diagnostic" {
     var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer errors.deinit();
 
-    const one_loop =
+    const two_loop =
         \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
         \\"background":{"mode":"full_scalar_space"},
         \\"environment":{"kind":"vacuum"},
         \\"renormalization":{"scheme":"MSbar"},
-        \\"orders":{"loop":{"through":1}}}
+        \\"orders":{"loop":{"through":2}}}
     ;
     try std.testing.expectError(error.InvalidRequest, commands.exportSymbolic(
         test_allocator.allocator,
         example_data.phi4_model,
-        one_loop,
+        two_loop,
         .{},
         &out.writer,
         &errors.writer,
@@ -258,6 +258,63 @@ test "an unsupported request reports its own diagnostic" {
     try std.testing.expect(
         std.mem.indexOf(u8, errors.written(), "unsupported_loop_order") != null,
     );
+}
+
+const phi4_one_loop_request =
+    \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+    \\"background":{"mode":"full_scalar_space"},
+    \\"environment":{"kind":"vacuum"},
+    \\"renormalization":{"scheme":"MSbar"},
+    \\"orders":{"loop":{"through":1}}}
+;
+
+test "an order-one export shows the spectral operation and its scale" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer errors.deinit();
+
+    try commands.exportSymbolic(
+        std.testing.allocator,
+        example_data.phi4_model,
+        phi4_one_loop_request,
+        .{ .contributions = true },
+        &out.writer,
+        &errors.writer,
+    );
+
+    const text = out.written();
+    // The one-loop contribution keeps its spectral operation and mass matrix
+    // rather than being diagonalized or expanded.
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        text,
+        "V^(1)[scalar_one_loop](phi; muR) = scalar_one_loop([[m2 + 1/2 * lambda * phi^2]]; muR)",
+    ) != null);
+    // The truncated total names its truncation and its scale dependence.
+    try std.testing.expect(std.mem.indexOf(u8, text, "V^(<=1)(phi; muR) = ") != null);
+    try std.testing.expectEqualStrings("", errors.written());
+}
+
+test "an order-one evaluation reports that the complex backend is unavailable" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer errors.deinit();
+
+    // Milestone 3 delivers the symbolic order-one calculation before its
+    // numerical backend. The unsupported capability is an explicit failure,
+    // never a silent truncation to the tree part.
+    const points = [_]f64{0};
+    try std.testing.expectError(error.CompilationFailed, commands.evaluate(
+        std.testing.allocator,
+        example_data.phi4_model,
+        phi4_one_loop_request,
+        example_data.phi4_point,
+        .{ .points = &points, .point_count = 1 },
+        &out.writer,
+        &errors.writer,
+    ));
 }
 
 test "a parameter point missing a value is rejected before evaluation" {
