@@ -202,6 +202,10 @@ a pull request. Configuration lives in `zentinel.toml`, and decision
 The C ABI and
 language bindings are not implemented yet.
 
+## License
+
+Phaser is licensed under the [MIT License](LICENSE).
+
 The architecture and milestone contracts are documented in
 [DESIGN.md](DESIGN.md) and
 [Implementation Roadmap](docs/architecture/IMPLEMENTATION_ROADMAP.md).
