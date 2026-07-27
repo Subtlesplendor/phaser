@@ -39,7 +39,34 @@
         "re": "-3 / (128 * pi^2)",
         "im": "0"
       },
-      "status": "ok_real"
+      "calculation": {
+        "kind": "effective_potential",
+        "loop_order": 1,
+        "contribution": "scalar_one_loop",
+        "operation": "value"
+      },
+      "reference_precision": {
+        "arithmetic": "binary64",
+        "significand_bits": 53,
+        "shared_primitives": [
+          "zig.@log"
+        ]
+      },
+      "comparison_policy": "spectral_value_known_spectrum",
+      "expected_status": "ok",
+      "derivation_source": {
+        "kind": "hand_derived",
+        "file": "README.md",
+        "section": "One-loop value points"
+      },
+      "manual_transformations": [
+        {
+          "from": "reviewable expression strings",
+          "to": "Zig f64 test constants",
+          "location": "test/conformance/scalar_one_loop.zig",
+          "procedure": "transcribed by hand"
+        }
+      ]
     },
     {
       "id": "zero_mass_squared",
@@ -57,11 +84,34 @@
         "re": "0",
         "im": "0"
       },
-      "gradient_limit": {
-        "re": "0",
-        "im": "0"
+      "calculation": {
+        "kind": "effective_potential",
+        "loop_order": 1,
+        "contribution": "scalar_one_loop",
+        "operation": "value"
       },
-      "hessian_status": "singular_derivative"
+      "reference_precision": {
+        "arithmetic": "binary64",
+        "significand_bits": 53,
+        "shared_primitives": [
+          "zig.@log"
+        ]
+      },
+      "comparison_policy": "spectral_value_zero_mode",
+      "expected_status": "ok",
+      "derivation_source": {
+        "kind": "hand_derived",
+        "file": "README.md",
+        "section": "Zero-mode derivatives"
+      },
+      "manual_transformations": [
+        {
+          "from": "reviewable expression strings",
+          "to": "Zig f64 test constants",
+          "location": "test/conformance/scalar_one_loop.zig",
+          "procedure": "transcribed by hand"
+        }
+      ]
     },
     {
       "id": "negative_mass_squared",
@@ -79,7 +129,171 @@
         "re": "-3 / (128 * pi^2)",
         "im": "1 / (64 * pi)"
       },
-      "status": "ok_complex"
+      "calculation": {
+        "kind": "effective_potential",
+        "loop_order": 1,
+        "contribution": "scalar_one_loop",
+        "operation": "value"
+      },
+      "reference_precision": {
+        "arithmetic": "binary64",
+        "significand_bits": 53,
+        "shared_primitives": [
+          "zig.@log"
+        ]
+      },
+      "comparison_policy": "spectral_value_known_spectrum",
+      "expected_status": "ok",
+      "derivation_source": {
+        "kind": "hand_derived",
+        "file": "README.md",
+        "section": "One-loop value points"
+      },
+      "manual_transformations": [
+        {
+          "from": "reviewable expression strings",
+          "to": "Zig f64 test constants",
+          "location": "test/conformance/scalar_one_loop.zig",
+          "procedure": "transcribed by hand"
+        }
+      ]
+    },
+    {
+      "id": "zero_mass_squared_gradient",
+      "parameters": {
+        "omega": "0",
+        "m2": "-1",
+        "lambda": "2"
+      },
+      "background": {
+        "phi": "1"
+      },
+      "renormalization_scale": "1",
+      "mass_squared": "0",
+      "expected_gradient": {
+        "re": "0",
+        "im": "0"
+      },
+      "calculation": {
+        "kind": "effective_potential",
+        "loop_order": 1,
+        "contribution": "scalar_one_loop",
+        "operation": "gradient"
+      },
+      "reference_precision": {
+        "arithmetic": "binary64",
+        "significand_bits": 53,
+        "shared_primitives": [
+          "zig.@log"
+        ]
+      },
+      "comparison_policy": "spectral_gradient_zero_mode",
+      "expected_status": "ok",
+      "derivation_source": {
+        "kind": "hand_derived",
+        "file": "README.md",
+        "section": "Zero-mode derivatives"
+      },
+      "manual_transformations": [
+        {
+          "from": "analytic zero-mode limit",
+          "to": "Zig f64 test constant",
+          "location": "test/conformance/scalar_one_loop.zig",
+          "procedure": "transcribed by hand"
+        }
+      ]
+    },
+    {
+      "id": "zero_mass_squared_hessian",
+      "parameters": {
+        "omega": "0",
+        "m2": "-1",
+        "lambda": "2"
+      },
+      "background": {
+        "phi": "1"
+      },
+      "renormalization_scale": "1",
+      "mass_squared": "0",
+      "calculation": {
+        "kind": "effective_potential",
+        "loop_order": 1,
+        "contribution": "scalar_one_loop",
+        "operation": "hessian"
+      },
+      "reference_precision": {
+        "arithmetic": "binary64",
+        "significand_bits": 53,
+        "shared_primitives": [
+          "zig.@log"
+        ]
+      },
+      "comparison_policy": "spectral_hessian_zero_mode",
+      "expected_status": "singular_derivative",
+      "derivation_source": {
+        "kind": "hand_derived",
+        "file": "README.md",
+        "section": "Zero-mode derivatives"
+      },
+      "manual_transformations": []
+    },
+    {
+      "id": "positive_mass_fixed_parameter_scale_pair",
+      "parameters": {
+        "omega": "0",
+        "m2": "1",
+        "lambda": "2"
+      },
+      "background": {
+        "phi": "0"
+      },
+      "mass_squared": "1",
+      "renormalization_scales": {
+        "mu1": "1",
+        "mu2": "2"
+      },
+      "one_loop_values": {
+        "at_mu1": {
+          "re": "-3 / (128 * pi^2)",
+          "im": "0"
+        },
+        "at_mu2": {
+          "re": "(-Log(4) - 3 / 2) / (64 * pi^2)",
+          "im": "0"
+        }
+      },
+      "expected_difference": {
+        "re": "-Log(2) / (32 * pi^2)",
+        "im": "0"
+      },
+      "calculation": {
+        "kind": "effective_potential",
+        "loop_order": 1,
+        "contribution": "scalar_one_loop",
+        "operation": "fixed_parameter_scale_variation"
+      },
+      "reference_precision": {
+        "arithmetic": "binary64",
+        "significand_bits": 53,
+        "shared_primitives": [
+          "zig.@log"
+        ]
+      },
+      "comparison_policy": "reordered_value_well_conditioned",
+      "expected_status": "ok",
+      "derivation_source": {
+        "kind": "hand_derived",
+        "file": "README.md",
+        "section": "Fixed-parameter scale variation"
+      },
+      "manual_transformations": [
+        {
+          "from": "reviewable scale-difference identity",
+          "to": "Zig f64 test constants",
+          "location": "test/conformance/scalar_one_loop.zig",
+          "procedure": "transcribed by hand"
+        }
+      ]
     }
   ],
   "provenance": {

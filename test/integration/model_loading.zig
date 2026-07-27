@@ -1,6 +1,7 @@
 const std = @import("std");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
+const conformance_fixture_data = @import("conformance_fixture_data");
 const scalar_oracle_fixture = @import("scalar_oracle_fixture");
 
 fn context() phaser.Context {
@@ -39,8 +40,10 @@ test "public loader accepts the phi4 and multi-scalar conformance models" {
     try std.testing.expectEqual(@as(usize, 15), multi.parameters.len);
 }
 
-test "public loader accepts the three-scalar oracle prototype model" {
-    var model = try load(scalar_oracle_fixture.three_scalar_model);
+test "public loader accepts the three-scalar conformance model" {
+    var model = try load(
+        conformance_fixture_data.three_scalar_model,
+    );
     defer model.deinit();
 
     try std.testing.expectEqual(@as(usize, 3), model.real_scalars.len);
@@ -50,19 +53,27 @@ test "public loader accepts the three-scalar oracle prototype model" {
     try std.testing.expectEqual(@as(usize, 6), cubic.components.len);
 }
 
-test "three-scalar oracle prototype cases remain valid language-neutral JSON" {
-    var parsed = try std.json.parseFromSlice(
-        std.json.Value,
-        std.testing.allocator,
+test "Milestone 3 conformance fixtures remain valid language-neutral JSON" {
+    const fixtures = .{
+        conformance_fixture_data.phi4_fixture,
+        conformance_fixture_data.multi_scalar_fixture,
+        conformance_fixture_data.three_scalar_fixture,
         scalar_oracle_fixture.cases,
-        .{
-            .duplicate_field_behavior = .@"error",
-            .parse_numbers = false,
-            .allocate = .alloc_always,
-        },
-    );
-    defer parsed.deinit();
-    try std.testing.expect(parsed.value == .object);
+    };
+    inline for (fixtures) |fixture| {
+        var parsed = try std.json.parseFromSlice(
+            std.json.Value,
+            std.testing.allocator,
+            fixture,
+            .{
+                .duplicate_field_behavior = .@"error",
+                .parse_numbers = false,
+                .allocate = .alloc_always,
+            },
+        );
+        defer parsed.deinit();
+        try std.testing.expect(parsed.value == .object);
+    }
 }
 
 test "sparse symmetric tensor lookup agrees across dense permutations" {

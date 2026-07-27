@@ -90,3 +90,9 @@ floating-point zero times infinity. No planned seeded defect is left uncovered.
 All matrices, spectra, transformations, and values were transcribed by hand
 from the displayed formulas. There is no generated numerical golden file and no
 external dependency.
+
+PR E materializes the authoritative language-neutral version under
+`test/fixtures/conformance/three_scalar/`. This directory remains the isolated
+PR B oracle prototype and seeded-defect evidence. The executable reference test
+transcribes every authoritative exact-spectrum case separately so the
+conformance fixture does not become an input to its own numerical oracle.

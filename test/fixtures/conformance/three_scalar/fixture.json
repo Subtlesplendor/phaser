@@ -1,30 +1,44 @@
 {
   "schema": "phaser.conformance-fixture/0.1",
-  "fixture_id": "scalar.multi_scalar",
-  "model_file": "../../../../examples/multi_scalar/model.json",
+  "fixture_id": "generated.scalar.three_scalar_jacobi",
+  "model_file": "model.json",
   "model_schema": "phaser.qft-model/0.1",
-  "applicable_milestones": [1, 2, 3],
+  "applicable_milestones": [3],
   "conventions": {
     "spacetime_dimension": 4,
     "renormalization_scheme": "MSbar",
     "one_loop_formula_version": "scalar-vacuum-msbar/1",
     "complex_log_branch": "arg(-pi,pi]",
-    "resummation": "none"
+    "resummation": "none",
+    "background_parametrization": "(r,s,t) = (b,0,0)"
   },
   "exact_identities": {
-    "tree_potential": "omega + t_h*h + t_s*s + (m_h2*h^2 + 2*m_hs2*h*s + m_s2*s^2)/2 + (a*h^3 + 3*b*h^2*s + 3*c*h*s^2 + d*s^3)/6 + (lh*h^4 + 4*l3*h^3*s + 6*l2*h^2*s^2 + 4*l1*h*s^3 + ls*s^4)/24",
-    "mass_hh": "m_h2 + a*h + b*s + (lh/2)*h^2 + l3*h*s + (l2/2)*s^2",
-    "mass_hs": "m_hs2 + b*h + c*s + (l3/2)*h^2 + l2*h*s + (l1/2)*s^2",
-    "mass_ss": "m_s2 + c*h + d*s + (l2/2)*h^2 + l1*h*s + (ls/2)*s^2"
+    "tree_potential": "(c111*r^3 + 3*c112*r^2*s + 3*c113*r^2*t + 3*c122*r*s^2 + 6*c123*r*s*t + 3*c133*r*t^2)/6",
+    "mass_matrix_on_slice": "b * ((c111,c112,c113),(c112,c122,c123),(c113,c123,c133))",
+    "scalar_one_loop": "Sum[x^2 * (Log(x / muR^2) - 3 / 2) / (64 * pi^2), x in spectrum]"
   },
   "reference_points": [
     {
-      "id": "positive_definite",
-      "mass_matrix": [["1", "0"], ["0", "4"]],
-      "eigenvalues": ["1", "4"],
-      "renormalization_scale": "1",
+      "id": "positive_dense",
+      "parameters": {
+        "c111": "53",
+        "c112": "26",
+        "c113": "-4",
+        "c122": "44",
+        "c123": "-22",
+        "c133": "29"
+      },
+      "background": {"r": "1", "s": "0", "t": "0"},
+      "mass_matrix": [
+        ["53", "26", "-4"],
+        ["26", "44", "-22"],
+        ["-4", "-22", "29"]
+      ],
+      "eigenvalues": ["9", "36", "81"],
+      "characteristic_polynomial": "(lambda - 9) * (lambda - 36) * (lambda - 81)",
+      "renormalization_scale": "3",
       "one_loop": {
-        "re": "-3/(128*pi^2) + (Log(4) - 3/2)/(4*pi^2)",
+        "re": "(81*(-3/2) + 1296*(Log(4)-3/2) + 6561*(Log(9)-3/2))/(64*pi^2)",
         "im": "0"
       },
       "calculation": {
@@ -43,7 +57,7 @@
       "derivation_source": {
         "kind": "hand_derived",
         "file": "README.md",
-        "section": "Exact-spectrum points"
+        "section": "Dense Jacobi case"
       },
       "manual_transformations": [
         {
@@ -55,15 +69,29 @@
       ]
     },
     {
-      "id": "positive_degeneracy",
-      "mass_matrix": [["2", "0"], ["0", "2"]],
-      "eigenvalues": ["2", "2"],
-      "renormalization_scale": "1",
+      "id": "positive_degeneracy_dense",
+      "parameters": {
+        "c111": "30",
+        "c112": "12",
+        "c113": "-6",
+        "c122": "30",
+        "c123": "-6",
+        "c133": "21"
+      },
+      "background": {"r": "1", "s": "0", "t": "0"},
+      "mass_matrix": [
+        ["30", "12", "-6"],
+        ["12", "30", "-6"],
+        ["-6", "-6", "21"]
+      ],
+      "eigenvalues": ["18", "18", "45"],
+      "characteristic_polynomial": "(lambda - 18)^2 * (lambda - 45)",
+      "renormalization_scale": "3",
       "one_loop": {
-        "re": "(Log(2) - 3/2)/(8*pi^2)",
+        "re": "(648*(Log(2)-3/2) + 2025*(Log(5)-3/2))/(64*pi^2)",
         "im": "0"
       },
-      "multiplicity": "2",
+      "multiplicity": {"eigenvalue": "18", "count": 2},
       "calculation": {
         "kind": "effective_potential",
         "loop_order": 1,
@@ -80,7 +108,58 @@
       "derivation_source": {
         "kind": "hand_derived",
         "file": "README.md",
-        "section": "Exact-spectrum points"
+        "section": "Exact-spectrum catalog"
+      },
+      "manual_transformations": [
+        {
+          "from": "reviewable expression strings",
+          "to": "Zig f64 test constants",
+          "location": "test/conformance/scalar_one_loop.zig",
+          "procedure": "transcribed by hand"
+        }
+      ]
+    },
+    {
+      "id": "negative_degeneracy_dense",
+      "parameters": {
+        "c111": "2",
+        "c112": "20",
+        "c113": "-10",
+        "c122": "2",
+        "c123": "-10",
+        "c133": "-13"
+      },
+      "background": {"r": "1", "s": "0", "t": "0"},
+      "mass_matrix": [
+        ["2", "20", "-10"],
+        ["20", "2", "-10"],
+        ["-10", "-10", "-13"]
+      ],
+      "eigenvalues": ["-18", "-18", "27"],
+      "characteristic_polynomial": "(lambda + 18)^2 * (lambda - 27)",
+      "renormalization_scale": "3",
+      "one_loop": {
+        "re": "(648*(Log(2)-3/2) + 729*(Log(3)-3/2))/(64*pi^2)",
+        "im": "81/(8*pi)"
+      },
+      "multiplicity": {"eigenvalue": "-18", "count": 2},
+      "calculation": {
+        "kind": "effective_potential",
+        "loop_order": 1,
+        "contribution": "scalar_one_loop",
+        "operation": "value"
+      },
+      "reference_precision": {
+        "arithmetic": "binary64",
+        "significand_bits": 53,
+        "shared_primitives": ["zig.@log"]
+      },
+      "comparison_policy": "spectral_value_known_spectrum",
+      "expected_status": "ok",
+      "derivation_source": {
+        "kind": "hand_derived",
+        "file": "README.md",
+        "section": "Exact-spectrum catalog"
       },
       "manual_transformations": [
         {
@@ -93,11 +172,25 @@
     },
     {
       "id": "exact_zero_mode",
-      "mass_matrix": [["0", "0"], ["0", "4"]],
-      "eigenvalues": ["0", "4"],
+      "parameters": {
+        "c111": "1",
+        "c112": "1",
+        "c113": "0",
+        "c122": "1",
+        "c123": "0",
+        "c133": "4"
+      },
+      "background": {"r": "1", "s": "0", "t": "0"},
+      "mass_matrix": [
+        ["1", "1", "0"],
+        ["1", "1", "0"],
+        ["0", "0", "4"]
+      ],
+      "eigenvalues": ["0", "2", "4"],
+      "characteristic_polynomial": "lambda * (lambda - 2) * (lambda - 4)",
       "renormalization_scale": "1",
       "one_loop": {
-        "re": "(Log(4) - 3/2)/(4*pi^2)",
+        "re": "(4*(Log(2)-3/2) + 16*(Log(4)-3/2))/(64*pi^2)",
         "im": "0"
       },
       "calculation": {
@@ -116,7 +209,7 @@
       "derivation_source": {
         "kind": "hand_derived",
         "file": "README.md",
-        "section": "Exact-spectrum points"
+        "section": "Exact-spectrum catalog"
       },
       "manual_transformations": [
         {
@@ -129,16 +222,26 @@
     },
     {
       "id": "indefinite",
-      "mass_matrix": [["3/2", "5/2"], ["5/2", "3/2"]],
-      "eigenvalues": ["4", "-1"],
+      "parameters": {
+        "c111": "0",
+        "c112": "2",
+        "c113": "0",
+        "c122": "0",
+        "c123": "0",
+        "c133": "3"
+      },
+      "background": {"r": "1", "s": "0", "t": "0"},
+      "mass_matrix": [
+        ["0", "2", "0"],
+        ["2", "0", "0"],
+        ["0", "0", "3"]
+      ],
+      "eigenvalues": ["-2", "2", "3"],
+      "characteristic_polynomial": "(lambda + 2) * (lambda - 2) * (lambda - 3)",
       "renormalization_scale": "1",
       "one_loop": {
-        "re": "(Log(4) - 3/2)/(4*pi^2) - 3/(128*pi^2)",
-        "im": "1/(64*pi)"
-      },
-      "explicit_eigenvalue_sum": {
-        "re": "4^2*(Log(4) - 3/2)/(64*pi^2) + (-1)^2*(Log(1) - 3/2)/(64*pi^2)",
-        "im": "(-1)^2/(64*pi)"
+        "re": "(8*(Log(2)-3/2) + 9*(Log(3)-3/2))/(64*pi^2)",
+        "im": "1/(16*pi)"
       },
       "calculation": {
         "kind": "effective_potential",
@@ -156,44 +259,7 @@
       "derivation_source": {
         "kind": "hand_derived",
         "file": "README.md",
-        "section": "Exact-spectrum points"
-      },
-      "manual_transformations": [
-        {
-          "from": "reviewable expression strings",
-          "to": "Zig f64 test constants",
-          "location": "test/conformance/scalar_one_loop.zig",
-          "procedure": "transcribed by hand"
-        }
-      ]
-    },
-    {
-      "id": "negative_degeneracy",
-      "mass_matrix": [["-2", "0"], ["0", "-2"]],
-      "eigenvalues": ["-2", "-2"],
-      "renormalization_scale": "1",
-      "one_loop": {
-        "re": "(Log(2) - 3/2)/(8*pi^2)",
-        "im": "1/(8*pi)"
-      },
-      "multiplicity": "2",
-      "calculation": {
-        "kind": "effective_potential",
-        "loop_order": 1,
-        "contribution": "scalar_one_loop",
-        "operation": "value"
-      },
-      "reference_precision": {
-        "arithmetic": "binary64",
-        "significand_bits": 53,
-        "shared_primitives": ["zig.@log"]
-      },
-      "comparison_policy": "spectral_value_known_spectrum",
-      "expected_status": "ok",
-      "derivation_source": {
-        "kind": "hand_derived",
-        "file": "README.md",
-        "section": "Exact-spectrum points"
+        "section": "Exact-spectrum catalog"
       },
       "manual_transformations": [
         {
@@ -206,14 +272,25 @@
     },
     {
       "id": "near_degeneracy",
+      "parameters": {
+        "c111": "1 + 2^-21",
+        "c112": "2^-21",
+        "c113": "0",
+        "c122": "1 + 2^-21",
+        "c123": "0",
+        "c133": "4"
+      },
+      "background": {"r": "1", "s": "0", "t": "0"},
       "mass_matrix": [
-        ["1 + 2^-21", "2^-21"],
-        ["2^-21", "1 + 2^-21"]
+        ["1 + 2^-21", "2^-21", "0"],
+        ["2^-21", "1 + 2^-21", "0"],
+        ["0", "0", "4"]
       ],
-      "eigenvalues": ["1", "1 + 2^-20"],
+      "eigenvalues": ["1", "1 + 2^-20", "4"],
+      "characteristic_polynomial": "(lambda - 1) * (lambda - (1 + 2^-20)) * (lambda - 4)",
       "renormalization_scale": "1",
       "one_loop": {
-        "re": "(-3/2 + (1 + 2^-20)^2 * (Log(1 + 2^-20) - 3/2))/(64*pi^2)",
+        "re": "(-3/2 + (1 + 2^-20)^2*(Log(1 + 2^-20)-3/2) + 16*(Log(4)-3/2))/(64*pi^2)",
         "im": "0"
       },
       "separation": "2^-20",
@@ -247,16 +324,19 @@
   ],
   "metamorphic_cases": [
     {
-      "id": "field_permutation",
+      "id": "positive_dense_permutation",
       "relation": "equal_complex_spectral_sum",
-      "original_mass_matrix": [["4", "0"], ["0", "-1"]],
-      "transformation": [["0", "1"], ["1", "0"]],
-      "transformed_mass_matrix": [["-1", "0"], ["0", "4"]],
-      "original_eigenvalues": ["4", "-1"],
-      "transformed_eigenvalues": ["-1", "4"],
+      "original_case": "positive_dense",
+      "transformation": [["0", "0", "1"], ["0", "1", "0"], ["1", "0", "0"]],
+      "transformed_mass_matrix": [
+        ["29", "-22", "-4"],
+        ["-22", "44", "26"],
+        ["-4", "26", "53"]
+      ],
+      "transformed_eigenvalues": ["81", "36", "9"],
       "expected_complex_sum": {
-        "re": "(Log(4) - 3/2)/(4*pi^2) - 3/(128*pi^2)",
-        "im": "1/(64*pi)"
+        "re": "(81*(-3/2) + 1296*(Log(4)-3/2) + 6561*(Log(9)-3/2))/(64*pi^2)",
+        "im": "0"
       },
       "calculation": {
         "kind": "effective_potential",
@@ -274,31 +354,31 @@
       "derivation_source": {
         "kind": "hand_derived",
         "file": "README.md",
-        "section": "Basis relations"
+        "section": "Permutation and orthogonal relations"
       },
       "manual_transformations": [
         {
-          "from": "fixture field order (h,s)",
-          "to": "permuted order (s,h)",
+          "from": "field order (r,s,t)",
+          "to": "permuted field order (t,s,r)",
           "location": "test/conformance/scalar_one_loop.zig",
-          "procedure": "apply the recorded permutation to rows, columns, and eigenvalue transcription"
+          "procedure": "apply the recorded permutation to matrix rows, columns, and eigenvalue transcription"
         }
       ]
     },
     {
-      "id": "orthogonal_basis_change",
+      "id": "positive_dense_orthogonal",
       "relation": "equal_complex_spectral_sum",
-      "original_mass_matrix": [["4", "0"], ["0", "-1"]],
+      "original_mass_matrix": [["9", "0", "0"], ["0", "36", "0"], ["0", "0", "81"]],
       "transformation": [
-        ["1/Sqrt(2)", "1/Sqrt(2)"],
-        ["1/Sqrt(2)", "-1/Sqrt(2)"]
+        ["1/3", "-2/3", "-2/3"],
+        ["-2/3", "1/3", "-2/3"],
+        ["-2/3", "-2/3", "1/3"]
       ],
-      "transformed_mass_matrix": [["3/2", "5/2"], ["5/2", "3/2"]],
-      "original_eigenvalues": ["4", "-1"],
-      "transformed_eigenvalues": ["4", "-1"],
+      "transformed_case": "positive_dense",
+      "transformed_eigenvalues": ["9", "36", "81"],
       "expected_complex_sum": {
-        "re": "(Log(4) - 3/2)/(4*pi^2) - 3/(128*pi^2)",
-        "im": "1/(64*pi)"
+        "re": "(81*(-3/2) + 1296*(Log(4)-3/2) + 6561*(Log(9)-3/2))/(64*pi^2)",
+        "im": "0"
       },
       "calculation": {
         "kind": "effective_potential",
@@ -309,21 +389,21 @@
       "reference_precision": {
         "arithmetic": "binary64",
         "significand_bits": 53,
-        "shared_primitives": ["zig.@log", "zig.@sqrt"]
+        "shared_primitives": ["zig.@log"]
       },
       "comparison_policy": "spectral_value_known_spectrum",
       "expected_status": "ok",
       "derivation_source": {
         "kind": "hand_derived",
         "file": "README.md",
-        "section": "Basis relations"
+        "section": "Dense Jacobi case"
       },
       "manual_transformations": [
         {
           "from": "diagonal exact-spectrum basis",
-          "to": "the recorded orthogonally transformed basis",
+          "to": "the public fixture basis",
           "location": "test/conformance/scalar_one_loop.zig",
-          "procedure": "multiply Q diag(4,-1) Q^T by hand"
+          "procedure": "multiply Q diag(9,36,81) Q^T by hand"
         }
       ]
     }
@@ -336,6 +416,7 @@
     "fermion contributions",
     "gauge and ghost contributions",
     "thermal contributions",
-    "Goldstone or instability resummation"
+    "Goldstone or instability resummation",
+    "production eigensolver and scalar one-loop execution before Milestone 3 implementation"
   ]
 }

@@ -61,6 +61,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const conformance_fixture_data_module = b.createModule(.{
+        .root_source_file = b.path("test/fixtures/conformance/data.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Executable mirror of `docs/architecture/NUMERICAL_COMPARISON.md`. Test
     // tiers name a policy from it instead of carrying separately editable
@@ -114,6 +119,10 @@ pub fn build(b: *std.Build) void {
                 .module = scalar_oracle_fixture_module,
             },
             .{
+                .name = "conformance_fixture_data",
+                .module = conformance_fixture_data_module,
+            },
+            .{
                 .name = "numerical_comparison",
                 .module = numerical_comparison_module,
             },
@@ -136,6 +145,10 @@ pub fn build(b: *std.Build) void {
                 .name = "scalar_oracle_fixture",
                 .module = scalar_oracle_fixture_module,
             },
+            .{
+                .name = "conformance_fixture_data",
+                .module = conformance_fixture_data_module,
+            },
         },
     });
     const integration_tests = b.addTest(.{ .root_module = integration_module });
@@ -153,6 +166,10 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "phaser", .module = phaser_module },
             .{ .name = "example_data", .module = example_data_module },
+            .{
+                .name = "conformance_fixture_data",
+                .module = conformance_fixture_data_module,
+            },
             .{
                 .name = "numerical_comparison",
                 .module = numerical_comparison_module,
