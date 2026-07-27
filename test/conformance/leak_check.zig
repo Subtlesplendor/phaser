@@ -8,6 +8,8 @@ const test_allocator = @import("test_allocator");
 const tier = [_][]const u8{
     "scalar_one_loop.test.",
     "classical_scalar.test.",
+    "one_loop_artifact.test.",
+    "one_loop_kernel.test.",
     "potential_kernel.test.",
     "parameter_binding.test.",
 };

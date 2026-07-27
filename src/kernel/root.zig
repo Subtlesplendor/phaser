@@ -7,6 +7,11 @@ pub const potential = @import("potential.zig");
 pub const bindings = @import("binding.zig");
 
 pub const Scalar = program.Scalar;
+pub const Complex64 = program.Complex64;
+pub const ResultType = program.ResultType;
+pub const SlotType = program.SlotType;
+pub const Temporary = program.Temporary;
+pub const LiveRange = program.LiveRange;
 pub const Opcode = program.Opcode;
 pub const Instruction = program.Instruction;
 pub const Capability = program.Capability;
@@ -25,11 +30,15 @@ pub const rationalToScalar = lowering.rationalToScalar;
 pub const CallError = interpreter.CallError;
 pub const Inputs = interpreter.Inputs;
 pub const OutputBuffers = interpreter.OutputBuffers;
+pub const ComplexOutputBuffers = interpreter.ComplexOutputBuffers;
 pub const evaluate = interpreter.evaluate;
+pub const evaluateComplex = interpreter.evaluateComplex;
 pub const integerPower = interpreter.integerPower;
+pub const scalarOneLoopTerm = interpreter.scalarOneLoopTerm;
 
 pub const Kernel = potential.Kernel;
 pub const Configuration = potential.Configuration;
+pub const Selection = potential.Selection;
 pub const Channel = potential.Channel;
 pub const CompileError = potential.CompileError;
 pub const compile = potential.compile;
@@ -39,6 +48,7 @@ pub const BindError = bindings.BindError;
 pub const bind = bindings.bind;
 pub const runParameterStage = interpreter.runParameterStage;
 pub const evaluateStaged = interpreter.evaluateStaged;
+pub const evaluateStagedComplex = interpreter.evaluateStagedComplex;
 
 test {
     _ = program;

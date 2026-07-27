@@ -7,7 +7,7 @@ const fixture_data = @import("conformance_fixture_data");
 // The JSON metadata is checked structurally, but expected-value expressions
 // remain hand-transcribed: Milestone 3 preparation adds no fixture-expression
 // parser.
-const Complex64 = struct {
+pub const Complex64 = struct {
     re: f64,
     im: f64,
 
@@ -16,7 +16,7 @@ const Complex64 = struct {
     }
 };
 
-fn oneLoopEigenvalue(mass_squared: f64, renormalization_scale: f64) Complex64 {
+pub fn oneLoopEigenvalue(mass_squared: f64, renormalization_scale: f64) Complex64 {
     std.debug.assert(renormalization_scale > 0);
     if (mass_squared == 0) return .{ .re = 0, .im = 0 };
 
@@ -69,7 +69,7 @@ fn oneLoopSecondSpectralDerivative(
     };
 }
 
-fn expectComplexApprox(
+pub fn expectComplexApprox(
     expected: Complex64,
     actual: Complex64,
     scale: Complex64,
@@ -93,12 +93,12 @@ fn symmetricEigenvalues2x2(a: f64, b: f64, d: f64) [2]f64 {
     return .{ center + radius, center - radius };
 }
 
-const SpectralSum = struct {
+pub const SpectralSum = struct {
     value: Complex64,
     unsigned_scale: Complex64,
 };
 
-fn spectralSumAt(
+pub fn spectralSumAt(
     eigenvalues: []const f64,
     renormalization_scale: f64,
 ) SpectralSum {

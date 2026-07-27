@@ -197,6 +197,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phaser", .module = phaser_module },
             .{ .name = "example_data", .module = example_data_module },
             .{
+                .name = "scalar_oracle_fixture",
+                .module = scalar_oracle_fixture_module,
+            },
+            .{
                 .name = "conformance_fixture_data",
                 .module = conformance_fixture_data_module,
             },

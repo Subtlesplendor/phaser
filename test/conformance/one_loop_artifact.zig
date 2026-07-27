@@ -12,6 +12,7 @@
 //! order-one calculation before its numerical backend.
 
 const std = @import("std");
+const test_allocator = @import("test_allocator");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
 const fixture_data = @import("conformance_fixture_data");
@@ -20,7 +21,7 @@ const value = phaser.value;
 const calculation = phaser.calculation;
 
 fn testContext() phaser.Context {
-    return switch (phaser.Context.init(std.testing.allocator, .{
+    return switch (phaser.Context.init(test_allocator.allocator, .{
         .max_diagnostics = 16,
         .max_related_locations = 32,
     })) {
@@ -87,19 +88,19 @@ fn expectSameValue(
     reference_graph: *const value.Graph,
     reference_root: value.ValueId,
 ) !void {
-    var derived_text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var derived_text: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer derived_text.deinit();
-    var reference_text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var reference_text: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer reference_text.deinit();
 
     try derived_graph.writeValueCanonical(
         derived_root,
-        std.testing.allocator,
+        test_allocator.allocator,
         &derived_text.writer,
     );
     try reference_graph.writeValueCanonical(
         reference_root,
-        std.testing.allocator,
+        test_allocator.allocator,
         &reference_text.writer,
     );
     try std.testing.expectEqualStrings(reference_text.written(), derived_text.written());
@@ -150,7 +151,7 @@ test "the phi4 mass matrix equals its exact fixture identity" {
     try std.testing.expectEqual(@as(u32, 1), matrix.dimension);
 
     // `m2 + (lambda / 2) * phi^2`, the fixture's field_dependent_mass_squared.
-    var reference = try value.Builder.init(std.testing.allocator, .{});
+    var reference = try value.Builder.init(test_allocator.allocator, .{});
     const phi = try reference.background(0, "phi", 1);
     const expected = try reference.add(&.{
         try reference.parameter(1, "m2", 2),
@@ -180,7 +181,7 @@ test "the multi-scalar mass matrix equals its exact fixture identities" {
     const matrix = fixture.massMatrix();
     try std.testing.expectEqual(@as(u32, 2), matrix.dimension);
 
-    var reference = try value.Builder.init(std.testing.allocator, .{});
+    var reference = try value.Builder.init(test_allocator.allocator, .{});
     const h = try reference.background(0, "h", 1);
     const s = try reference.background(1, "s", 1);
     const a = try reference.parameter(0, "a", 1);
@@ -264,7 +265,7 @@ test "a component slice keeps every scalar in the fluctuation matrix" {
 
     // The fixture identity on this slice is
     // `b * ((c111,c112,c113),(c112,c122,c123),(c113,c123,c133))`.
-    var reference = try value.Builder.init(std.testing.allocator, .{});
+    var reference = try value.Builder.init(test_allocator.allocator, .{});
     const b = try reference.background(0, "b", 1);
     const names = [_][]const u8{ "c111", "c112", "c113", "c122", "c123", "c133" };
     var expected: [6]value.ValueId = undefined;
@@ -337,7 +338,7 @@ test "the one-loop contribution records its complete scientific contract" {
 
     // The exported metadata carries the same contract, so a reader never has to
     // infer a convention from the value graph.
-    var text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var text: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer text.deinit();
     try phaser.symbolic.writeProvenance(&fixture.artifact, &text.writer);
     for ([_][]const u8{
@@ -444,28 +445,40 @@ test "a tree request derives no one-loop contribution and no scale" {
     try std.testing.expect(!artifact.roleIsRequested(.scalar_one_loop));
 }
 
-test "a complex selection fails lowering rather than truncating to its tree part" {
+test "an order-one value compiles while its derivatives remain unavailable" {
     var fixture = try Fixture.init(example_data.phi4_model, full_space_request);
     defer fixture.deinit();
 
-    // Milestone 3 delivers the symbolic order-one calculation before its
-    // numerical backend. The unavailable capability is named, and the kernel
-    // never silently evaluates the tree contributions it could handle.
-    try std.testing.expectError(
-        error.UnsupportedResultType,
-        phaser.compileKernel(std.testing.allocator, &fixture.artifact, .{}),
+    // The value capability is lowered, and the kernel declares the complex
+    // result type its selection implies.
+    var kernel = try phaser.compileKernel(
+        test_allocator.allocator,
+        &fixture.artifact,
+        .{ .capability = .value },
+    );
+    defer kernel.deinit();
+    try std.testing.expectEqual(
+        phaser.kernel.ResultType.complex64,
+        kernel.resultType(),
     );
 
-    // A tree-only artifact over the same model still compiles, so the failure
-    // is about the selected result type rather than about the model.
-    const tree_request =
-        \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
-        \\"background":{"mode":"full_scalar_space"},
-        \\"environment":{"kind":"vacuum"},
-        \\"orders":{"loop":{"through":0}}}
-    ;
-    var tree = try Fixture.init(example_data.phi4_model, tree_request);
+    // The invariant spectral derivatives are a separate numerical operation.
+    // Requesting them fails rather than evaluating a potential without them.
+    try std.testing.expectError(
+        error.UnsupportedOperation,
+        phaser.compileKernel(
+            test_allocator.allocator,
+            &fixture.artifact,
+            .{ .capability = .value_gradient },
+        ),
+    );
+
+    // A tree-only selection of the same artifact stays real, so the result type
+    // follows the selection rather than the model.
+    var tree = try phaser.compileKernel(test_allocator.allocator, &fixture.artifact, .{
+        .capability = .value_gradient_hessian,
+        .selection = .{ .loop_order = 0 },
+    });
     defer tree.deinit();
-    var kernel = try phaser.compileKernel(std.testing.allocator, &tree.artifact, .{});
-    kernel.deinit();
+    try std.testing.expectEqual(phaser.kernel.ResultType.real64, tree.resultType());
 }

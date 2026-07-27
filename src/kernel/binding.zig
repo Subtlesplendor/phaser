@@ -27,6 +27,9 @@ pub const BindError = error{
     UnknownParameterValue,
     /// The point's scheme differs from the one the artifact declared.
     SchemeMismatch,
+    /// The point's reference scale is not finite and positive, which the
+    /// scalar one-loop formula version requires.
+    InvalidScale,
 };
 
 const bind_tw = error_injection.module(enum {
@@ -49,9 +52,14 @@ pub const Binding = struct {
     coordinate_count: usize,
     /// Packed parameter channel values, in kernel channel order.
     parameters: []const Scalar,
-    /// The temporary array after the parameter stage has run. Copied into
-    /// workspace at the start of each evaluation.
-    prologue: []const Scalar,
+    /// Packed renormalization-scale channel values. Empty when the kernel
+    /// declares no scale channel.
+    scales: []const Scalar,
+    /// The complete temporary frame after the parameter stage has run, as
+    /// bytes. Copied into workspace at the start of each evaluation, so a
+    /// staged run resumes from exactly the state an unstaged one would have
+    /// reached.
+    prologue: []align(@alignOf(Scalar)) const u8,
     /// Status produced while constructing `prologue`. It applies to every
     /// background point evaluated from this binding.
     prologue_status: program_module.Status,
@@ -76,6 +84,10 @@ pub const Binding = struct {
         return self.coordinate_count;
     }
 
+    pub fn resultType(self: *const Binding) program_module.ResultType {
+        return self.program.result_type;
+    }
+
     /// Evaluates background points against this bound parameter context.
     ///
     /// The parameter-dependent work was already done at bind time, so a batch
@@ -89,6 +101,25 @@ pub const Binding = struct {
         outputs: interpret_module.OutputBuffers,
     ) interpret_module.CallError!void {
         return interpret_module.evaluateStaged(
+            &self.program,
+            self.prologue,
+            self.prologue_status,
+            backgrounds,
+            point_count,
+            workspace,
+            outputs,
+        );
+    }
+
+    /// The `Complex64` counterpart of `evaluate`.
+    pub fn evaluateComplex(
+        self: *const Binding,
+        backgrounds: []const Scalar,
+        point_count: usize,
+        workspace: []u8,
+        outputs: interpret_module.ComplexOutputBuffers,
+    ) interpret_module.CallError!void {
+        return interpret_module.evaluateStagedComplex(
             &self.program,
             self.prologue,
             self.prologue_status,
@@ -132,16 +163,36 @@ pub fn bind(
         slot.* = point.lookup(channel.name) orelse return error.MissingParameterValue;
     }
 
+    // The scale is a distinct input category from a model parameter, and the
+    // restricted one-loop logarithm is defined only for a finite positive one,
+    // so it is validated here rather than at every point.
+    const scales = try arena.allocator().alloc(Scalar, kernel.program.scale_count);
+    if (scales.len != 0) {
+        if (!std.math.isFinite(point.reference_scale) or point.reference_scale <= 0) {
+            return error.InvalidScale;
+        }
+        @memset(scales, point.reference_scale);
+    }
+
     try bind_tw.check(.prologue_storage);
-    const prologue = try arena.allocator().alloc(
-        Scalar,
-        kernel.program.temporary_count,
+    // The snapshot is the complete typed frame, so staged and unstaged
+    // execution resume from identical bytes and agree bitwise.
+    const prologue = try arena.allocator().alignedAlloc(
+        u8,
+        .of(Scalar),
+        kernel.program.frame_bytes,
     );
     @memset(prologue, 0);
+    const scratch = try arena.allocator().alignedAlloc(
+        u8,
+        .of(Scalar),
+        kernel.program.scratch_bytes,
+    );
     const prologue_status = interpret_module.runParameterStage(
         &kernel.program,
-        parameters,
+        .{ .parameters = parameters, .scales = scales, .backgrounds = &.{} },
         prologue,
+        scratch,
     );
 
     try bind_tw.check(.publish);
@@ -150,6 +201,7 @@ pub fn bind(
         .program = kernel.program,
         .coordinate_count = kernel.coordinateCount(),
         .parameters = parameters,
+        .scales = scales,
         .prologue = prologue,
         .prologue_status = prologue_status,
         .scheme = point.scheme,
@@ -173,17 +225,29 @@ test "tripwires exercise every parameter binding rollback boundary" {
         .value = 0.25,
     }};
 
+    const temporaries = [_]program_module.Temporary{.{
+        .kind = .real,
+        .alignment = @alignOf(Scalar),
+        .offset = 0,
+        .bytes = @sizeOf(Scalar),
+        .live = .{ .first_write = 0, .last_use = 0 },
+    }};
     const kernel = Kernel{
         .arena = undefined,
         .program = .{
             .arena = undefined,
             .instructions = &.{},
             .constants = &.{},
+            .temporaries = &temporaries,
             .outputs = .{ .value = 0, .gradient = &.{}, .hessian = &.{} },
             .capability = .value,
+            .result_type = .real64,
+            .frame_bytes = @sizeOf(Scalar),
+            .scratch_offset = @sizeOf(Scalar),
+            .scratch_bytes = 0,
             .parameter_stage_count = 0,
-            .temporary_count = 1,
             .parameter_count = 1,
+            .scale_count = 0,
             .background_count = 1,
             .coordinate_count = 1,
         },
@@ -191,8 +255,10 @@ test "tripwires exercise every parameter binding rollback boundary" {
         .request_fingerprint = [_]u8{0} ** 32,
         .background_mode = .full_scalar_space,
         .scheme = null,
+        .selection = .total,
         .parameters = &channels,
         .coordinates = &.{},
+        .scale = null,
     };
     var source_model: model_module.Model = undefined;
     source_model.parameters = &source_parameters;
