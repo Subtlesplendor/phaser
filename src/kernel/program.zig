@@ -7,19 +7,157 @@
 //! `f64` during lowering.
 
 const std = @import("std");
+const numerics = @import("../numerics/root.zig");
 
-/// Milestone 2 kernels are real. Every slot holds one `f64`.
+const eigensolver = numerics.symmetric_eigensolver;
+
+/// The real scalar type of every input channel, matrix entry, eigenvalue, and
+/// eigensolver temporary.
 pub const Scalar = f64;
+
+/// A pair of IEEE binary64 components. This is a semantic type, not a stable C
+/// layout.
+pub const Complex64 = struct {
+    re: Scalar,
+    im: Scalar,
+
+    pub const zero = Complex64{ .re = 0, .im = 0 };
+
+    pub fn add(self: Complex64, other: Complex64) Complex64 {
+        return .{ .re = self.re + other.re, .im = self.im + other.im };
+    }
+
+    pub fn negate(self: Complex64) Complex64 {
+        return .{ .re = -self.re, .im = -self.im };
+    }
+
+    pub fn isFinite(self: Complex64) bool {
+        return std.math.isFinite(self.re) and std.math.isFinite(self.im);
+    }
+};
+
+/// Numerical type of a kernel's outputs.
+///
+/// It is kernel metadata fixed by the selected contributions, not a per-point
+/// property: a loop-containing output stays `complex64` at a point whose
+/// imaginary component happens to be zero.
+pub const ResultType = enum {
+    real64,
+    complex64,
+
+    pub fn Element(comptime self: ResultType) type {
+        return switch (self) {
+            .real64 => Scalar,
+            .complex64 => Complex64,
+        };
+    }
+};
+
+/// Type and shape of one temporary slot.
+///
+/// Constant, parameter, scale, and background slots are always `Real64`, so
+/// only temporaries carry a type.
+pub const SlotType = union(enum) {
+    real,
+    complex,
+    /// Authoritative packed upper triangle of an `n x n` real symmetric matrix.
+    real_symmetric_matrix: u32,
+    /// `n` real eigenvalues followed by the `n x n` real eigenvector matrix.
+    real_eigensystem: u32,
+
+    pub fn eql(self: SlotType, other: SlotType) bool {
+        return switch (self) {
+            .real => other == .real,
+            .complex => other == .complex,
+            .real_symmetric_matrix => |dimension| switch (other) {
+                .real_symmetric_matrix => |right| dimension == right,
+                else => false,
+            },
+            .real_eigensystem => |dimension| switch (other) {
+                .real_eigensystem => |right| dimension == right,
+                else => false,
+            },
+        };
+    }
+
+    /// Number of `Scalar` values the slot occupies.
+    pub fn scalarCount(self: SlotType) error{SizeOverflow}!usize {
+        return switch (self) {
+            .real => 1,
+            // A `Complex64` is two binary64 components in the frame.
+            .complex => 2,
+            .real_symmetric_matrix => |dimension| eigensolver.packedEntryCount(dimension),
+            .real_eigensystem => |dimension| blk: {
+                const n: usize = dimension;
+                const vectors = std.math.mul(usize, n, n) catch
+                    return error.SizeOverflow;
+                break :blk std.math.add(usize, n, vectors) catch error.SizeOverflow;
+            },
+        };
+    }
+
+    pub fn byteSize(self: SlotType) error{SizeOverflow}!usize {
+        const count = try self.scalarCount();
+        return std.math.mul(usize, count, @sizeOf(Scalar)) catch error.SizeOverflow;
+    }
+
+    /// Every slot type is built from `Scalar` components, so one alignment
+    /// serves all of them today. The descriptor still records it, because a
+    /// future scalar type or vector layout would not share it.
+    pub fn alignment(self: SlotType) usize {
+        _ = self;
+        return @alignOf(Scalar);
+    }
+
+    pub fn resultType(self: SlotType) ?ResultType {
+        return switch (self) {
+            .real => .real64,
+            .complex => .complex64,
+            else => null,
+        };
+    }
+};
+
+/// The instruction positions over which a temporary holds a live value.
+///
+/// Recorded so that an audit can verify slot reuse independently of the
+/// allocator that chose it, as the potential-kernel specification asks.
+pub const LiveRange = struct {
+    /// Position of the instruction that first writes the slot.
+    first_write: u32,
+    /// Position of the last instruction that reads it, or of the write itself
+    /// when the slot is a declared output that the caller reads.
+    last_use: u32,
+
+    pub fn overlaps(self: LiveRange, other: LiveRange) bool {
+        return self.first_write <= other.last_use and other.first_write <= self.last_use;
+    }
+};
+
+/// A validated typed temporary.
+pub const Temporary = struct {
+    kind: SlotType,
+    alignment: usize,
+    /// Byte offset into the temporary frame.
+    offset: usize,
+    bytes: usize,
+    live: LiveRange,
+};
 
 pub const Opcode = enum(u8) {
     load_constant,
     load_parameter,
     load_background,
+    load_renormalization_scale,
     negate,
     add,
     multiply,
     divide,
     power_integer,
+    promote_real_to_complex,
+    assemble_real_symmetric,
+    symmetric_eigensystem,
+    scalar_one_loop_sum,
 };
 
 /// Payload of an instruction that copies from an indexed slot space.
@@ -33,15 +171,37 @@ pub const Unary = struct { result: u32, operand: u32 };
 pub const Quotient = struct { result: u32, numerator: u32, denominator: u32 };
 pub const IntegerPower = struct { result: u32, base: u32, exponent: u32 };
 
+/// Copies the canonical upper triangle into a matrix temporary.
+pub const Assemble = struct {
+    result: u32,
+    /// The `n(n+1)/2` entries in lexical index order.
+    entries: []const u32,
+};
+
+/// Diagonalizes a real-symmetric matrix temporary.
+pub const Eigensystem = struct { result: u32, matrix: u32 };
+
+/// The restricted scalar one-loop spectral sum over a computed eigensystem.
+pub const SpectralSum = struct {
+    result: u32,
+    eigensystem: u32,
+    scale: u32,
+};
+
 pub const Instruction = union(Opcode) {
     load_constant: Load,
     load_parameter: Load,
     load_background: Load,
+    load_renormalization_scale: Load,
     negate: Unary,
     add: Variadic,
     multiply: Variadic,
     divide: Quotient,
     power_integer: IntegerPower,
+    promote_real_to_complex: Unary,
+    assemble_real_symmetric: Assemble,
+    symmetric_eigensystem: Eigensystem,
+    scalar_one_loop_sum: SpectralSum,
 
     pub fn result(self: Instruction) u32 {
         return switch (self) {
@@ -67,10 +227,20 @@ pub const Capability = enum {
 };
 
 /// Per-point numerical status. A failed point never corrupts another point.
+///
+/// These outcomes are distinct and are never collapsed into one another. A
+/// negative eigenvalue and a finite nonzero imaginary component are successful
+/// results, not failures.
 pub const Status = enum {
     ok,
     non_finite,
     division_by_zero,
+    /// A bounded numerical operation exhausted its convergence or
+    /// postcondition contract.
+    nonconvergent,
+    /// A requested derivative is mathematically singular, including an
+    /// uncancelled zero-mode scalar Hessian term.
+    singular_derivative,
 };
 
 pub const ValidationError = error{
@@ -83,6 +253,13 @@ pub const ValidationError = error{
     OutputNotWritten,
     OutputOutOfRange,
     DuplicateResultSlotInUse,
+    /// An operand or result does not have the type the opcode requires.
+    SlotTypeMismatch,
+    /// A structured result's dimension disagrees with its operand count.
+    ShapeMismatch,
+    /// A temporary's recorded byte range escapes the frame, or two
+    /// simultaneously live temporaries share storage.
+    InvalidSlotLayout,
 };
 
 pub const Outputs = struct {
@@ -104,14 +281,24 @@ pub const Program = struct {
     arena: *std.heap.ArenaAllocator,
     instructions: []const Instruction,
     constants: []const Scalar,
+    /// Validated typed temporaries, indexed by slot number.
+    temporaries: []const Temporary,
     outputs: Outputs,
     capability: Capability,
-    /// Number of leading instructions that depend only on constants and bound
-    /// parameters. The interpreter executes them once per binding rather than
-    /// once per point.
+    result_type: ResultType,
+    /// Bytes of the typed temporary frame.
+    frame_bytes: usize,
+    /// Byte offset at which the shared numerical scratch region begins.
+    scratch_offset: usize,
+    /// Bytes of the largest scratch requirement of any single operation. One
+    /// region is shared, because no two operations are in flight at once.
+    scratch_bytes: usize,
+    /// Number of leading instructions that depend only on constants, bound
+    /// parameters, and the bound renormalization scale. The interpreter
+    /// executes them once per binding rather than once per point.
     parameter_stage_count: u32,
-    temporary_count: u32,
     parameter_count: u32,
+    scale_count: u32,
     background_count: u32,
     coordinate_count: u32,
 
@@ -120,6 +307,10 @@ pub const Program = struct {
         self.arena.deinit();
         allocator.destroy(self.arena);
         self.* = undefined;
+    }
+
+    pub fn temporaryCount(self: *const Program) u32 {
+        return @intCast(self.temporaries.len);
     }
 
     /// Exact workspace requirement.
@@ -134,12 +325,12 @@ pub const Program = struct {
     ) WorkspaceLayout {
         _ = point_count;
         return .{
-            .bytes = @as(usize, self.temporary_count) * @sizeOf(Scalar),
+            .bytes = self.scratch_offset + self.scratch_bytes,
             .alignment = @alignOf(Scalar),
         };
     }
 
-    /// Number of scalars a batch of `point_count` points writes per output
+    /// Number of elements a batch of `point_count` points writes per output
     /// category.
     pub fn valueCount(self: *const Program, point_count: usize) usize {
         _ = self;
@@ -163,6 +354,11 @@ pub const Program = struct {
             error.SizeOverflow;
     }
 
+    fn slotType(self: *const Program, slot: u32) ValidationError!SlotType {
+        if (slot >= self.temporaries.len) return error.OperandOutOfRange;
+        return self.temporaries[slot].kind;
+    }
+
     /// Establishes every invariant the interpreter then relies on. A program
     /// that fails validation never becomes a kernel.
     pub fn validate(
@@ -170,58 +366,204 @@ pub const Program = struct {
         allocator: std.mem.Allocator,
         exponent_limit: u32,
     ) (ValidationError || error{OutOfMemory})!void {
-        const written = try allocator.alloc(bool, self.temporary_count);
+        try self.validateSlotLayout();
+
+        const written = try allocator.alloc(bool, self.temporaries.len);
         defer allocator.free(written);
         @memset(written, false);
 
         for (self.instructions) |instruction| {
-            // Operands must already hold a defined value at this point in
-            // program order, which also proves the program is acyclic.
-            switch (instruction) {
-                .load_constant => |payload| {
-                    if (payload.source >= self.constants.len) {
-                        return error.SourceOutOfRange;
-                    }
-                },
-                .load_parameter => |payload| {
-                    if (payload.source >= self.parameter_count) {
-                        return error.SourceOutOfRange;
-                    }
-                },
-                .load_background => |payload| {
-                    if (payload.source >= self.background_count) {
-                        return error.SourceOutOfRange;
-                    }
-                },
-                .negate => |payload| try requireWritten(written, payload.operand),
-                .add, .multiply => |payload| {
-                    if (payload.operands.len < 2) return error.TooFewOperands;
-                    for (payload.operands) |operand| {
-                        try requireWritten(written, operand);
-                    }
-                },
-                .divide => |payload| {
-                    try requireWritten(written, payload.numerator);
-                    try requireWritten(written, payload.denominator);
-                },
-                .power_integer => |payload| {
-                    try requireWritten(written, payload.base);
-                    if (payload.exponent > exponent_limit) return error.ExponentTooLarge;
-                },
-            }
-
+            try self.validateInstruction(instruction, written, exponent_limit);
             const slot = instruction.result();
-            if (slot >= self.temporary_count) return error.ResultOutOfRange;
+            if (slot >= self.temporaries.len) return error.ResultOutOfRange;
             written[slot] = true;
         }
 
-        try requireOutput(written, self.outputs.value, self.temporary_count);
+        try requireOutput(written, self.outputs.value, self.temporaryCount());
+        // The declared value slot carries the kernel's declared result type, so
+        // a caller's buffer element type is decided by validated structure.
+        const value_type = self.temporaries[self.outputs.value].kind.resultType() orelse
+            return error.SlotTypeMismatch;
+        if (value_type != self.result_type) return error.SlotTypeMismatch;
+
         for (self.outputs.gradient) |slot| {
-            try requireOutput(written, slot, self.temporary_count);
+            try requireOutput(written, slot, self.temporaryCount());
+            if (self.temporaries[slot].kind.resultType() != self.result_type) {
+                return error.SlotTypeMismatch;
+            }
         }
         for (self.outputs.hessian) |slot| {
-            try requireOutput(written, slot, self.temporary_count);
+            try requireOutput(written, slot, self.temporaryCount());
+            if (self.temporaries[slot].kind.resultType() != self.result_type) {
+                return error.SlotTypeMismatch;
+            }
         }
+    }
+
+    /// Checks that every temporary lies inside the frame and that no two
+    /// simultaneously live temporaries share storage.
+    ///
+    /// This verifies the schedule independently of the allocator that produced
+    /// it: reuse is only sound when the live ranges of two slots sharing bytes
+    /// are disjoint.
+    fn validateSlotLayout(self: *const Program) ValidationError!void {
+        for (self.temporaries) |temporary| {
+            const expected = temporary.kind.byteSize() catch
+                return error.InvalidSlotLayout;
+            if (temporary.bytes != expected) return error.InvalidSlotLayout;
+            if (temporary.alignment != temporary.kind.alignment()) {
+                return error.InvalidSlotLayout;
+            }
+            if (temporary.alignment == 0 or
+                temporary.offset % temporary.alignment != 0)
+            {
+                return error.InvalidSlotLayout;
+            }
+            const end = std.math.add(usize, temporary.offset, temporary.bytes) catch
+                return error.InvalidSlotLayout;
+            if (end > self.frame_bytes) return error.InvalidSlotLayout;
+            if (temporary.live.first_write > temporary.live.last_use) {
+                return error.InvalidSlotLayout;
+            }
+        }
+
+        for (self.temporaries, 0..) |left, index| {
+            for (self.temporaries[index + 1 ..]) |right| {
+                const disjoint = left.offset + left.bytes <= right.offset or
+                    right.offset + right.bytes <= left.offset;
+                if (disjoint) continue;
+                if (left.live.overlaps(right.live)) return error.InvalidSlotLayout;
+            }
+        }
+
+        if (self.scratch_offset < self.frame_bytes) return error.InvalidSlotLayout;
+        if (self.scratch_offset % @alignOf(Scalar) != 0) return error.InvalidSlotLayout;
+    }
+
+    fn validateInstruction(
+        self: *const Program,
+        instruction: Instruction,
+        written: []const bool,
+        exponent_limit: u32,
+    ) ValidationError!void {
+        switch (instruction) {
+            .load_constant => |payload| {
+                if (payload.source >= self.constants.len) return error.SourceOutOfRange;
+                try self.requireResultType(payload.result, .real);
+            },
+            .load_parameter => |payload| {
+                if (payload.source >= self.parameter_count) return error.SourceOutOfRange;
+                try self.requireResultType(payload.result, .real);
+            },
+            .load_background => |payload| {
+                if (payload.source >= self.background_count) return error.SourceOutOfRange;
+                try self.requireResultType(payload.result, .real);
+            },
+            .load_renormalization_scale => |payload| {
+                if (payload.source >= self.scale_count) return error.SourceOutOfRange;
+                try self.requireResultType(payload.result, .real);
+            },
+            // Negation is component-wise and keeps its operand's scalar type.
+            .negate => |payload| {
+                try requireWritten(written, payload.operand);
+                const operand = try self.slotType(payload.operand);
+                if (operand.resultType() == null) return error.SlotTypeMismatch;
+                try self.requireResultType(payload.result, operand);
+            },
+            .add => |payload| {
+                if (payload.operands.len < 2) return error.TooFewOperands;
+                const shared = try self.slotType(payload.operands[0]);
+                if (shared.resultType() == null) return error.SlotTypeMismatch;
+                for (payload.operands) |operand| {
+                    try requireWritten(written, operand);
+                    if (!(try self.slotType(operand)).eql(shared)) {
+                        return error.SlotTypeMismatch;
+                    }
+                }
+                try self.requireResultType(payload.result, shared);
+            },
+            // There is no complex multiply, divide, or power in this catalog.
+            .multiply => |payload| {
+                if (payload.operands.len < 2) return error.TooFewOperands;
+                for (payload.operands) |operand| {
+                    try requireWritten(written, operand);
+                    try self.requireSlotType(operand, .real);
+                }
+                try self.requireResultType(payload.result, .real);
+            },
+            .divide => |payload| {
+                try requireWritten(written, payload.numerator);
+                try requireWritten(written, payload.denominator);
+                try self.requireSlotType(payload.numerator, .real);
+                try self.requireSlotType(payload.denominator, .real);
+                try self.requireResultType(payload.result, .real);
+            },
+            .power_integer => |payload| {
+                try requireWritten(written, payload.base);
+                try self.requireSlotType(payload.base, .real);
+                try self.requireResultType(payload.result, .real);
+                if (payload.exponent > exponent_limit) return error.ExponentTooLarge;
+            },
+            .promote_real_to_complex => |payload| {
+                try requireWritten(written, payload.operand);
+                try self.requireSlotType(payload.operand, .real);
+                try self.requireResultType(payload.result, .complex);
+            },
+            .assemble_real_symmetric => |payload| {
+                const result = try self.slotType(payload.result);
+                const dimension = switch (result) {
+                    .real_symmetric_matrix => |value| value,
+                    else => return error.SlotTypeMismatch,
+                };
+                const expected = eigensolver.packedEntryCount(dimension) catch
+                    return error.ShapeMismatch;
+                if (payload.entries.len != expected) return error.ShapeMismatch;
+                for (payload.entries) |entry| {
+                    try requireWritten(written, entry);
+                    try self.requireSlotType(entry, .real);
+                }
+            },
+            .symmetric_eigensystem => |payload| {
+                try requireWritten(written, payload.matrix);
+                const matrix = try self.slotType(payload.matrix);
+                const result = try self.slotType(payload.result);
+                const source = switch (matrix) {
+                    .real_symmetric_matrix => |value| value,
+                    else => return error.SlotTypeMismatch,
+                };
+                const target = switch (result) {
+                    .real_eigensystem => |value| value,
+                    else => return error.SlotTypeMismatch,
+                };
+                if (source != target) return error.ShapeMismatch;
+            },
+            .scalar_one_loop_sum => |payload| {
+                try requireWritten(written, payload.eigensystem);
+                try requireWritten(written, payload.scale);
+                if ((try self.slotType(payload.eigensystem)) != .real_eigensystem) {
+                    return error.SlotTypeMismatch;
+                }
+                try self.requireSlotType(payload.scale, .real);
+                try self.requireResultType(payload.result, .complex);
+            },
+        }
+    }
+
+    fn requireSlotType(
+        self: *const Program,
+        slot: u32,
+        expected: SlotType,
+    ) ValidationError!void {
+        if (!(try self.slotType(slot)).eql(expected)) return error.SlotTypeMismatch;
+    }
+
+    fn requireResultType(
+        self: *const Program,
+        slot: u32,
+        expected: SlotType,
+    ) ValidationError!void {
+        if (slot >= self.temporaries.len) return error.ResultOutOfRange;
+        if (!self.temporaries[slot].kind.eql(expected)) return error.SlotTypeMismatch;
     }
 };
 
@@ -237,6 +579,22 @@ fn requireOutput(written: []const bool, slot: u32, count: u32) ValidationError!v
 
 // -- tests -----------------------------------------------------------------
 
+/// Builds a frame of real temporaries whose live ranges cover the whole
+/// program, which is what a test that is not about reuse wants.
+fn realFrame(allocator: std.mem.Allocator, count: u32) ![]Temporary {
+    const temporaries = try allocator.alloc(Temporary, count);
+    for (temporaries, 0..) |*slot, index| {
+        slot.* = .{
+            .kind = .real,
+            .alignment = @alignOf(Scalar),
+            .offset = index * @sizeOf(Scalar),
+            .bytes = @sizeOf(Scalar),
+            .live = .{ .first_write = 0, .last_use = std.math.maxInt(u32) },
+        };
+    }
+    return temporaries;
+}
+
 fn programForTest(
     allocator: std.mem.Allocator,
     instructions: []const Instruction,
@@ -247,15 +605,22 @@ fn programForTest(
     arena.* = std.heap.ArenaAllocator.init(allocator);
     const owned = try arena.allocator().dupe(Instruction, instructions);
     const constants = try arena.allocator().dupe(Scalar, &.{ 1.0, 2.0 });
+    const temporaries = try realFrame(arena.allocator(), temporary_count);
+    const frame_bytes = @as(usize, temporary_count) * @sizeOf(Scalar);
     return .{
         .arena = arena,
         .instructions = owned,
         .constants = constants,
+        .temporaries = temporaries,
         .outputs = outputs,
         .capability = .value,
+        .result_type = .real64,
+        .frame_bytes = frame_bytes,
+        .scratch_offset = frame_bytes,
+        .scratch_bytes = 0,
         .parameter_stage_count = 0,
-        .temporary_count = temporary_count,
         .parameter_count = 2,
+        .scale_count = 1,
         .background_count = 1,
         .coordinate_count = 1,
     };
@@ -335,6 +700,20 @@ test "an out of range constant or input source is rejected" {
         error.SourceOutOfRange,
         parameter_program.validate(std.testing.allocator, 64),
     );
+
+    // The scale channel is its own slot space, so an index valid for parameters
+    // is not thereby valid for scales.
+    var scale_program = try programForTest(
+        std.testing.allocator,
+        &.{.{ .load_renormalization_scale = .{ .result = 0, .source = 1 } }},
+        .{ .value = 0, .gradient = &.{}, .hessian = &.{} },
+        1,
+    );
+    defer scale_program.deinit();
+    try std.testing.expectError(
+        error.SourceOutOfRange,
+        scale_program.validate(std.testing.allocator, 64),
+    );
 }
 
 test "a variadic instruction needs at least two operands" {
@@ -386,7 +765,7 @@ test "an undeclared output slot is rejected" {
     );
 }
 
-test "workspace is exactly the temporary storage the program uses" {
+test "workspace is exactly the temporary frame plus the shared scratch" {
     var program = try programForTest(
         std.testing.allocator,
         &.{
@@ -406,4 +785,73 @@ test "workspace is exactly the temporary storage the program uses" {
     // Independent of point count for this backend, though callers may not
     // assume so.
     try std.testing.expectEqual(layout.bytes, program.workspaceLayout(97).bytes);
+}
+
+test "slot sizes follow their declared type and shape" {
+    try std.testing.expectEqual(@as(usize, 8), try (SlotType{ .real = {} }).byteSize());
+    try std.testing.expectEqual(@as(usize, 16), try (SlotType{ .complex = {} }).byteSize());
+    // A 3x3 symmetric matrix stores six entries; its eigensystem stores three
+    // eigenvalues and a full 3x3 eigenvector matrix.
+    try std.testing.expectEqual(
+        @as(usize, 6 * 8),
+        try (SlotType{ .real_symmetric_matrix = 3 }).byteSize(),
+    );
+    try std.testing.expectEqual(
+        @as(usize, (3 + 9) * 8),
+        try (SlotType{ .real_eigensystem = 3 }).byteSize(),
+    );
+}
+
+test "two temporaries may share bytes only when their live ranges are disjoint" {
+    const early = LiveRange{ .first_write = 0, .last_use = 3 };
+    const late = LiveRange{ .first_write = 4, .last_use = 9 };
+    const straddling = LiveRange{ .first_write = 2, .last_use = 6 };
+    try std.testing.expect(!early.overlaps(late));
+    try std.testing.expect(early.overlaps(straddling));
+    try std.testing.expect(late.overlaps(straddling));
+
+    var program = try programForTest(
+        std.testing.allocator,
+        &.{
+            .{ .load_constant = .{ .result = 0, .source = 0 } },
+            .{ .load_constant = .{ .result = 1, .source = 1 } },
+            .{ .add = .{ .result = 1, .operands = &.{ 0, 1 } } },
+        },
+        .{ .value = 1, .gradient = &.{}, .hessian = &.{} },
+        2,
+    );
+    defer program.deinit();
+
+    // Overlapping storage with overlapping live ranges is a layout defect, not
+    // a schedule the interpreter is entitled to trust.
+    const temporaries = @constCast(program.temporaries);
+    temporaries[1].offset = temporaries[0].offset;
+    try std.testing.expectError(
+        error.InvalidSlotLayout,
+        program.validate(std.testing.allocator, 64),
+    );
+
+    // The same sharing is sound once the ranges are disjoint.
+    temporaries[0].live = .{ .first_write = 0, .last_use = 1 };
+    temporaries[1].live = .{ .first_write = 2, .last_use = 2 };
+    try program.validate(std.testing.allocator, 64);
+}
+
+test "a mistyped operand or result is rejected" {
+    var program = try programForTest(
+        std.testing.allocator,
+        &.{
+            .{ .load_constant = .{ .result = 0, .source = 0 } },
+            .{ .promote_real_to_complex = .{ .result = 1, .operand = 0 } },
+        },
+        .{ .value = 1, .gradient = &.{}, .hessian = &.{} },
+        2,
+    );
+    defer program.deinit();
+
+    // Slot 1 is declared real, so it cannot receive a promotion.
+    try std.testing.expectError(
+        error.SlotTypeMismatch,
+        program.validate(std.testing.allocator, 64),
+    );
 }

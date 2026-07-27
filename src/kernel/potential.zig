@@ -14,26 +14,40 @@ const lower_module = @import("lower.zig");
 const interpret_module = @import("interpret.zig");
 
 pub const Scalar = program_module.Scalar;
+pub const Complex64 = program_module.Complex64;
+pub const ResultType = program_module.ResultType;
 pub const Capability = program_module.Capability;
 pub const Status = program_module.Status;
 pub const WorkspaceLayout = program_module.WorkspaceLayout;
 pub const CallError = interpret_module.CallError;
 pub const OutputBuffers = interpret_module.OutputBuffers;
+pub const ComplexOutputBuffers = interpret_module.ComplexOutputBuffers;
 
 pub const CompileError = lower_module.LowerError ||
     program_module.ValidationError ||
     error{
         CapabilityNotDerived,
-        /// The selected contributions produce a `Complex64` result, which the
-        /// Milestone 3 reference backend does not yet evaluate. Reported before
-        /// lowering so the unsupported capability is named rather than surfacing
-        /// as an unsupported opcode.
-        UnsupportedResultType,
+        /// The artifact records no contribution for the requested selection.
+        SelectionNotDerived,
         OutOfMemory,
     };
 
+/// Which of an artifact's contributions a kernel evaluates.
+///
+/// Selection is explicit and never widened: `total` means the complete
+/// requested truncation, not "whatever is available".
+pub const Selection = union(enum) {
+    /// The complete requested truncation.
+    total,
+    /// Exactly one loop order.
+    loop_order: u32,
+    /// Exactly one contribution role.
+    role: calculation.Role,
+};
+
 pub const Configuration = struct {
     capability: Capability = .value_gradient_hessian,
+    selection: Selection = .total,
     lowering: lower_module.LowerOptions = .{},
 };
 
@@ -64,8 +78,13 @@ pub const Kernel = struct {
     /// rejects a parameter point whose scheme differs, so one evaluation cannot
     /// mix schemes.
     scheme: ?calculation.Scheme,
+    /// The contribution set this kernel evaluates.
+    selection: Selection,
     parameters: []const Channel,
     coordinates: []const Channel,
+    /// The renormalization-scale channel, present exactly when the selected
+    /// contributions depend on it.
+    scale: ?Channel,
 
     pub fn deinit(self: *Kernel) void {
         const allocator = self.arena.child_allocator;
@@ -91,7 +110,15 @@ pub const Kernel = struct {
         return self.program.workspaceLayout(point_count);
     }
 
-    /// Evaluates a batch of independent background points.
+    /// The element type of this kernel's outputs.
+    ///
+    /// Fixed by the selected contributions rather than by a point's values, so
+    /// a caller chooses its buffers once.
+    pub fn resultType(self: *const Kernel) ResultType {
+        return self.program.result_type;
+    }
+
+    /// Evaluates a batch of independent background points into real buffers.
     ///
     /// Output order equals input point order. Execution allocates nothing.
     pub fn evaluate(
@@ -102,6 +129,24 @@ pub const Kernel = struct {
         outputs: OutputBuffers,
     ) CallError!void {
         return interpret_module.evaluate(
+            &self.program,
+            inputs,
+            point_count,
+            workspace,
+            outputs,
+        );
+    }
+
+    /// Evaluates a batch of independent background points into `Complex64`
+    /// buffers.
+    pub fn evaluateComplex(
+        self: *const Kernel,
+        inputs: interpret_module.Inputs,
+        point_count: usize,
+        workspace: []u8,
+        outputs: ComplexOutputBuffers,
+    ) CallError!void {
+        return interpret_module.evaluateComplex(
             &self.program,
             inputs,
             point_count,
@@ -120,19 +165,22 @@ pub fn compile(
     artifact: *const calculation.Artifact,
     configuration: Configuration,
 ) CompileError!Kernel {
-    // The Milestone 3 numerical catalog is real. A selection containing a loop
-    // contribution is `Complex64`, so it fails here rather than being silently
-    // truncated to the tree part it can evaluate.
-    if (artifact.result_type != .real64) return error.UnsupportedResultType;
+    const selected = switch (configuration.selection) {
+        .total => artifact.totalSelection(),
+        .loop_order => |order| artifact.loopTotal(order) orelse
+            return error.SelectionNotDerived,
+        .role => |role| artifact.roleTotal(role) orelse
+            return error.SelectionNotDerived,
+    };
 
     const coordinate_count = artifact.coordinates.len;
     if (configuration.capability.includesGradient() and
-        artifact.gradient.len != coordinate_count)
+        selected.gradient.len != coordinate_count)
     {
         return error.CapabilityNotDerived;
     }
     if (configuration.capability.includesHessian() and
-        artifact.hessian.len != coordinate_count * coordinate_count)
+        selected.hessian.len != coordinate_count * coordinate_count)
     {
         return error.CapabilityNotDerived;
     }
@@ -179,11 +227,11 @@ pub fn compile(
     }
 
     const gradient_roots = if (configuration.capability.includesGradient())
-        artifact.gradient
+        selected.gradient
     else
         &.{};
     const hessian_roots = if (configuration.capability.includesHessian())
-        artifact.hessian
+        selected.hessian
     else
         &.{};
 
@@ -191,7 +239,7 @@ pub fn compile(
     var program = try lower_module.lower(allocator, .{
         .graph = &artifact.graph,
         .capability = configuration.capability,
-        .value_root = artifact.total,
+        .value_root = selected.value,
         .gradient_roots = gradient_roots,
         .hessian_roots = hessian_roots,
         .parameter_count = highest_parameter,
@@ -203,6 +251,14 @@ pub fn compile(
     try compile_tw.check(.validate_program);
     try program.validate(allocator, configuration.lowering.exponent_limit);
 
+    // A scale channel exists exactly when the lowered program reads one, so a
+    // selection whose contributions carry no scale dependence declares none.
+    const scale: ?Channel = if (program.scale_count == 0) null else .{
+        .name = try arena.allocator().dupe(u8, calculation.scale_name),
+        .offset = 0,
+        .mass_dimension = value.scale_mass_dimension,
+    };
+
     try compile_tw.check(.publish);
     return .{
         .arena = arena,
@@ -211,8 +267,10 @@ pub fn compile(
         .request_fingerprint = artifact.request_fingerprint.bytes,
         .background_mode = artifact.background_mode,
         .scheme = artifact.scheme,
+        .selection = configuration.selection,
         .parameters = parameters,
         .coordinates = coordinates,
+        .scale = scale,
     };
 }
 
