@@ -2,6 +2,13 @@
 
 Status: initial specification
 
+Implemented for Milestones 1–2 across `src/foundation/`, `src/model/`, and
+`src/kernel/` (workspace and binding contracts). Sections 12, 17, and 19 are
+the active shared contract cited by the still-unfinished Milestone 3 kernel
+work in [POTENTIAL_KERNEL.md](POTENTIAL_KERNEL.md) and
+[EVALUATION_LIFECYCLE.md](EVALUATION_LIFECYCLE.md), so this document is kept
+in full rather than compressed.
+
 This document specifies memory ownership, allocation phases, capacity behavior,
 and failure semantics for Phaser. It refines section 18 of
 [DESIGN.md](../../DESIGN.md).

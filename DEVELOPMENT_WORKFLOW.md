@@ -12,6 +12,28 @@ The workflow will evolve as the implementation and contributor base grow.
 Changes may refine its mechanics, but must preserve its correctness,
 reproducibility, and review goals.
 
+## Quick reference
+
+Read the section relevant to the change you are making, not the whole document,
+unless you are reviewing the workflow itself.
+
+| Section | Covers |
+|---|---|
+| [1. Repository and authority](#1-repository-and-authority) | Where the repo lives, who can merge, branch protection. |
+| [2. From design to implementation](#2-from-design-to-implementation) | What design context a change needs before code starts. |
+| [3. Branches, commits, and pull requests](#3-branches-commits-and-pull-requests) | Branch naming, commit scope, PR conventions. |
+| [4. Required change checks](#4-required-change-checks) | What every change must pass before merge. |
+| [5. Test and CI tiers](#5-test-and-ci-tiers) | Local fast checks, PR checks, nightly checks, weekly campaigns, continuous fuzzing. |
+| [6. Fuzz targets](#6-fuzz-targets) | Which fuzz targets exist and the layered strategy. |
+| [7. Fuzz failure and corpus protocol](#7-fuzz-failure-and-corpus-protocol) | What to do when a fuzz run finds a failure. |
+| [8. Property-based testing](#8-property-based-testing) | Randomized/bounded property test conventions. |
+| [9. Toolchain, CI, and security](#9-toolchain-ci-and-security) | Pinned toolchain, CI security posture. |
+| [10. Initial native platform policy](#10-initial-native-platform-policy) | Supported platforms. |
+| [11. Performance workflow](#11-performance-workflow) | How performance is gated relative to correctness. |
+| [12. Versions and releases](#12-versions-and-releases) | Version and release distinctions. |
+| [13. Workflow evolution](#13-workflow-evolution) | What's deliberately still empirical/unsettled. |
+| [14. External references](#14-external-references) | Links to Zig tooling documentation this workflow depends on. |
+
 ## 1. Repository and authority
 
 Phaser is developed in a public Git repository hosted on GitHub. The repository

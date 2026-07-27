@@ -2,10 +2,16 @@
 
 These instructions apply to the entire repository.
 
-Before implementing or reviewing Phaser, read
-[Phaser Engineering Style](ENGINEERING_STYLE.md),
-[Phaser Development Workflow](DEVELOPMENT_WORKFLOW.md), and the specification
-relevant to the subsystem being changed.
+Before implementing or reviewing Phaser, read the "Quick reference" table near
+the top of [Phaser Engineering Style](ENGINEERING_STYLE.md) and of
+[Phaser Development Workflow](DEVELOPMENT_WORKFLOW.md), then read only the
+sections those tables point to for the change at hand, plus the specification
+relevant to the subsystem being changed. [docs/README.md](docs/README.md)
+indexes the specification documents by subsystem and implementation status so
+you can find the right one without reading several. Read a document in full
+only when its own scope requires that (for example, when reviewing the style
+guide or workflow document itself, or when a change is broad enough that most
+sections apply).
 
 ## External dependencies
 

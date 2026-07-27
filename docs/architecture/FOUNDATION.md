@@ -2,6 +2,12 @@
 
 Status: initial specification
 
+Implemented in `src/foundation/` (unit tests co-located; capacity fuzzing in
+`test/corpus/foundation_capacity/`). The contract below is unchanged since
+Milestone 1 but is still read as a shared dependency by active Milestone 3
+documents (see [docs/README.md](../README.md)), so it is kept in full rather
+than compressed.
+
 This document specifies the small, domain-independent substrate shared by
 Phaser's parsers, scientific representations, and public adapters. It owns the
 contracts for typed local identifiers, source spans, checked capacity

@@ -2,6 +2,13 @@
 
 Status: provisional specification
 
+The minimal fingerprint contract is implemented across `src/model/`,
+`src/calculation/`, and `src/kernel/binding.zig`. The deferred-caching
+boundary it defines is still the active contract cited by
+[POTENTIAL_KERNEL.md](POTENTIAL_KERNEL.md) and
+[EVALUATION_LIFECYCLE.md](EVALUATION_LIFECYCLE.md), so it is kept in full
+rather than compressed.
+
 This document specifies the minimal deterministic fingerprint contract required
 by Phaser version 0.1 and defines the boundary behind which richer identity and
 cache systems are deferred. It refines section 15 of
