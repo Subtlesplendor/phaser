@@ -7,6 +7,10 @@ scanning the whole corpus. Root-level [DESIGN.md](../DESIGN.md),
 [DEVELOPMENT_WORKFLOW.md](../DEVELOPMENT_WORKFLOW.md) each carry their own
 "Quick reference" table near the top; use those the same way.
 
+If you're starting from a source or test path rather than a subsystem name,
+[docs/AGENT_GUIDE.md](AGENT_GUIDE.md) routes it straight to the exact document
+and heading, one level more precise than the tables below.
+
 "Status" below is a rough read on how much of a document's content is still
 the authoritative, unimplemented spec for upcoming work versus already
 settled and reflected in `src/`. It is not a substitute for the document's
