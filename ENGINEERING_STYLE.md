@@ -22,6 +22,32 @@ Phaser's priorities are, in order:
 These goals should usually reinforce one another. When they conflict, make the
 tradeoff explicit and record why it is justified.
 
+## Quick reference
+
+Read the section relevant to the change you are making, not the whole document,
+unless you are reviewing the style guide itself.
+
+| Section | Covers |
+|---|---|
+| [Core principles](#core-principles) | The non-negotiable baseline: explicit contracts, checked failure, no silent precision loss. |
+| [Scientific contracts](#scientific-contracts) | What a calculation must expose to its caller (assumptions, order, scheme). |
+| [Specification ownership](#specification-ownership) | Which document is normative for which cross-cutting contract. |
+| [Exact and numerical domains](#exact-and-numerical-domains) | When to use exact integers/rationals vs. floating point. |
+| [Errors and assertions](#errors-and-assertions) | Assertion vs. error boundary; what must never be an assertion. |
+| [Build modes and runtime safety](#build-modes-and-runtime-safety) | `ReleaseSafe` default and what each build mode guarantees. |
+| [Memory and allocation](#memory-and-allocation) | Pointer to the normative memory contract ([MEMORY_ARCHITECTURE.md](docs/architecture/MEMORY_ARCHITECTURE.md)). |
+| [Phase separation](#phase-separation) | Control plane vs. numerical data plane. |
+| [Determinism and reproducibility](#determinism-and-reproducibility) | What must be bit-reproducible and why. |
+| [Concurrency and scheduling](#concurrency-and-scheduling) | Serial-but-reentrant baseline; pointer to [PARALLELISM.md](docs/architecture/PARALLELISM.md). |
+| [Testing strategy](#testing-strategy) | Unit, property, ownership, error-injection, fuzz, and differential testing expectations. |
+| [Use of `comptime`](#use-of-comptime) | Where compile-time specialization is and isn't appropriate. |
+| [Symbolic export and presentation](#symbolic-export-and-presentation) | Pointer to the normative export contract. |
+| [Performance](#performance) | Structural/runtime boundary and optimization order. |
+| [Dependencies](#dependencies) | The dependency-proposal process required before adding one — read this before any new dependency. |
+| [Repository structure and Zig modules](#repository-structure-and-zig-modules) | Where code, tests, and examples live; module and dependency-direction rules. |
+| [Code and review style](#code-and-review-style) | Formatting and review conventions. |
+| [Definition of done](#definition-of-done) | The completion checklist for a change. |
+
 ## Core principles
 
 - A supported calculation must be scientifically explicit, internally checked,

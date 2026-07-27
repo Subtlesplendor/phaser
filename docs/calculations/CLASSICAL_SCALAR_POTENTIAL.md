@@ -9,6 +9,12 @@ derived by Milestone 2. It refines
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are
 normative requirements.
 
+Implemented in `src/calculation/potential.zig`, exercised by
+`test/conformance/classical_scalar.zig`. The Milestone 3 cross-reference in
+this document (loop order one, in
+[EFFECTIVE_POTENTIAL.md](EFFECTIVE_POTENTIAL.md)) is still active and
+unimplemented — see [docs/README.md](../README.md).
+
 ## 1. Scope
 
 This specification fixes:
