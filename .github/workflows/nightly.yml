@@ -124,6 +124,19 @@ jobs:
         shell: bash
         run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
 
+      # Every other job reaches the toolchain by absolute path, which is enough
+      # because the only process that needs Zig is the one this workflow spawns
+      # itself. Zentinel is different: it resolves `zig` by name, both for the
+      # `zig version` probe that `check` makes and for the `zig build
+      # test-mutation` oracle it re-runs per mutant, and it passes only an
+      # allowlisted environment (PATH among it) to those commands. A hosted
+      # runner ships no Zig, so without this the campaign fails at `check` with
+      # ZNTL_ZIG_NOT_FOUND. GITHUB_PATH prepends, so the pinned 0.16.0 is the
+      # toolchain found here even if an image ever starts carrying its own.
+      - name: Put the pinned toolchain on PATH for zentinel
+        shell: bash
+        run: echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+
       # Generating the listing also builds the pinned zentinel from source, so a
       # tool or configuration fault fails here rather than after an hour of
       # mutation runs.
