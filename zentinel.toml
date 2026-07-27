@@ -48,7 +48,16 @@ enabled = [
 # The deterministic subset of `test`, per decision 0005. Fuzz replay would add
 # another test binary to every mutant's cold-cache compile, and freshly seeded
 # property campaigns could make mutation results vary between runs.
-commands = ["zig build test-mutation -Doptimize=Debug"]
+#
+# `-Dtest-allocation-traces=false` is what makes a mutant affordable, per
+# decision 0011: the tiers keep leak, double-free and use-after-free detection
+# but stop capturing an allocation backtrace nothing here reads. Measured
+# cold-cache on the supported development machine, one oracle run falls from 74
+# seconds to 7. The kill signal is unchanged except that a leak names the tier
+# rather than the test, which no mutation report quotes.
+commands = [
+  "zig build test-mutation -Doptimize=Debug -Dtest-allocation-traces=false",
+]
 selection = "same_file_then_package"
 # One oracle run measures about 75 seconds on the supported macOS ARM64
 # development machine. The ceiling sits well above that so a slower hosted

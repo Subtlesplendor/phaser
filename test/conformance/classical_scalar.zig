@@ -14,6 +14,7 @@
 //! numerator by the fixture denominator.
 
 const std = @import("std");
+const test_allocator = @import("test_allocator");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
 
@@ -21,7 +22,7 @@ const value = phaser.value;
 const calculation = phaser.calculation;
 
 fn testContext() phaser.Context {
-    return switch (phaser.Context.init(std.testing.allocator, .{
+    return switch (phaser.Context.init(test_allocator.allocator, .{
         .max_diagnostics = 16,
         .max_related_locations = 32,
     })) {
@@ -88,19 +89,19 @@ fn expectSameValue(
     reference_graph: *const value.Graph,
     reference_root: value.ValueId,
 ) !void {
-    var derived_text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var derived_text: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer derived_text.deinit();
-    var reference_text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var reference_text: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer reference_text.deinit();
 
     try derived_graph.writeValueCanonical(
         derived_root,
-        std.testing.allocator,
+        test_allocator.allocator,
         &derived_text.writer,
     );
     try reference_graph.writeValueCanonical(
         reference_root,
-        std.testing.allocator,
+        test_allocator.allocator,
         &reference_text.writer,
     );
     try std.testing.expectEqualStrings(reference_text.written(), derived_text.written());
@@ -148,7 +149,7 @@ test "the phi4 tree potential matches its fixture identity" {
     var artifact = try derive(&model, &request);
     defer artifact.deinit();
 
-    var reference = try value.Builder.init(std.testing.allocator, .{});
+    var reference = try value.Builder.init(test_allocator.allocator, .{});
     const reference_root = try buildPhi4Reference(&reference);
     var reference_graph = try reference.finish();
     defer reference_graph.deinit();
@@ -169,7 +170,7 @@ test "the phi4 gradient and Hessian match their fixture identities" {
     var artifact = try derive(&model, &request);
     defer artifact.deinit();
 
-    var reference = try value.Builder.init(std.testing.allocator, .{});
+    var reference = try value.Builder.init(test_allocator.allocator, .{});
     const mass_squared = try reference.parameter(phi4_mass_squared, "m2", 2);
     const lambda = try reference.parameter(phi4_lambda, "lambda", 0);
     const phi = try reference.background(0, "phi", 1);
@@ -315,7 +316,7 @@ test "the multi-scalar tree potential matches its fixture identity" {
     var artifact = try derive(&model, &request);
     defer artifact.deinit();
 
-    var reference = try value.Builder.init(std.testing.allocator, .{});
+    var reference = try value.Builder.init(test_allocator.allocator, .{});
     const reference_root = try buildMultiScalarReference(&reference);
     var reference_graph = try reference.finish();
     defer reference_graph.deinit();
@@ -344,7 +345,7 @@ test "off-diagonal orbit coefficients are not the diagonal rule" {
     var artifact = try derive(&model, &request);
     defer artifact.deinit();
 
-    var reference = try value.Builder.init(std.testing.allocator, .{});
+    var reference = try value.Builder.init(test_allocator.allocator, .{});
     const h = try reference.background(0, "h", 1);
     const s = try reference.background(1, "s", 1);
     const l2 = try reference.parameter(ms.l2, "l2", 0);
@@ -370,18 +371,18 @@ test "off-diagonal orbit coefficients are not the diagonal rule" {
     defer reference_graph.deinit();
     try std.testing.expect(correct != naive);
 
-    var quartic_text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var quartic_text: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer quartic_text.deinit();
     try artifact.graph.writeValueCanonical(
         artifact.contribution(.scalar_quartic).?.value,
-        std.testing.allocator,
+        test_allocator.allocator,
         &quartic_text.writer,
     );
-    var naive_text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var naive_text: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer naive_text.deinit();
     try reference_graph.writeValueCanonical(
         naive,
-        std.testing.allocator,
+        test_allocator.allocator,
         &naive_text.writer,
     );
     try std.testing.expect(
@@ -409,7 +410,7 @@ test "a component slice fixes unselected backgrounds to exactly zero" {
 
     // Restricting to h = x, s = 0 leaves the pure-h monomials:
     // omega + t_h x + m_h2 x^2 / 2 + a x^3 / 6 + lh x^4 / 24
-    var reference = try value.Builder.init(std.testing.allocator, .{});
+    var reference = try value.Builder.init(test_allocator.allocator, .{});
     const x = try reference.background(0, "x", 1);
     const reference_root = try reference.add(&.{
         try reference.parameter(ms.omega, "omega", 4),
@@ -467,7 +468,7 @@ test "a slice selecting no surviving component records a structural absence" {
     // entirely here; what matters is that mixed monomials are gone.
     try std.testing.expectEqual(@as(usize, 5), artifact.contributions.len);
 
-    var reference = try value.Builder.init(std.testing.allocator, .{});
+    var reference = try value.Builder.init(test_allocator.allocator, .{});
     const y = try reference.background(0, "y", 1);
     const expected_cubic = try reference.divide(
         try reference.multiply(&.{
@@ -506,7 +507,7 @@ test "restricted derivatives satisfy the embedding chain rule" {
     defer artifact.deinit();
 
     // t_h + m_h2 h + a h^2 / 2 + lh h^3 / 6
-    var reference = try value.Builder.init(std.testing.allocator, .{});
+    var reference = try value.Builder.init(test_allocator.allocator, .{});
     const h = try reference.background(0, "h", 1);
     const expected = try reference.add(&.{
         try reference.parameter(ms.t_h, "t_h", 3),
@@ -563,9 +564,9 @@ test "derivation is deterministic across repeated runs" {
     var second = try derive(&model, &request);
     defer second.deinit();
 
-    var first_text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var first_text: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer first_text.deinit();
-    var second_text: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var second_text: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer second_text.deinit();
     try first.graph.writeCanonical(&first_text.writer);
     try second.graph.writeCanonical(&second_text.writer);

@@ -1,11 +1,12 @@
 const std = @import("std");
+const test_allocator = @import("test_allocator");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
 const conformance_fixture_data = @import("conformance_fixture_data");
 const scalar_oracle_fixture = @import("scalar_oracle_fixture");
 
 fn context() phaser.Context {
-    return switch (phaser.Context.init(std.testing.allocator, .{
+    return switch (phaser.Context.init(test_allocator.allocator, .{
         .max_diagnostics = 32,
         .max_related_locations = 64,
     })) {
@@ -63,7 +64,7 @@ test "Milestone 3 conformance fixtures remain valid language-neutral JSON" {
     inline for (fixtures) |fixture| {
         var parsed = try std.json.parseFromSlice(
             std.json.Value,
-            std.testing.allocator,
+            test_allocator.allocator,
             fixture,
             .{
                 .duplicate_field_behavior = .@"error",
@@ -89,9 +90,9 @@ test "sparse symmetric tensor lookup agrees across dense permutations" {
         &.{ 1, 0, 1, 0 },
     ) orelse return error.MissingComponent;
 
-    var first: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var first: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer first.deinit();
-    var second: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var second: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer second.deinit();
     try forward.write(&first.writer);
     try permuted.write(&second.writer);
@@ -131,7 +132,7 @@ test "public inspection output matches reviewed example goldens" {
     inline for (cases) |case| {
         var model = try load(case[1]);
         defer model.deinit();
-        var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        var output: std.Io.Writer.Allocating = .init(test_allocator.allocator);
         defer output.deinit();
         try output.writer.print("model {s}\n", .{case[0]});
         try model.writeInspection(&output.writer);
@@ -141,7 +142,7 @@ test "public inspection output matches reviewed example goldens" {
 
 test "model owns retained data after the source buffer is released" {
     const original = example_data.phi4_model;
-    const source = try std.testing.allocator.dupe(u8, original);
+    const source = try test_allocator.allocator.dupe(u8, original);
     const result = try phaser.loadModel(context(), .{
         .source_id = try phaser.SourceId.fromUsize(9),
         .bytes = source,
@@ -151,11 +152,11 @@ test "model owns retained data after the source buffer is released" {
         .diagnostics => |diagnostics| {
             var owned = diagnostics;
             defer owned.deinit();
-            std.testing.allocator.free(source);
+            test_allocator.allocator.free(source);
             return error.InvalidFixture;
         },
     };
-    std.testing.allocator.free(source);
+    test_allocator.allocator.free(source);
     defer model.deinit();
     try std.testing.expectEqualStrings("lambda", model.parameters[0].name);
     try std.testing.expect(model.audit());
