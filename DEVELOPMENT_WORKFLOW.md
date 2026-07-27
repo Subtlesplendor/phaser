@@ -172,6 +172,16 @@ fuzzing. If the number of targets makes that too expensive, targets rotate on a
 documented schedule while the most important trust boundaries continue to run
 nightly.
 
+What that budget buys depends on what the targets allocate through. Fuzz targets
+use a private allocator that keeps leak, double-free, and use-after-free
+detection but, in the ReleaseSafe campaign, captures no allocation backtraces:
+capturing them was consuming all but a small fraction of the search. A leak found
+nightly is therefore reported without its allocation site, and the Debug replay
+that section 7 already requires reports it with one. Decision
+[0010](docs/decisions/0010-fuzz-search-budget.md) records the measurements and
+the per-target budget they set. A campaign that runs out of wall clock reports
+what it searched and passes; only a failure fails the job.
+
 The mutation campaign rotates under exactly that allowance, because a mutant
 costs a full rebuild of the oracle and the whole repository would take hours.
 `tools/ci/mutation_rotation.sh` assigns every (source file, mutation operator)
