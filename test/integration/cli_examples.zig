@@ -10,6 +10,7 @@
 //! comparison covers the output itself and not the shell.
 
 const std = @import("std");
+const test_allocator = @import("test_allocator");
 const commands = @import("commands");
 const example_data = @import("example_data");
 
@@ -18,12 +19,12 @@ fn renderExport(
     request_source: []const u8,
     options: commands.ExportOptions,
 ) !std.Io.Writer.Allocating {
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     errdefer out.deinit();
-    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer errors.deinit();
     try commands.exportSymbolic(
-        std.testing.allocator,
+        test_allocator.allocator,
         model_source,
         request_source,
         options,
@@ -42,21 +43,21 @@ fn renderEvaluate(
     coordinates: usize,
 ) !std.Io.Writer.Allocating {
     const points = try commands.expandScan(
-        std.testing.allocator,
+        test_allocator.allocator,
         coordinates,
         0,
         0,
         600,
         13,
     );
-    defer std.testing.allocator.free(points);
+    defer test_allocator.allocator.free(points);
 
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     errdefer out.deinit();
-    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer errors.deinit();
     try commands.evaluate(
-        std.testing.allocator,
+        test_allocator.allocator,
         model_source,
         request_source,
         point_source,
@@ -148,13 +149,13 @@ test "the multi-scalar scan reproduces its golden sampled data" {
 
 test "the default evaluation format aligns exact values for human readers" {
     const points = [_]f64{ 0, 50, 600 };
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer out.deinit();
-    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer errors.deinit();
 
     try commands.evaluate(
-        std.testing.allocator,
+        test_allocator.allocator,
         example_data.phi4_model,
         example_data.phi4_request,
         example_data.phi4_point,
@@ -176,12 +177,12 @@ test "the default evaluation format aligns exact values for human readers" {
 }
 
 test "the inspect workflow reproduces its golden output" {
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer out.deinit();
-    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer errors.deinit();
     try commands.inspect(
-        std.testing.allocator,
+        test_allocator.allocator,
         example_data.phi4_model,
         &out.writer,
         &errors.writer,
@@ -217,13 +218,13 @@ test "the sampled data brackets the symmetry breaking minimum" {
 }
 
 test "an invalid model reports diagnostics and fails" {
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer out.deinit();
-    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer errors.deinit();
 
     try std.testing.expectError(error.InvalidModel, commands.inspect(
-        std.testing.allocator,
+        test_allocator.allocator,
         "{ not json",
         &out.writer,
         &errors.writer,
@@ -234,9 +235,9 @@ test "an invalid model reports diagnostics and fails" {
 }
 
 test "an unsupported request reports its own diagnostic" {
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer out.deinit();
-    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer errors.deinit();
 
     const one_loop =
@@ -247,7 +248,7 @@ test "an unsupported request reports its own diagnostic" {
         \\"orders":{"loop":{"through":1}}}
     ;
     try std.testing.expectError(error.InvalidRequest, commands.exportSymbolic(
-        std.testing.allocator,
+        test_allocator.allocator,
         example_data.phi4_model,
         one_loop,
         .{},
@@ -260,9 +261,9 @@ test "an unsupported request reports its own diagnostic" {
 }
 
 test "a parameter point missing a value is rejected before evaluation" {
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer out.deinit();
-    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer errors.deinit();
 
     const incomplete =
@@ -272,7 +273,7 @@ test "a parameter point missing a value is rejected before evaluation" {
     ;
     const points = [_]f64{0.0};
     try std.testing.expectError(error.BindingFailed, commands.evaluate(
-        std.testing.allocator,
+        test_allocator.allocator,
         example_data.phi4_model,
         example_data.phi4_request,
         incomplete,

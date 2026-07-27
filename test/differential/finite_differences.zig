@@ -21,6 +21,7 @@
 //! policy declares.
 
 const std = @import("std");
+const test_allocator = @import("test_allocator");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
 const policies = @import("numerical_comparison");
@@ -34,7 +35,7 @@ const hessian_policy = policies.finite_difference_hessian_well_conditioned;
 const transcribed_policy = policies.reordered_value_well_conditioned;
 
 fn testContext() phaser.Context {
-    return switch (phaser.Context.init(std.testing.allocator, .{
+    return switch (phaser.Context.init(test_allocator.allocator, .{
         .max_diagnostics = 16,
         .max_related_locations = 32,
     })) {
@@ -94,7 +95,7 @@ const Subject = struct {
         };
         errdefer artifact.deinit();
 
-        var kernel = try kernel_module.compile(std.testing.allocator, &artifact, .{
+        var kernel = try kernel_module.compile(test_allocator.allocator, &artifact, .{
             .capability = .value_gradient_hessian,
         });
         errdefer kernel.deinit();
@@ -113,14 +114,14 @@ const Subject = struct {
         defer point.deinit();
 
         var binding = try kernel_module.bind(
-            std.testing.allocator,
+            test_allocator.allocator,
             &kernel,
             &model,
             &point,
         );
         errdefer binding.deinit();
 
-        const workspace = try std.testing.allocator.alignedAlloc(
+        const workspace = try test_allocator.allocator.alignedAlloc(
             u8,
             .of(Scalar),
             binding.workspaceLayout(1).bytes,
@@ -137,7 +138,7 @@ const Subject = struct {
     }
 
     fn deinit(self: *Subject) void {
-        std.testing.allocator.free(self.workspace);
+        test_allocator.allocator.free(self.workspace);
         self.binding.deinit();
         self.kernel.deinit();
         self.artifact.deinit();
@@ -288,12 +289,12 @@ fn expectAgreement(
 
 fn expectAgreementAt(subject: *Subject, point: []const Scalar) !void {
     const n = subject.coordinates;
-    const gradient = try std.testing.allocator.alloc(Scalar, n);
-    defer std.testing.allocator.free(gradient);
-    const hessian = try std.testing.allocator.alloc(Scalar, n * n);
-    defer std.testing.allocator.free(hessian);
-    const scratch = try std.testing.allocator.alloc(Scalar, n);
-    defer std.testing.allocator.free(scratch);
+    const gradient = try test_allocator.allocator.alloc(Scalar, n);
+    defer test_allocator.allocator.free(gradient);
+    const hessian = try test_allocator.allocator.alloc(Scalar, n * n);
+    defer test_allocator.allocator.free(hessian);
+    const scratch = try test_allocator.allocator.alloc(Scalar, n);
+    defer test_allocator.allocator.free(scratch);
 
     try subject.derivatives(point, gradient, hessian);
 

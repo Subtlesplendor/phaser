@@ -77,6 +77,28 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Whether the test tiers' allocator captures an allocation backtrace, per
+    // decision 0011. On by default, because that is what a person debugging a
+    // leak needs. The mutation oracle turns it off in `zentinel.toml`: it re-runs
+    // this suite once per mutant and reads no leak report, so it was paying for
+    // backtraces nothing consumes. See `test/support/allocator.zig`.
+    const capture_traces = b.option(
+        bool,
+        "test-allocation-traces",
+        "Capture allocation backtraces in the test tiers (default true)",
+    ) orelse true;
+    const test_allocator_config = b.addOptions();
+    test_allocator_config.addOption(bool, "capture_traces", capture_traces);
+
+    const test_allocator_module = b.createModule(.{
+        .root_source_file = b.path("test/support/allocator.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "config", .module = test_allocator_config.createModule() },
+        },
+    });
+
     const cli_commands_module = b.createModule(.{
         .root_source_file = b.path("src/cli/commands.zig"),
         .target = target,
@@ -126,6 +148,10 @@ pub fn build(b: *std.Build) void {
                 .name = "numerical_comparison",
                 .module = numerical_comparison_module,
             },
+            .{
+                .name = "test_allocator",
+                .module = test_allocator_module,
+            },
         },
     });
     const suite_tests = b.addTest(.{
@@ -148,6 +174,10 @@ pub fn build(b: *std.Build) void {
             .{
                 .name = "conformance_fixture_data",
                 .module = conformance_fixture_data_module,
+            },
+            .{
+                .name = "test_allocator",
+                .module = test_allocator_module,
             },
         },
     });
@@ -173,6 +203,10 @@ pub fn build(b: *std.Build) void {
             .{
                 .name = "numerical_comparison",
                 .module = numerical_comparison_module,
+            },
+            .{
+                .name = "test_allocator",
+                .module = test_allocator_module,
             },
         },
     });
@@ -258,6 +292,10 @@ pub fn build(b: *std.Build) void {
             .{
                 .name = "numerical_comparison",
                 .module = numerical_comparison_module,
+            },
+            .{
+                .name = "test_allocator",
+                .module = test_allocator_module,
             },
         },
     });

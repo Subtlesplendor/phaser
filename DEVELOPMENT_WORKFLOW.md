@@ -218,6 +218,15 @@ deterministic tiers: it excludes fuzz replay and the randomized property
 campaign. Mutation runs do not fail on survivors. Decision
 [0005](docs/decisions/0005-mutation-testing-dependency.md) records why.
 
+The oracle runs that suite with `-Dtest-allocation-traces=false`, which keeps
+leak, double-free, and use-after-free detection but stops capturing an allocation
+backtrace the campaign never reads, and costs about an order of magnitude less
+per mutant. Only the oracle passes it: every pull-request check, every other
+nightly job, and every local `zig build test` keeps the traces and the runner's
+per-test leak attribution. Decision
+[0011](docs/decisions/0011-test-allocation-traces.md) records the measurements
+and what the untraced mode gives up.
+
 A surviving mutant is a standing property of the test suite, not a regression in
 the commit that happened to be current. Treat it as a gap to close deliberately,
 in its own change, the way a missing property or conformance fixture is treated.
