@@ -40,6 +40,13 @@ produces the point-level `non_finite` outcome. Size zero succeeds with an empty
 spectrum. An exactly zero matrix succeeds with exact zero eigenvalues and, when
 requested, the identity eigenvector matrix.
 
+An exactly diagonal matrix of any size is the no-rotation case. After finite
+checks it retains its entries without global scaling, executes the same bounded
+convergence and postcondition path for its dimension, and publishes the stably
+sorted diagonal with the corresponding identity columns. This preserves an
+isolated representable diagonal entry even when another diagonal entry differs
+from it by the complete `f64` dynamic range.
+
 For any other finite matrix, the solver selects a power-of-two scale from the
 maximum absolute entry and diagonalizes the scaled matrix. The largest scaled
 entry lies in a fixed normal range. Power-of-two scaling avoids overflow in norm
