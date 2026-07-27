@@ -3,7 +3,7 @@
 Status: provisional specification
 
 This document specifies the source schema of the `effective_potential`
-calculation request and the subset of it supported by Milestone 2. It refines
+calculation request and the subset of it supported through Milestone 3. It refines
 section 8 of [Phaser Calculation Format](CALCULATION_FORMAT.md).
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are
@@ -15,14 +15,16 @@ This specification fixes:
 
 - the request envelope accepted for `kind: effective_potential`;
 - the `background`, `environment`, `renormalization`, and `orders` sub-schemas;
-- which combinations Milestone 2 supports;
+- which combinations through Milestone 3 are supported;
 - the rejection behavior for every unsupported combination; and
 - the normalized encoding that contributes to calculation identity.
 
 It does not specify the derived artifact, which is governed by
 [Effective-Potential Artifact](../calculations/EFFECTIVE_POTENTIAL.md) and, for
 the tree-level slice, by
-[Classical Scalar Potential](../calculations/CLASSICAL_SCALAR_POTENTIAL.md).
+[Classical Scalar Potential](../calculations/CLASSICAL_SCALAR_POTENTIAL.md), and
+for the order-one scalar contribution by
+[Zero-Temperature One-Loop Scalar Effective Potential](../calculations/SCALAR_ONE_LOOP_EFFECTIVE_POTENTIAL.md).
 
 ## 2. Request envelope
 
@@ -40,8 +42,11 @@ A complete request has the form:
   },
   "orders": {
     "loop": {
-      "through": 0
+      "through": 1
     }
+  },
+  "renormalization": {
+    "scheme": "MSbar"
   }
 }
 ```
@@ -111,7 +116,7 @@ selecting the same scalars in different orders are distinct calculations.
 }
 ```
 
-`kind` is required. Milestone 2 supports only `vacuum`. Any other value,
+`kind` is required. Milestones 2 and 3 support only `vacuum`. Any other value,
 including a finite-temperature environment, is rejected with
 `unsupported_environment`.
 
@@ -168,11 +173,11 @@ that point so the mismatch case is not left untested.
 
 ## 6. Gauge fixing
 
-Gauge fixing is required only by calculations that need gauge-fixed propagators
-or fluctuation operators. Milestone 2 derives no such object and supports no
-model containing gauge vectors.
+Gauge fixing is required only by calculations that include gauge-fixed
+propagators or fluctuation operators. Milestone 3 derives only the real-scalar
+fluctuation operator and still supports no model containing gauge vectors.
 
-A `gauge_fixing` property present in a Milestone 2 request is rejected with
+A `gauge_fixing` property present in a Milestone 2 or 3 request is rejected with
 `unsupported_gauge_fixing`. The property is reserved for the milestone that
 introduces the general gauge family specified in
 [Gauge Fixing and Gauge Parameters](GAUGE_FIXING.md).
@@ -185,7 +190,7 @@ Rejection is explicit rather than silent acceptance of an ignored property.
 {
   "orders": {
     "loop": {
-      "through": 0
+      "through": 1
     }
   }
 }
@@ -195,14 +200,32 @@ Rejection is explicit rather than silent acceptance of an ignored property.
 semantics specified in
 [Perturbative Order and Power-Counting Boundary](PERTURBATIVE_ORDER.md).
 
-Milestone 2 supports only `through: 0`. A request for a higher order is rejected
-with `unsupported_loop_order` and names the highest supported order in its
-diagnostic detail. Milestone 3 extends support to `through: 1`.
+Milestone 3 supports `through: 0` and `through: 1`. Because `through` is an
+inclusive truncation, `through: 1` requests the tree contribution and the
+zero-temperature real-scalar one-loop contribution. A request for a higher
+order is rejected with `unsupported_loop_order` and names `1` as the highest
+supported order in its diagnostic detail.
 
 Truncation MUST NOT erase the loop order or provenance of retained
 contributions.
 
 ## 8. Model compatibility
+
+The complete Milestone 3 supported combination is:
+
+- a four-dimensional canonical model with zero or more real scalar components
+  and no Weyl fermions or gauge vectors;
+- `vacuum`;
+- either version 0.1 background mode;
+- `through: 0` or `through: 1`; and
+- `MSbar` whenever a scheme is declared, with the declaration required for
+  `through: 1`.
+
+At `through: 1`, the fluctuation space is the model's complete real-scalar
+component space even when the background is a component slice. No fermion,
+gauge, ghost, thermal, resummed, or higher-loop contribution is silently
+omitted from a request that purports to include it; those combinations are
+unsupported.
 
 Planning validates the request against the canonical model. It MUST reject:
 
@@ -219,6 +242,23 @@ constant.
 Tensor kinds absent from the model are structural absences, not failures. They
 are recorded as specified in
 [Classical Scalar Potential §6](../calculations/CLASSICAL_SCALAR_POTENTIAL.md).
+
+### 8.1 Targeted rejection cases
+
+Conformance coverage distinguishes at least:
+
+- missing `renormalization` at `through: 1` as `missing_property`;
+- any scheme other than case-sensitive `MSbar` as `unsupported_scheme`;
+- `through: 2` and larger values as `unsupported_loop_order`;
+- a non-vacuum environment as `unsupported_environment`;
+- any `gauge_fixing` block as `unsupported_gauge_fixing`;
+- any declared Weyl-fermion or gauge-vector sector as `unsupported_sector`;
+- a spacetime dimension other than four as `unsupported_sector`; and
+- an invalid component slice as `invalid_background_coordinate`.
+
+These cases are rejected during parsing or planning as applicable. They MUST
+NOT fall back to a tree-only result, a scalar-only projection of a broader
+model, another renormalization scheme, or a full-scalar background.
 
 ## 9. Resource limits
 
@@ -275,6 +315,9 @@ Required tests include:
 - each unsupported environment, gauge-fixing, and loop-order case produces its
   specified diagnostic code;
 - `renormalization` is optional at order 0 and required above it;
+- `through: 1` retains separately identifiable tree and scalar-loop
+  contributions;
+- every targeted rejection in section 8.1 produces its owned diagnostic;
 - coordinate-order changes produce distinct request fingerprints;
 - presentation metadata does not change a request fingerprint;
 - capacity limits are enforced at exact boundaries; and

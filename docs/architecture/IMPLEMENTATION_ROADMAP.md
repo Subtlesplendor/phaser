@@ -260,17 +260,14 @@ native platforms; the nightly tier exercises their full Cartesian product.
 
 ### Requirements satisfied only trivially
 
-Two requirements are implemented but cannot currently be exercised, and are
+One requirement is implemented but cannot currently be exercised, and is
 recorded here rather than counted as verified.
 
 - **Scheme mismatch at binding.** Rejecting a parameter point whose scheme
   differs from the artifact's cannot fire while `MSbar` is the only supported
   scheme. A conformance tripwire fails when a second scheme is added.
-- **Complex results and branch policy.** The instruction set is real-valued, so
-  the prohibitions on silently taking a real part or an absolute value have no
-  reachable code path yet. They become testable with the one-loop calculation.
 
-A third was recorded here and has since been discharged.
+One additional requirement was recorded here and has since been discharged.
 
 - **Cross-platform numerical agreement.** The operation-aware comparison policy
   of [Potential Kernel §15.3](POTENTIAL_KERNEL.md) is now written, in
@@ -305,47 +302,43 @@ Not defects, but measured behavior a later milestone should know about.
 
 ## 7. Milestone 3: zero-temperature one-loop scalar potential
 
-### Prerequisite: decide the independent oracle before implementing
+### Prerequisites: discharged
 
-This decision MUST be made and recorded before Milestone 3 implementation
-begins.
+Milestone 3 implementation may begin only after agreement, the independent
+oracle, the eigensolver, and the representational contracts have precise
+meanings. Those prerequisites are now discharged:
 
-Milestone 2 could bootstrap its own oracle. Both conformance models are
-polynomials, so an exact identity could be transcribed by hand from the fixture
-and compared structurally, and the orbit coefficient was checkable by reading two
-files side by side.
+- [Numerical Comparison](NUMERICAL_COMPARISON.md) declares and measures the
+  known-spectrum, near-degenerate, and zero-mode value, gradient, and Hessian
+  policies.
+- [Decision 0007](../decisions/0007-milestone-3-oracle.md) adopts
+  fixture-specific mass-matrix formulas, exact characteristic polynomials,
+  known eigenvalue multisets, a private test-only `f64` scalar evaluator, and
+  structural identities. It also records why the scalar-only milestone cannot
+  use the Wess–Zumino cancellation before Milestone 6.
+- [Decision 0008](../decisions/0008-symmetric-eigensolver.md) selects the
+  deterministic real-symmetric cyclic Jacobi solver, direct small-size paths,
+  exact caller-workspace accounting, and explicit `nonconvergent` behavior.
+- [Kernel Instruction Set](KERNEL_INSTRUCTION_SET.md) and
+  [Internal Representations](INTERNAL_REPRESENTATIONS.md#54-matrices-and-spectral-operations)
+  define mixed real and `Complex64` temporaries, real matrix and eigensolver
+  storage, the restricted logarithm, and invariant spectral value and derivative
+  operations.
+- [Effective-Potential Calculation Request](../formats/EFFECTIVE_POTENTIAL_REQUEST.md)
+  activates the scalar-only `through: 1` request under `MSbar`, while
+  [Effective-Potential Artifact](../calculations/EFFECTIVE_POTENTIAL.md),
+  [Potential Kernel](POTENTIAL_KERNEL.md), and
+  [Evaluation Lifecycle](EVALUATION_LIFECYCLE.md) define stable complex result
+  types, distinct numerical statuses, and point-atomic fused publication.
+- [Conformance Models](CONFORMANCE_MODELS.md) defines the generated
+  three-scalar cyclic-Jacobi variant and the per-case Milestone 3 fixture
+  metadata.
 
-The one-loop potential admits no such transcription. It is a spectral sum over
-eigenvalues of a field-dependent matrix, with logarithms and a complex branch. The
-fixtures supply exact reference values at a handful of named points, which is
-necessary but not sufficient: the cases most likely to be wrong are exact
-degeneracy, negative mass-squared eigenvalues, and zero modes, and those are
-precisely where hand derivation is least reliable.
-
-The options are:
-
-- high-precision external computation stored as language-neutral reference data,
-  under the external-reference rules of
-  [Conformance Models](CONFORMANCE_MODELS.md);
-- the Wess-Zumino supertrace and vacuum-energy cancellations that
-  [Conformance Models §6](CONFORMANCE_MODELS.md) already specifies, which are
-  exact identities rather than sampled values; or
-- a combination, with the cancellations as the structural check and external data
-  for the numerical branch behavior.
-
-Either external option needs dependency approval and setup work. Discovering at
-the end of Milestone 3 that nothing independent exists to check against would be
-materially worse than the unreachable-requirement findings of Milestone 2,
-because a wrong spectral function produces entirely plausible numbers.
-
-A declared numerical-comparison policy was also required, as recorded under
-Milestone 2's requirements satisfied only trivially, because "agree" needs a
-defined meaning before it can be asserted across representations, platforms, or
-reference sources. [Numerical Comparison](NUMERICAL_COMPARISON.md) now supplies
-it for the quantities Milestone 2 compares, and fixes the form the spectral,
-near-degenerate, and zero-mode entries this milestone adds must take. Their
-bounds are measured with the calculation that needs them; the oracle decision
-above remains open.
+The complex-result and branch-policy requirement is no longer listed under
+Milestone 2's trivially satisfied requirements. The Milestone 3 contracts make
+it reachable: a negative scalar mass-squared eigenvalue is a successful
+principal-branch `Complex64` result, and conformance cases can now detect an
+unrequested real projection or absolute-value substitution.
 
 ### Objective
 

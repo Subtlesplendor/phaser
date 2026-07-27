@@ -74,6 +74,70 @@ The initial language-neutral manifest uses schema identifier
 - derivation or external provenance; and
 - deliberately unsupported obligations.
 
+Every numerical reference case whose obligation is active in Milestone 3 or
+later carries these fields in addition to its scientific inputs and expected
+quantities:
+
+```json
+{
+  "calculation": {
+    "kind": "effective_potential",
+    "loop_order": 1,
+    "contribution": "scalar_one_loop",
+    "operation": "value"
+  },
+  "reference_precision": {
+    "arithmetic": "binary64",
+    "significand_bits": 53,
+    "shared_primitives": ["zig.@log"]
+  },
+  "comparison_policy": "spectral_value_known_spectrum",
+  "expected_status": "ok",
+  "derivation_source": {
+    "kind": "hand_derived",
+    "file": "README.md",
+    "section": "positive dense"
+  },
+  "manual_transformations": [
+    {
+      "from": "reviewable expression strings",
+      "to": "Zig f64 test constants",
+      "location": "test/conformance/scalar_one_loop.zig",
+      "procedure": "transcribed by hand"
+    }
+  ]
+}
+```
+
+`calculation.kind`, `calculation.loop_order`,
+`calculation.contribution`, and `calculation.operation` identify the quantity
+rather than relying on a field name such as `one_loop`; `operation` distinguishes
+`value`, `gradient`, `hessian`, and a named diagnostic operation.
+`loop_order` is the contribution's exact order, not the inclusive request
+truncation. `reference_precision` identifies the arithmetic and any primitive
+deliberately shared with production; exact reviewable expression strings remain
+the authoritative source even when a test evaluates them in binary64.
+`comparison_policy` names the complete policy in
+[Numerical Comparison](NUMERICAL_COMPARISON.md). `expected_status` uses the
+kernel status vocabulary and is compared exactly; a successful complex result
+uses `ok`, not a separate `ok_complex` status.
+
+`derivation_source` names the file and section that independently establish the
+case. `manual_transformations` records every transcription, convention change,
+basis or field permutation, and parameter mapping between that source and the
+executable test. It is an empty array when no such transformation occurred; its
+omission is incomplete provenance, not shorthand for none.
+
+These fields remain part of `phaser.conformance-fixture/0.1`; they do not
+introduce version 0.2. The initial 0.1 contract already required calculation
+order, reference precision, comparison policy, status, provenance, and manual
+transformations, and no released machine loader accepted a narrower shape.
+Materializing the fields therefore completes the existing provisional schema
+rather than changing the meaning of an accepted field. Milestone 1 and 2 cases
+whose numerical obligation does not use the new operation may retain their
+existing quantity-specific data, but every case activated for Milestone 3 MUST
+use the explicit fields above.
+
 Unknown top-level properties are rejected when machine loading is introduced.
 Exact mathematical values are stored as reviewable strings rather than rounded
 JSON numbers. The target-specific parser for those expected-value expressions
@@ -366,20 +430,63 @@ symmetric-orbit multiplicities, definite/degenerate/indefinite matrices, and
 complex spectral references live under
 `test/fixtures/conformance/multi_scalar/`.
 
-### 7.3 Abelian Higgs model
+### 7.3 Generated three-scalar Jacobi variant
+
+Milestone 3 adds a generated scalar-only conformance variant with three real
+components `r`, `s`, and `t`, six cubic parameters, no fermions, and no gauge
+vectors. It is not another named physical model and has no built-in shortcut.
+It is supplied through the ordinary public `phaser.qft-model/0.1` format.
+
+For a component-slice background \((r,s,t)=(b,0,0)\), the fixture-specific
+derivation gives
+
+\[
+\mathcal M^2(b)=b
+\begin{pmatrix}
+c_{111}&c_{112}&c_{113}\\
+c_{112}&c_{122}&c_{123}\\
+c_{113}&c_{123}&c_{133}
+\end{pmatrix}.
+\]
+
+At least one case uses the dense matrix
+
+\[
+\begin{pmatrix}
+53&26&-4\\
+26&44&-22\\
+-4&-22&29
+\end{pmatrix},
+\]
+
+whose exact spectrum is \(\{9,36,81\}\). All three off-diagonal planes are
+nonzero, so the production path reaches cyclic Jacobi rather than the size-one
+or size-two closed forms. Further cases cover exact positive and negative
+degeneracy, a zero mode, an indefinite spectrum, near degeneracy, a
+permutation, and an explicitly recorded orthogonal transformation.
+
+The language-neutral fixture and derivation live under
+`test/fixtures/conformance/three_scalar/` when materialized. Each case records
+the fields defined in section 3 and retains reviewable expression strings for
+the matrix, spectrum, and expected complex value. The model/background-to-
+matrix formula, exact characteristic polynomial, and private known-spectrum
+evaluator remain separate oracle layers as required by
+[Decision 0007](../decisions/0007-milestone-3-oracle.md).
+
+### 7.4 Abelian Higgs model
 
 This is the smallest gauge fixture. It verifies scalar and gauge
 representations, Goldstone and ghost sectors, gauge subcases, scalar–vector
 mixing where present, and the first gauge-theory dimensional-reduction slice.
 
-### 7.4 Standard Model
+### 7.5 Standard Model
 
 The Standard Model exercises realistic chiral fermions, product gauge structure,
 non-Abelian structure, several couplings, large sparse tensors, gauge fixing,
 RG data, and published effective-potential and thermal references. Reduced
 sector limits SHOULD be used to localize failures.
 
-### 7.5 Real-singlet extension
+### 7.6 Real-singlet extension
 
 The real-singlet extension exercises a realistic multi-background scalar sector,
 mixing, decoupling to the Standard Model, additional scalar thermal effects, and
