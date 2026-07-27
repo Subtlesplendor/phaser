@@ -398,9 +398,67 @@ test "the evaluator reproduces the hand-derived phi4 values" {
         negative.value.im,
         .{ .magnitude = negative.unsigned_scale.im },
     );
+
+    const zero = try evaluateKnownSpectrum(&.{0}, 1);
+    try comparison.spectral_value_zero_mode.expectCloseAt(
+        0,
+        zero.value.re,
+        .{ .magnitude = zero.unsigned_scale.re },
+    );
+    try comparison.spectral_value_zero_mode.expectCloseAt(
+        0,
+        zero.value.im,
+        .{ .magnitude = zero.unsigned_scale.im },
+    );
+}
+
+test "the evaluator reproduces the fixed-parameter scale pair" {
+    const at_mu1 = try evaluateKnownSpectrum(&.{1}, 1);
+    const at_mu2 = try evaluateKnownSpectrum(&.{1}, 2);
+    const actual_difference = at_mu2.value.re - at_mu1.value.re;
+    const expected_difference =
+        -@log(2.0) / (32.0 * std.math.pi * std.math.pi);
+    try comparison.reordered_value_well_conditioned.expectCloseAt(
+        expected_difference,
+        actual_difference,
+        .{
+            .magnitude = @abs(at_mu1.value.re) +
+                @abs(at_mu2.value.re) +
+                @abs(expected_difference),
+        },
+    );
+    try std.testing.expectEqual(@as(f64, 0), at_mu1.value.im);
+    try std.testing.expectEqual(@as(f64, 0), at_mu2.value.im);
 }
 
 test "the evaluator reproduces the hand-derived two-scalar values" {
+    const positive = try evaluateKnownSpectrum(&.{ 1, 4 }, 1);
+    const positive_expected =
+        -3.0 / (128.0 * std.math.pi * std.math.pi) +
+        (@log(4.0) - 1.5) / (4.0 * std.math.pi * std.math.pi);
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        positive_expected,
+        positive.value.re,
+        .{ .magnitude = positive.unsigned_scale.re },
+    );
+
+    const positive_degeneracy =
+        try evaluateKnownSpectrum(&.{ 2, 2 }, 1);
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        (@log(2.0) - 1.5) /
+            (8.0 * std.math.pi * std.math.pi),
+        positive_degeneracy.value.re,
+        .{ .magnitude = positive_degeneracy.unsigned_scale.re },
+    );
+
+    const zero = try evaluateKnownSpectrum(&.{ 0, 4 }, 1);
+    try comparison.spectral_value_zero_mode.expectCloseAt(
+        (@log(4.0) - 1.5) /
+            (4.0 * std.math.pi * std.math.pi),
+        zero.value.re,
+        .{ .magnitude = zero.unsigned_scale.re },
+    );
+
     const indefinite = try evaluateKnownSpectrum(&.{ 4, -1 }, 1);
     const expected_real =
         (@log(4.0) - 1.5) / (4.0 * std.math.pi * std.math.pi) -
@@ -426,6 +484,104 @@ test "the evaluator reproduces the hand-derived two-scalar values" {
         1.0 / (8.0 * std.math.pi),
         negative_degeneracy.value.im,
         .{ .magnitude = negative_degeneracy.unsigned_scale.im },
+    );
+
+    const near = 1.0 + 0x1p-20;
+    const near_degeneracy =
+        try evaluateKnownSpectrum(&.{ 1, near }, 1);
+    const near_expected = (-1.5 +
+        near * near * (@log(near) - 1.5)) /
+        (64.0 * std.math.pi * std.math.pi);
+    try comparison.spectral_value_near_degenerate.expectCloseAt(
+        near_expected,
+        near_degeneracy.value.re,
+        .{ .magnitude = near_degeneracy.unsigned_scale.re },
+    );
+}
+
+test "the evaluator reproduces every hand-derived three-scalar value" {
+    const pi_squared = std.math.pi * std.math.pi;
+
+    const positive = try evaluateKnownSpectrum(&.{ 9, 36, 81 }, 3);
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        (81.0 * -1.5 +
+            1296.0 * (@log(4.0) - 1.5) +
+            6561.0 * (@log(9.0) - 1.5)) /
+            (64.0 * pi_squared),
+        positive.value.re,
+        .{ .magnitude = positive.unsigned_scale.re },
+    );
+
+    const positive_degeneracy =
+        try evaluateKnownSpectrum(&.{ 18, 18, 45 }, 3);
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        (648.0 * (@log(2.0) - 1.5) +
+            2025.0 * (@log(5.0) - 1.5)) /
+            (64.0 * pi_squared),
+        positive_degeneracy.value.re,
+        .{ .magnitude = positive_degeneracy.unsigned_scale.re },
+    );
+
+    const negative_degeneracy =
+        try evaluateKnownSpectrum(&.{ -18, -18, 27 }, 3);
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        (648.0 * (@log(2.0) - 1.5) +
+            729.0 * (@log(3.0) - 1.5)) /
+            (64.0 * pi_squared),
+        negative_degeneracy.value.re,
+        .{ .magnitude = negative_degeneracy.unsigned_scale.re },
+    );
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        81.0 / (8.0 * std.math.pi),
+        negative_degeneracy.value.im,
+        .{ .magnitude = negative_degeneracy.unsigned_scale.im },
+    );
+
+    const zero = try evaluateKnownSpectrum(&.{ 0, 2, 4 }, 1);
+    try comparison.spectral_value_zero_mode.expectCloseAt(
+        (4.0 * (@log(2.0) - 1.5) +
+            16.0 * (@log(4.0) - 1.5)) /
+            (64.0 * pi_squared),
+        zero.value.re,
+        .{ .magnitude = zero.unsigned_scale.re },
+    );
+
+    const indefinite = try evaluateKnownSpectrum(&.{ -2, 2, 3 }, 1);
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        (8.0 * (@log(2.0) - 1.5) +
+            9.0 * (@log(3.0) - 1.5)) /
+            (64.0 * pi_squared),
+        indefinite.value.re,
+        .{ .magnitude = indefinite.unsigned_scale.re },
+    );
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        1.0 / (16.0 * std.math.pi),
+        indefinite.value.im,
+        .{ .magnitude = indefinite.unsigned_scale.im },
+    );
+
+    const near = 1.0 + near_degenerate_separation;
+    const near_degeneracy =
+        try evaluateKnownSpectrum(&.{ 1, near, 4 }, 1);
+    try comparison.spectral_value_near_degenerate.expectCloseAt(
+        (-1.5 +
+            near * near * (@log(near) - 1.5) +
+            16.0 * (@log(4.0) - 1.5)) /
+            (64.0 * pi_squared),
+        near_degeneracy.value.re,
+        .{ .magnitude = near_degeneracy.unsigned_scale.re },
+    );
+
+    const permuted = try evaluateKnownSpectrum(&.{ 81, 36, 9 }, 3);
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        positive.value.re,
+        permuted.value.re,
+        .{ .magnitude = positive.unsigned_scale.re },
+    );
+    try comparison.spectral_value_known_spectrum.expectCloseAt(
+        positive.value.im,
+        permuted.value.im,
+        .{ .magnitude = positive.unsigned_scale.im },
     );
 }
 
