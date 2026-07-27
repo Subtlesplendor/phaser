@@ -445,33 +445,29 @@ test "a tree request derives no one-loop contribution and no scale" {
     try std.testing.expect(!artifact.roleIsRequested(.scalar_one_loop));
 }
 
-test "an order-one value compiles while its derivatives remain unavailable" {
+test "every order-one capability compiles to one complex kernel" {
     var fixture = try Fixture.init(example_data.phi4_model, full_space_request);
     defer fixture.deinit();
 
-    // The value capability is lowered, and the kernel declares the complex
-    // result type its selection implies.
-    var kernel = try phaser.compileKernel(
-        test_allocator.allocator,
-        &fixture.artifact,
-        .{ .capability = .value },
-    );
-    defer kernel.deinit();
-    try std.testing.expectEqual(
-        phaser.kernel.ResultType.complex64,
-        kernel.resultType(),
-    );
-
-    // The invariant spectral derivatives are a separate numerical operation.
-    // Requesting them fails rather than evaluating a potential without them.
-    try std.testing.expectError(
-        error.UnsupportedOperation,
-        phaser.compileKernel(
+    // Each capability is lowered, and every one declares the complex result
+    // type its selection implies rather than the type of a particular point.
+    for ([_]phaser.kernel.Capability{
+        .value,
+        .value_gradient,
+        .value_gradient_hessian,
+    }) |capability| {
+        var kernel = try phaser.compileKernel(
             test_allocator.allocator,
             &fixture.artifact,
-            .{ .capability = .value_gradient },
-        ),
-    );
+            .{ .capability = capability },
+        );
+        defer kernel.deinit();
+        try std.testing.expectEqual(
+            phaser.kernel.ResultType.complex64,
+            kernel.resultType(),
+        );
+        try std.testing.expectEqual(capability, kernel.capability());
+    }
 
     // A tree-only selection of the same artifact stays real, so the result type
     // follows the selection rather than the model.

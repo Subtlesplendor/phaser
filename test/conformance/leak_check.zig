@@ -10,6 +10,7 @@ const tier = [_][]const u8{
     "classical_scalar.test.",
     "one_loop_artifact.test.",
     "one_loop_kernel.test.",
+    "one_loop_derivatives.test.",
     "potential_kernel.test.",
     "parameter_binding.test.",
 };

@@ -10,6 +10,7 @@ const std = @import("std");
 const numerics = @import("../numerics/root.zig");
 
 const eigensolver = numerics.symmetric_eigensolver;
+const spectral = numerics.spectral_derivative;
 
 /// The real scalar type of every input channel, matrix entry, eigenvalue, and
 /// eigensolver temporary.
@@ -17,24 +18,11 @@ pub const Scalar = f64;
 
 /// A pair of IEEE binary64 components. This is a semantic type, not a stable C
 /// layout.
-pub const Complex64 = struct {
-    re: Scalar,
-    im: Scalar,
-
-    pub const zero = Complex64{ .re = 0, .im = 0 };
-
-    pub fn add(self: Complex64, other: Complex64) Complex64 {
-        return .{ .re = self.re + other.re, .im = self.im + other.im };
-    }
-
-    pub fn negate(self: Complex64) Complex64 {
-        return .{ .re = -self.re, .im = -self.im };
-    }
-
-    pub fn isFinite(self: Complex64) bool {
-        return std.math.isFinite(self.re) and std.math.isFinite(self.im);
-    }
-};
+///
+/// It is defined alongside the numerical algorithms because the invariant
+/// spectral derivative operation produces complex results and must not depend
+/// on the instruction program that calls it.
+pub const Complex64 = numerics.complex.Complex64;
 
 /// Numerical type of a kernel's outputs.
 ///
@@ -64,17 +52,24 @@ pub const SlotType = union(enum) {
     real_symmetric_matrix: u32,
     /// `n` real eigenvalues followed by the `n x n` real eigenvector matrix.
     real_eigensystem: u32,
+    /// `n` `Complex64` components of an invariant spectral gradient, in
+    /// canonical background-coordinate order.
+    complex_vector: u32,
+    /// Dense row-major `n x n` `Complex64` invariant spectral Hessian. It is
+    /// dense rather than triangular because every entry is evaluated from the
+    /// formula; symmetry is a property to be checked, not a storage saving.
+    complex_matrix: u32,
 
     pub fn eql(self: SlotType, other: SlotType) bool {
         return switch (self) {
             .real => other == .real,
             .complex => other == .complex,
-            .real_symmetric_matrix => |dimension| switch (other) {
-                .real_symmetric_matrix => |right| dimension == right,
-                else => false,
-            },
-            .real_eigensystem => |dimension| switch (other) {
-                .real_eigensystem => |right| dimension == right,
+            inline .real_symmetric_matrix,
+            .real_eigensystem,
+            .complex_vector,
+            .complex_matrix,
+            => |dimension, tag| switch (other) {
+                tag => |right| dimension == right,
                 else => false,
             },
         };
@@ -92,6 +87,14 @@ pub const SlotType = union(enum) {
                 const vectors = std.math.mul(usize, n, n) catch
                     return error.SizeOverflow;
                 break :blk std.math.add(usize, n, vectors) catch error.SizeOverflow;
+            },
+            .complex_vector => |dimension| std.math.mul(usize, dimension, 2) catch
+                error.SizeOverflow,
+            .complex_matrix => |dimension| blk: {
+                const n: usize = dimension;
+                const entries = std.math.mul(usize, n, n) catch
+                    return error.SizeOverflow;
+                break :blk std.math.mul(usize, entries, 2) catch error.SizeOverflow;
             },
         };
     }
@@ -158,6 +161,9 @@ pub const Opcode = enum(u8) {
     assemble_real_symmetric,
     symmetric_eigensystem,
     scalar_one_loop_sum,
+    scalar_one_loop_gradient,
+    scalar_one_loop_hessian,
+    extract_element,
 };
 
 /// Payload of an instruction that copies from an indexed slot space.
@@ -188,6 +194,39 @@ pub const SpectralSum = struct {
     scale: u32,
 };
 
+/// The invariant scalar one-loop spectral gradient.
+///
+/// It reuses the eigensystem the value operation already computed, so the two
+/// share one diagonalization and cannot disagree about the spectrum.
+pub const SpectralGradient = struct {
+    result: u32,
+    eigensystem: u32,
+    /// One real-symmetric first-derivative matrix per background coordinate,
+    /// in canonical coordinate order.
+    first: []const u32,
+    scale: u32,
+};
+
+/// The invariant scalar one-loop spectral Hessian.
+pub const SpectralHessian = struct {
+    result: u32,
+    eigensystem: u32,
+    first: []const u32,
+    /// Real-symmetric second-derivative matrices over the upper triangle of
+    /// coordinate pairs, in lexical order.
+    second: []const u32,
+    scale: u32,
+};
+
+/// Selects one `Complex64` component of a structured spectral result.
+pub const Extract = struct {
+    result: u32,
+    source: u32,
+    row: u32,
+    /// Zero for a vector source.
+    column: u32,
+};
+
 pub const Instruction = union(Opcode) {
     load_constant: Load,
     load_parameter: Load,
@@ -202,6 +241,9 @@ pub const Instruction = union(Opcode) {
     assemble_real_symmetric: Assemble,
     symmetric_eigensystem: Eigensystem,
     scalar_one_loop_sum: SpectralSum,
+    scalar_one_loop_gradient: SpectralGradient,
+    scalar_one_loop_hessian: SpectralHessian,
+    extract_element: Extract,
 
     pub fn result(self: Instruction) u32 {
         return switch (self) {
@@ -546,6 +588,81 @@ pub const Program = struct {
                 try self.requireSlotType(payload.scale, .real);
                 try self.requireResultType(payload.result, .complex);
             },
+            .scalar_one_loop_gradient => |payload| {
+                const dimension = try self.spectralOperands(
+                    written,
+                    payload.eigensystem,
+                    payload.scale,
+                );
+                const coordinates = switch (try self.slotType(payload.result)) {
+                    .complex_vector => |count| count,
+                    else => return error.SlotTypeMismatch,
+                };
+                if (payload.first.len != coordinates) return error.ShapeMismatch;
+                try self.requireMatrices(written, payload.first, dimension);
+            },
+            .scalar_one_loop_hessian => |payload| {
+                const dimension = try self.spectralOperands(
+                    written,
+                    payload.eigensystem,
+                    payload.scale,
+                );
+                const coordinates = switch (try self.slotType(payload.result)) {
+                    .complex_matrix => |count| count,
+                    else => return error.SlotTypeMismatch,
+                };
+                if (payload.first.len != coordinates) return error.ShapeMismatch;
+                const pairs = eigensolver.packedEntryCount(coordinates) catch
+                    return error.ShapeMismatch;
+                if (payload.second.len != pairs) return error.ShapeMismatch;
+                try self.requireMatrices(written, payload.first, dimension);
+                try self.requireMatrices(written, payload.second, dimension);
+            },
+            .extract_element => |payload| {
+                try requireWritten(written, payload.source);
+                const rows = switch (try self.slotType(payload.source)) {
+                    .complex_vector => |count| blk: {
+                        if (payload.column != 0) return error.ShapeMismatch;
+                        break :blk count;
+                    },
+                    .complex_matrix => |count| blk: {
+                        if (payload.column >= count) return error.ShapeMismatch;
+                        break :blk count;
+                    },
+                    else => return error.SlotTypeMismatch,
+                };
+                if (payload.row >= rows) return error.ShapeMismatch;
+                try self.requireResultType(payload.result, .complex);
+            },
+        }
+    }
+
+    /// Checks the eigensystem and scale both spectral derivative orders share
+    /// and returns the matrix dimension they fix.
+    fn spectralOperands(
+        self: *const Program,
+        written: []const bool,
+        eigensystem: u32,
+        scale: u32,
+    ) ValidationError!u32 {
+        try requireWritten(written, eigensystem);
+        try requireWritten(written, scale);
+        try self.requireSlotType(scale, .real);
+        return switch (try self.slotType(eigensystem)) {
+            .real_eigensystem => |dimension| dimension,
+            else => error.SlotTypeMismatch,
+        };
+    }
+
+    fn requireMatrices(
+        self: *const Program,
+        written: []const bool,
+        slots: []const u32,
+        dimension: u32,
+    ) ValidationError!void {
+        for (slots) |slot| {
+            try requireWritten(written, slot);
+            try self.requireSlotType(slot, .{ .real_symmetric_matrix = dimension });
         }
     }
 
@@ -835,6 +952,224 @@ test "two temporaries may share bytes only when their live ranges are disjoint" 
     temporaries[0].live = .{ .first_write = 0, .last_use = 1 };
     temporaries[1].live = .{ .first_write = 2, .last_use = 2 };
     try program.validate(std.testing.allocator, 64);
+}
+
+/// Builds a frame from declared slot types, packed in slot order, for the
+/// structured programs a real-only frame cannot express.
+fn typedProgramForTest(
+    allocator: std.mem.Allocator,
+    instructions: []const Instruction,
+    outputs: Outputs,
+    kinds: []const SlotType,
+    result_type: ResultType,
+) !Program {
+    const arena = try allocator.create(std.heap.ArenaAllocator);
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    const temporaries = try arena.allocator().alloc(Temporary, kinds.len);
+    var offset: usize = 0;
+    for (kinds, temporaries) |kind, *slot| {
+        const bytes = try kind.byteSize();
+        offset = std.mem.alignForward(usize, offset, kind.alignment());
+        slot.* = .{
+            .kind = kind,
+            .alignment = kind.alignment(),
+            .offset = offset,
+            .bytes = bytes,
+            .live = .{ .first_write = 0, .last_use = std.math.maxInt(u32) },
+        };
+        offset += bytes;
+    }
+    const frame_bytes = std.mem.alignForward(usize, offset, @alignOf(Scalar));
+    return .{
+        .arena = arena,
+        .instructions = try arena.allocator().dupe(Instruction, instructions),
+        .constants = try arena.allocator().dupe(Scalar, &.{4.0}),
+        .temporaries = temporaries,
+        .outputs = outputs,
+        .capability = .value,
+        .result_type = result_type,
+        .frame_bytes = frame_bytes,
+        .scratch_offset = frame_bytes,
+        .scratch_bytes = 0,
+        .parameter_stage_count = 0,
+        .parameter_count = 0,
+        .scale_count = 1,
+        .background_count = 0,
+        .coordinate_count = 1,
+    };
+}
+
+/// The slot plan of a one-by-one spectral gradient, shared by the cases below.
+const spectral_gradient_slots = [_]SlotType{
+    .real,
+    .{ .real_symmetric_matrix = 1 },
+    .{ .real_eigensystem = 1 },
+    .real,
+    .{ .complex_vector = 1 },
+    .complex,
+};
+
+fn spectralGradientProgram(
+    allocator: std.mem.Allocator,
+    gradient: SpectralGradient,
+    extract: Extract,
+) !Program {
+    return typedProgramForTest(
+        allocator,
+        &.{
+            .{ .load_constant = .{ .result = 0, .source = 0 } },
+            .{ .assemble_real_symmetric = .{ .result = 1, .entries = &.{0} } },
+            .{ .symmetric_eigensystem = .{ .result = 2, .matrix = 1 } },
+            .{ .load_renormalization_scale = .{ .result = 3, .source = 0 } },
+            .{ .scalar_one_loop_gradient = gradient },
+            .{ .extract_element = extract },
+        },
+        .{ .value = 5, .gradient = &.{}, .hessian = &.{} },
+        &spectral_gradient_slots,
+        .complex64,
+    );
+}
+
+test "a spectral gradient and its extraction validate as structured results" {
+    var program = try spectralGradientProgram(
+        std.testing.allocator,
+        .{ .result = 4, .eigensystem = 2, .first = &.{1}, .scale = 3 },
+        .{ .result = 5, .source = 4, .row = 0, .column = 0 },
+    );
+    defer program.deinit();
+    try program.validate(std.testing.allocator, 64);
+}
+
+test "a derivative operand count that disagrees with its result shape is rejected" {
+    // The result declares one background coordinate, so one first-derivative
+    // matrix is required and two are not.
+    var program = try spectralGradientProgram(
+        std.testing.allocator,
+        .{ .result = 4, .eigensystem = 2, .first = &.{ 1, 1 }, .scale = 3 },
+        .{ .result = 5, .source = 4, .row = 0, .column = 0 },
+    );
+    defer program.deinit();
+    try std.testing.expectError(
+        error.ShapeMismatch,
+        program.validate(std.testing.allocator, 64),
+    );
+}
+
+test "an extraction outside its source shape is rejected" {
+    var out_of_range = try spectralGradientProgram(
+        std.testing.allocator,
+        .{ .result = 4, .eigensystem = 2, .first = &.{1}, .scale = 3 },
+        .{ .result = 5, .source = 4, .row = 1, .column = 0 },
+    );
+    defer out_of_range.deinit();
+    try std.testing.expectError(
+        error.ShapeMismatch,
+        out_of_range.validate(std.testing.allocator, 64),
+    );
+
+    // A vector has one column, so naming another is a shape error rather than
+    // an index that silently wraps into the next component.
+    var wrong_column = try spectralGradientProgram(
+        std.testing.allocator,
+        .{ .result = 4, .eigensystem = 2, .first = &.{1}, .scale = 3 },
+        .{ .result = 5, .source = 4, .row = 0, .column = 1 },
+    );
+    defer wrong_column.deinit();
+    try std.testing.expectError(
+        error.ShapeMismatch,
+        wrong_column.validate(std.testing.allocator, 64),
+    );
+
+    // Extraction applies to structured spectral results only.
+    var scalar_source = try spectralGradientProgram(
+        std.testing.allocator,
+        .{ .result = 4, .eigensystem = 2, .first = &.{1}, .scale = 3 },
+        .{ .result = 5, .source = 3, .row = 0, .column = 0 },
+    );
+    defer scalar_source.deinit();
+    try std.testing.expectError(
+        error.SlotTypeMismatch,
+        scalar_source.validate(std.testing.allocator, 64),
+    );
+}
+
+test "a derivative matrix of the wrong dimension is rejected" {
+    var program = try typedProgramForTest(
+        std.testing.allocator,
+        &.{
+            .{ .load_constant = .{ .result = 0, .source = 0 } },
+            .{ .assemble_real_symmetric = .{
+                .result = 1,
+                .entries = &.{ 0, 0, 0 },
+            } },
+            .{ .symmetric_eigensystem = .{ .result = 2, .matrix = 1 } },
+            .{ .load_renormalization_scale = .{ .result = 3, .source = 0 } },
+            .{ .assemble_real_symmetric = .{ .result = 4, .entries = &.{0} } },
+            // The eigensystem is two by two; this first-derivative matrix is
+            // one by one.
+            .{ .scalar_one_loop_gradient = .{
+                .result = 5,
+                .eigensystem = 2,
+                .first = &.{4},
+                .scale = 3,
+            } },
+            .{ .extract_element = .{
+                .result = 6,
+                .source = 5,
+                .row = 0,
+                .column = 0,
+            } },
+        },
+        .{ .value = 6, .gradient = &.{}, .hessian = &.{} },
+        &.{
+            .real,
+            .{ .real_symmetric_matrix = 2 },
+            .{ .real_eigensystem = 2 },
+            .real,
+            .{ .real_symmetric_matrix = 1 },
+            .{ .complex_vector = 1 },
+            .complex,
+        },
+        .complex64,
+    );
+    defer program.deinit();
+    try std.testing.expectError(
+        error.SlotTypeMismatch,
+        program.validate(std.testing.allocator, 64),
+    );
+}
+
+test "structured complex slot sizes follow their declared shape" {
+    // A gradient over two coordinates is two complex components; the Hessian
+    // over the same coordinates is the full dense four.
+    try std.testing.expectEqual(
+        @as(usize, 2 * 16),
+        try (SlotType{ .complex_vector = 2 }).byteSize(),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 4 * 16),
+        try (SlotType{ .complex_matrix = 2 }).byteSize(),
+    );
+
+    // Equal dimensions of different structured kinds are still different
+    // types, so first-fit slot reuse can never confuse them.
+    try std.testing.expect(!(SlotType{ .complex_vector = 2 })
+        .eql(.{ .complex_matrix = 2 }));
+    try std.testing.expect(!(SlotType{ .real_symmetric_matrix = 2 })
+        .eql(.{ .real_eigensystem = 2 }));
+    try std.testing.expect((SlotType{ .complex_matrix = 2 })
+        .eql(.{ .complex_matrix = 2 }));
+
+    // A structured slot is not a publishable result element on its own; only
+    // an extracted component is.
+    try std.testing.expectEqual(
+        @as(?ResultType, null),
+        (SlotType{ .complex_vector = 2 }).resultType(),
+    );
+    try std.testing.expectEqual(
+        @as(?ResultType, .complex64),
+        (SlotType{ .complex = {} }).resultType(),
+    );
 }
 
 test "a mistyped operand or result is rejected" {

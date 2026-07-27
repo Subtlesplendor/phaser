@@ -16,6 +16,7 @@ const numerics = @import("../numerics/root.zig");
 const program_module = @import("program.zig");
 
 const eigensolver = numerics.symmetric_eigensolver;
+const spectral = numerics.spectral_derivative;
 const Program = program_module.Program;
 const Instruction = program_module.Instruction;
 const Scalar = program_module.Scalar;
@@ -117,6 +118,36 @@ const Frame = struct {
     fn eigenvectors(self: Frame, slot: u32) []Scalar {
         const dimension = self.temporaries[slot].kind.real_eigensystem;
         return self.scalars(slot)[dimension..];
+    }
+
+    /// The components of a structured `Complex64` slot, in the layout its type
+    /// declares: canonical coordinate order for a vector, dense row-major for a
+    /// matrix.
+    fn components(self: Frame, slot: u32) []Complex64 {
+        std.debug.assert(switch (self.temporaries[slot].kind) {
+            .complex_vector, .complex_matrix => true,
+            else => false,
+        });
+        return std.mem.bytesAsSlice(Complex64, self.region(slot));
+    }
+};
+
+/// Reads derivative matrices out of their separate temporaries.
+///
+/// The spectral derivative operation addresses its matrices by index rather
+/// than expecting one contiguous buffer, because lowering assigns each of them
+/// its own slot.
+const FrameMatrices = struct {
+    frame: Frame,
+    first_slots: []const u32,
+    second_slots: []const u32,
+
+    pub fn first(self: FrameMatrices, index: usize) []const Scalar {
+        return self.frame.matrix(self.first_slots[index]);
+    }
+
+    pub fn second(self: FrameMatrices, index: usize) []const Scalar {
+        return self.frame.matrix(self.second_slots[index]);
     }
 };
 
@@ -494,9 +525,92 @@ fn run(
                     frame.real(payload.scale).*,
                 );
             },
+            // Both derivative orders reuse the eigensystem the value already
+            // computed, so a point cannot diagonalize its mass matrix twice and
+            // then differentiate a different spectrum than it reported.
+            .scalar_one_loop_gradient => |payload| {
+                const outcome = spectralDerivative(
+                    scratch,
+                    .{
+                        .dimension = program.temporaries[payload.eigensystem]
+                            .kind.real_eigensystem,
+                        .coordinate_count = program.temporaries[payload.result]
+                            .kind.complex_vector,
+                        .order = .gradient,
+                        .eigenvalues = frame.eigenvalues(payload.eigensystem),
+                        .eigenvectors = frame.eigenvectors(payload.eigensystem),
+                        .scale = frame.real(payload.scale).*,
+                    },
+                    .{
+                        .frame = frame,
+                        .first_slots = payload.first,
+                        .second_slots = &.{},
+                    },
+                    .{ .gradient = frame.components(payload.result) },
+                );
+                if (derivativeStatusOf(outcome)) |failure| status = failure;
+            },
+            .scalar_one_loop_hessian => |payload| {
+                const outcome = spectralDerivative(
+                    scratch,
+                    .{
+                        .dimension = program.temporaries[payload.eigensystem]
+                            .kind.real_eigensystem,
+                        .coordinate_count = program.temporaries[payload.result]
+                            .kind.complex_matrix,
+                        .order = .hessian,
+                        .eigenvalues = frame.eigenvalues(payload.eigensystem),
+                        .eigenvectors = frame.eigenvectors(payload.eigensystem),
+                        .scale = frame.real(payload.scale).*,
+                    },
+                    .{
+                        .frame = frame,
+                        .first_slots = payload.first,
+                        .second_slots = payload.second,
+                    },
+                    .{ .hessian = frame.components(payload.result) },
+                );
+                if (derivativeStatusOf(outcome)) |failure| status = failure;
+            },
+            .extract_element => |payload| {
+                const source = frame.components(payload.source);
+                const stride = switch (program.temporaries[payload.source].kind) {
+                    .complex_matrix => |dimension| dimension,
+                    else => 1,
+                };
+                frame.complex(payload.result).* =
+                    source[payload.row * stride + payload.column];
+            },
         }
     }
     return status;
+}
+
+fn spectralDerivative(
+    scratch: []u8,
+    request: spectral.Request,
+    matrices: FrameMatrices,
+    outputs: spectral.Outputs,
+) spectral.Status {
+    return spectral.evaluate(request, matrices, scratch, outputs) catch {
+        // Shape, workspace, and slot types were fixed when the program was
+        // validated, so a call-level failure here would be an internal
+        // inconsistency rather than a point outcome.
+        unreachable;
+    };
+}
+
+/// Maps an invariant derivative outcome onto a point status.
+///
+/// The outcomes stay distinct: an analytically known singularity is reported as
+/// such rather than being turned into a generated infinity and reported as
+/// `non_finite`.
+fn derivativeStatusOf(outcome: spectral.Status) ?Status {
+    return switch (outcome) {
+        .ok => null,
+        .non_finite => .non_finite,
+        .singular_derivative => .singular_derivative,
+    };
 }
 
 /// Maps an eigensolver outcome onto a point status.
@@ -707,6 +821,38 @@ test "every eigensolver outcome maps to its own distinct point status" {
         }
     }
     try std.testing.expectEqual(@as(usize, 2), seen.count());
+}
+
+test "every invariant derivative outcome maps to its own distinct point status" {
+    try std.testing.expectEqual(@as(?Status, null), derivativeStatusOf(.ok));
+    try std.testing.expectEqual(
+        @as(?Status, .non_finite),
+        derivativeStatusOf(.non_finite),
+    );
+    // An analytically known singularity keeps its own status rather than being
+    // reported as a generated infinity.
+    try std.testing.expectEqual(
+        @as(?Status, .singular_derivative),
+        derivativeStatusOf(.singular_derivative),
+    );
+
+    var seen = std.EnumSet(Status).initEmpty();
+    for (std.meta.tags(spectral.Status)) |outcome| {
+        if (derivativeStatusOf(outcome)) |mapped| {
+            try std.testing.expect(!seen.contains(mapped));
+            seen.insert(mapped);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), seen.count());
+
+    // The eigensolver and the derivative operation share the kernel's status
+    // vocabulary without sharing outcomes: only `non_finite` is reachable from
+    // both, and neither can produce the other's specific failure.
+    try std.testing.expectEqual(
+        @as(?Status, .nonconvergent),
+        pointStatusOf(.nonconvergent),
+    );
+    try std.testing.expect(!seen.contains(.nonconvergent));
 }
 
 test "the spectral sum preserves multiplicity and adds in stored order" {
