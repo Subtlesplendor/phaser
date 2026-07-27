@@ -33,7 +33,7 @@ pub fn oneLoopEigenvalue(mass_squared: f64, renormalization_scale: f64) Complex6
     };
 }
 
-fn oneLoopFirstSpectralDerivative(
+pub fn oneLoopFirstSpectralDerivative(
     mass_squared: f64,
     renormalization_scale: f64,
 ) Complex64 {
@@ -51,7 +51,7 @@ fn oneLoopFirstSpectralDerivative(
     };
 }
 
-fn oneLoopSecondSpectralDerivative(
+pub fn oneLoopSecondSpectralDerivative(
     mass_squared: f64,
     renormalization_scale: f64,
 ) error{SingularDerivative}!Complex64 {

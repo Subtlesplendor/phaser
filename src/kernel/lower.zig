@@ -17,7 +17,9 @@ const Program = program_module.Program;
 const Scalar = program_module.Scalar;
 const SlotType = program_module.SlotType;
 const Temporary = program_module.Temporary;
-const eigensolver = @import("../numerics/root.zig").symmetric_eigensolver;
+const numerics = @import("../numerics/root.zig");
+const eigensolver = numerics.symmetric_eigensolver;
+const spectral = numerics.spectral_derivative;
 
 pub const LowerError = error{
     OutOfMemory,
@@ -131,6 +133,13 @@ const Builder = struct {
     /// True when a node depends, transitively, on a background coordinate and
     /// must therefore be recomputed for every point.
     background_dependent: []bool = &.{},
+    /// Slot holding each spectral value node's eigensystem, and the node
+    /// position after which that slot may be reused. The eigensystem is not a
+    /// value graph node, so it needs its own liveness: the value's sum consumes
+    /// it immediately, while an invariant derivative reuses the very same
+    /// diagonalization later.
+    eigensystem_slot: []u32 = &.{},
+    eigensystem_last_use: []usize = &.{},
     parameter_stage_count: u32 = 0,
     roots: std.ArrayList(ValueId) = .empty,
     instructions: std.ArrayList(Instruction) = .empty,
@@ -162,6 +171,10 @@ const Builder = struct {
         if (self.last_use.len != 0) self.allocator.free(self.last_use);
         if (self.background_dependent.len != 0) {
             self.allocator.free(self.background_dependent);
+        }
+        if (self.eigensystem_slot.len != 0) self.allocator.free(self.eigensystem_slot);
+        if (self.eigensystem_last_use.len != 0) {
+            self.allocator.free(self.eigensystem_last_use);
         }
         self.roots.deinit(self.allocator);
         self.instructions.deinit(self.allocator);
@@ -244,6 +257,10 @@ const Builder = struct {
         @memset(self.last_use, 0);
         self.slots = try self.allocator.alloc(u32, self.frontier);
         @memset(self.slots, 0);
+        self.eigensystem_slot = try self.allocator.alloc(u32, self.frontier);
+        @memset(self.eigensystem_slot, 0);
+        self.eigensystem_last_use = try self.allocator.alloc(usize, self.frontier);
+        @memset(self.eigensystem_last_use, 0);
 
         var position: usize = 0;
         for ([_]u1{ 0, 1 }) |stage| {
@@ -253,6 +270,15 @@ const Builder = struct {
                 var operand: usize = 0;
                 while (value.childAt(node, operand)) |child| : (operand += 1) {
                     self.noteUse(child, position, stage);
+                }
+                // The scale is an operand of the parent spectral value, so the
+                // value graph does not repeat it on a derivative node. The
+                // emitted instruction does read it.
+                if (self.impliedScale(node)) |scale| {
+                    self.noteUse(scale, position, stage);
+                }
+                if (self.eigensystemConsumer(node, index)) |producer| {
+                    self.noteEigensystemUse(producer, position, stage);
                 }
                 position += 1;
             }
@@ -267,6 +293,51 @@ const Builder = struct {
         // section reruns per point while the parameter section does not.
         for (self.last_use) |*last| {
             if (last.* == std.math.maxInt(usize)) last.* = position;
+        }
+        for (self.eigensystem_last_use) |*last| {
+            if (last.* == std.math.maxInt(usize)) last.* = position;
+        }
+    }
+
+    /// The spectral value node whose eigensystem this node reads, if any.
+    ///
+    /// A spectral value produces and immediately consumes its own; a derivative
+    /// reuses the one its parent value produced.
+    fn eigensystemConsumer(
+        self: *const Builder,
+        node: value.Node,
+        index: usize,
+    ) ?usize {
+        _ = self;
+        return switch (node) {
+            .scalar_one_loop_spectral_value => index,
+            .scalar_one_loop_spectral_gradient,
+            .scalar_one_loop_spectral_hessian,
+            => |derivative| derivative.value.toUsize(),
+            else => null,
+        };
+    }
+
+    /// The renormalization scale a lowered spectral derivative reads.
+    fn impliedScale(self: *const Builder, node: value.Node) ?ValueId {
+        return switch (node) {
+            .scalar_one_loop_spectral_gradient,
+            .scalar_one_loop_spectral_hessian,
+            => |derivative| self.scaleOf(derivative.value),
+            else => null,
+        };
+    }
+
+    fn scaleOf(self: *const Builder, spectral_value: ValueId) ValueId {
+        return self.graph.value(spectral_value)
+            .node.scalar_one_loop_spectral_value.scale;
+    }
+
+    fn noteEigensystemUse(self: *Builder, producer: usize, position: usize, stage: u1) void {
+        if (stage == 1 and !self.background_dependent[producer]) {
+            self.eigensystem_last_use[producer] = std.math.maxInt(usize);
+        } else {
+            self.eigensystem_last_use[producer] = position;
         }
     }
 
@@ -300,12 +371,28 @@ const Builder = struct {
                 while (value.childAt(node, operand)) |child| : (operand += 1) {
                     self.extendLiveRange(self.slotOf(child), self.instructions.items.len);
                 }
+                if (self.impliedScale(node)) |scale| {
+                    self.extendLiveRange(self.slotOf(scale), self.instructions.items.len);
+                }
+                if (self.eigensystemConsumer(node, index)) |producer| {
+                    if (node != .scalar_one_loop_spectral_value) {
+                        self.extendLiveRange(
+                            self.eigensystem_slot[producer],
+                            self.instructions.items.len,
+                        );
+                    }
+                }
 
                 // Operands are read before the result is written, and the
                 // interpreter computes into a local before storing, so a result
                 // may safely reuse a slot that dies at this instruction.
                 try self.releaseExpired(node, node_position);
-                self.slots[index] = try self.emitNode(node, id);
+                self.slots[index] = try self.emitNode(node, id, node_position);
+                if (self.eigensystemConsumer(node, index)) |producer| {
+                    if (self.eigensystem_last_use[producer] == node_position) {
+                        self.pool.items[self.eigensystem_slot[producer]].live = false;
+                    }
+                }
                 node_position += 1;
             }
             if (stage == 0) self.parameter_stage_count = @intCast(self.instructions.items.len);
@@ -328,21 +415,28 @@ const Builder = struct {
 
     /// Emits the instructions one value node needs and returns the slot holding
     /// its value.
-    fn emitNode(self: *Builder, node: value.Node, id: ValueId) LowerError!u32 {
+    fn emitNode(
+        self: *Builder,
+        node: value.Node,
+        id: ValueId,
+        position: usize,
+    ) LowerError!u32 {
         // The spectral value is the one node that is not a single instruction:
         // its matrix operand is diagonalized into its own temporary, and the
         // restricted one-loop sum then runs over that eigensystem.
         if (node == .scalar_one_loop_spectral_value) {
-            const spectral = node.scalar_one_loop_spectral_value;
-            const dimension = self.graph.valueType(spectral.matrix).shape.matrix.dimension;
+            const spectral_value = node.scalar_one_loop_spectral_value;
+            const dimension = self.graph.valueType(spectral_value.matrix)
+                .shape.matrix.dimension;
 
             const eigensystem = try self.acquireSlot(
                 .{ .real_eigensystem = dimension },
                 self.instructions.items.len,
             );
+            self.eigensystem_slot[id.toUsize()] = eigensystem;
             try self.append(.{ .symmetric_eigensystem = .{
                 .result = eigensystem,
-                .matrix = self.slotOf(spectral.matrix),
+                .matrix = self.slotOf(spectral_value.matrix),
             } });
 
             // The solver's own scratch shares one region with every other
@@ -352,12 +446,16 @@ const Builder = struct {
             self.scratch_bytes = @max(self.scratch_bytes, layout.bytes);
 
             self.extendLiveRange(eigensystem, self.instructions.items.len);
-            self.pool.items[eigensystem].live = false;
+            // An invariant derivative reuses this diagonalization, so the slot
+            // is released only once the last such consumer has been emitted.
+            if (self.eigensystem_last_use[id.toUsize()] == position) {
+                self.pool.items[eigensystem].live = false;
+            }
             const result = try self.acquireSlot(.complex, self.instructions.items.len);
             try self.append(.{ .scalar_one_loop_sum = .{
                 .result = result,
                 .eigensystem = eigensystem,
-                .scale = self.slotOf(spectral.scale),
+                .scale = self.slotOf(spectral_value.scale),
             } });
             return result;
         }
@@ -454,14 +552,50 @@ const Builder = struct {
             } },
             // Handled by `emitNode`, which needs two instructions for it.
             .scalar_one_loop_spectral_value => unreachable,
-            // The invariant spectral derivatives are a separate numerical
-            // operation. Failing here keeps the unsupported capability explicit
-            // rather than evaluating a potential without its derivatives.
-            .scalar_one_loop_spectral_gradient,
-            .scalar_one_loop_spectral_hessian,
-            .element,
-            => error.UnsupportedOperation,
+            // The invariant derivatives are separate numerical operations over
+            // the eigensystem the value already produced. Lowering supplies the
+            // derivative matrices; it does not differentiate a spectrum.
+            .scalar_one_loop_spectral_gradient => |derivative| blk: {
+                try self.reserveDerivativeScratch(derivative, .gradient);
+                break :blk Instruction{ .scalar_one_loop_gradient = .{
+                    .result = result,
+                    .eigensystem = self.eigensystem_slot[derivative.value.toUsize()],
+                    .first = try self.operandSlots(derivative.first),
+                    .scale = self.slotOf(self.scaleOf(derivative.value)),
+                } };
+            },
+            .scalar_one_loop_spectral_hessian => |derivative| blk: {
+                try self.reserveDerivativeScratch(derivative, .hessian);
+                break :blk Instruction{ .scalar_one_loop_hessian = .{
+                    .result = result,
+                    .eigensystem = self.eigensystem_slot[derivative.value.toUsize()],
+                    .first = try self.operandSlots(derivative.first),
+                    .second = try self.operandSlots(derivative.second),
+                    .scale = self.slotOf(self.scaleOf(derivative.value)),
+                } };
+            },
+            .element => |selection| .{ .extract_element = .{
+                .result = result,
+                .source = self.slotOf(selection.source),
+                .row = selection.row,
+                .column = selection.column,
+            } },
         };
+    }
+
+    fn reserveDerivativeScratch(
+        self: *Builder,
+        derivative: value.SpectralDerivative,
+        order: spectral.Order,
+    ) LowerError!void {
+        const matrix = self.graph.value(derivative.value)
+            .node.scalar_one_loop_spectral_value.matrix;
+        const layout = spectral.workspaceLayout(
+            self.graph.valueType(matrix).shape.matrix.dimension,
+            @intCast(derivative.coordinates.len),
+            order,
+        ) catch return error.SizeOverflow;
+        self.scratch_bytes = @max(self.scratch_bytes, layout.bytes);
     }
 
     fn isMinusOne(self: *const Builder, id: ValueId) bool {
@@ -494,6 +628,7 @@ const Builder = struct {
         while (value.childAt(node, operand)) |child| : (operand += 1) {
             self.releaseIfDead(child, position);
         }
+        if (self.impliedScale(node)) |scale| self.releaseIfDead(scale, position);
     }
 
     fn releaseIfDead(self: *Builder, id: ValueId, position: usize) void {
@@ -585,13 +720,20 @@ const Builder = struct {
                 .real => .real,
                 .complex => .complex,
             },
-            .matrix => |matrix| if (declared.domain == .real and matrix.symmetric)
-                .{ .real_symmetric_matrix = matrix.dimension }
-            else
-                error.UnsupportedOperation,
-            // A complex vector is a spectral gradient, whose numerical
-            // operation is not part of this catalog.
-            .vector => error.UnsupportedOperation,
+            .matrix => |matrix| switch (declared.domain) {
+                .real => if (matrix.symmetric)
+                    .{ .real_symmetric_matrix = matrix.dimension }
+                else
+                    error.UnsupportedOperation,
+                // A complex matrix is an invariant spectral Hessian. Its slot
+                // is dense even though the value type is symmetric: every entry
+                // is evaluated from the formula rather than mirrored.
+                .complex => .{ .complex_matrix = matrix.dimension },
+            },
+            .vector => |dimension| switch (declared.domain) {
+                .real => error.UnsupportedOperation,
+                .complex => .{ .complex_vector = dimension },
+            },
         };
     }
 
@@ -796,6 +938,195 @@ test "lowering is deterministic" {
         );
         try std.testing.expectEqual(left.result(), right.result());
     }
+}
+
+/// A one-scalar one-loop potential, whose mass matrix optionally depends on the
+/// background coordinate.
+///
+/// The constant case matters on its own: it puts the whole spectral chain in
+/// the parameter stage, where an operand's liveness is decided differently.
+fn spectralFixture(
+    builder: *value.Builder,
+    background_dependent: bool,
+) !struct { value: ValueId, gradient: [1]ValueId, hessian: [1]ValueId } {
+    const coupling = try builder.parameter(0, "g", 2);
+    const entry = if (background_dependent) try builder.multiply(&.{
+        try builder.parameter(1, "lambda", 0),
+        try builder.power(try builder.background(0, "h", 1), 2),
+    }) else coupling;
+
+    const matrix = try builder.realSymmetricMatrix(
+        1,
+        &.{entry},
+        value.mass_squared_dimension,
+    );
+    const scale = try builder.renormalizationScale(0, "muR");
+    const root = try builder.scalarOneLoopSpectralValue(matrix, scale);
+
+    const background = value.Background{ .order = &.{0}, .mass_dimension = 1 };
+    var gradient_roots: [1]ValueId = undefined;
+    try value.gradient(builder, root, background, &gradient_roots);
+    var hessian_roots: [1]ValueId = undefined;
+    try value.hessian(builder, root, background, &hessian_roots);
+    return .{ .value = root, .gradient = gradient_roots, .hessian = hessian_roots };
+}
+
+fn countOpcode(program: *const Program, opcode: program_module.Opcode) usize {
+    var total: usize = 0;
+    for (program.instructions) |instruction| {
+        if (@as(program_module.Opcode, instruction) == opcode) total += 1;
+    }
+    return total;
+}
+
+fn positionOf(program: *const Program, opcode: program_module.Opcode) usize {
+    for (program.instructions, 0..) |instruction, index| {
+        if (@as(program_module.Opcode, instruction) == opcode) return index;
+    }
+    unreachable;
+}
+
+test "invariant derivatives reuse the eigensystem the value computed" {
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const roots = try spectralFixture(&builder, true);
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    var program = try lower(std.testing.allocator, .{
+        .graph = &graph,
+        .capability = .value_gradient_hessian,
+        .value_root = roots.value,
+        .gradient_roots = &roots.gradient,
+        .hessian_roots = &roots.hessian,
+        .parameter_count = 2,
+        .background_count = 1,
+        .coordinate_count = 1,
+    }, .{});
+    defer program.deinit();
+    try program.validate(std.testing.allocator, 64);
+
+    // One diagonalization serves the value, the gradient, and the Hessian, so a
+    // point cannot report one spectrum and differentiate another.
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        countOpcode(&program, .symmetric_eigensystem),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        countOpcode(&program, .scalar_one_loop_gradient),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        countOpcode(&program, .scalar_one_loop_hessian),
+    );
+    // The Hessian's own scratch is larger than the eigensolver's, and one
+    // region serves both.
+    try std.testing.expect(program.scratch_bytes >= try (program_module.SlotType{
+        .real_eigensystem = 1,
+    }).byteSize());
+}
+
+test "an eigensystem stays live exactly as long as an operation still reads it" {
+    var value_only_builder = try value.Builder.init(std.testing.allocator, .{});
+    const value_only_roots = try spectralFixture(&value_only_builder, true);
+    var value_only_graph = try value_only_builder.finish();
+    defer value_only_graph.deinit();
+
+    var value_only = try lower(std.testing.allocator, .{
+        .graph = &value_only_graph,
+        .capability = .value,
+        .value_root = value_only_roots.value,
+        .gradient_roots = &.{},
+        .hessian_roots = &.{},
+        .parameter_count = 2,
+        .background_count = 1,
+        .coordinate_count = 1,
+    }, .{});
+    defer value_only.deinit();
+    try value_only.validate(std.testing.allocator, 64);
+
+    // With no derivative consumer the eigensystem dies at the spectral sum, so
+    // reusing it costs nothing that the value path did not already pay.
+    const value_only_eigensystem = eigensystemOf(&value_only);
+    try std.testing.expectEqual(
+        positionOf(&value_only, .scalar_one_loop_sum),
+        value_only_eigensystem.live.last_use,
+    );
+
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const roots = try spectralFixture(&builder, true);
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    var fused = try lower(std.testing.allocator, .{
+        .graph = &graph,
+        .capability = .value_gradient,
+        .value_root = roots.value,
+        .gradient_roots = &roots.gradient,
+        .hessian_roots = &.{},
+        .parameter_count = 2,
+        .background_count = 1,
+        .coordinate_count = 1,
+    }, .{});
+    defer fused.deinit();
+    try fused.validate(std.testing.allocator, 64);
+
+    const fused_eigensystem = eigensystemOf(&fused);
+    try std.testing.expectEqual(
+        positionOf(&fused, .scalar_one_loop_gradient),
+        fused_eigensystem.live.last_use,
+    );
+    try std.testing.expect(
+        fused_eigensystem.live.last_use > positionOf(&fused, .scalar_one_loop_sum),
+    );
+}
+
+fn eigensystemOf(program: *const Program) program_module.Temporary {
+    for (program.temporaries) |temporary| {
+        if (temporary.kind == .real_eigensystem) return temporary;
+    }
+    unreachable;
+}
+
+test "a background-independent mass matrix keeps its scale live for the derivative" {
+    // Everything here is parameter-stage work, where an operand released after
+    // its first reader would be reused before the derivative instruction runs.
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const roots = try spectralFixture(&builder, false);
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    var program = try lower(std.testing.allocator, .{
+        .graph = &graph,
+        .capability = .value_gradient_hessian,
+        .value_root = roots.value,
+        .gradient_roots = &roots.gradient,
+        .hessian_roots = &roots.hessian,
+        .parameter_count = 2,
+        .background_count = 1,
+        .coordinate_count = 1,
+    }, .{});
+    defer program.deinit();
+
+    // Validation is what proves the scale slot was not overwritten: a reused
+    // slot would carry the wrong type or an unwritten value.
+    try program.validate(std.testing.allocator, 64);
+    try std.testing.expectEqual(
+        @as(u32, program.parameter_stage_count),
+        @as(u32, @intCast(program.instructions.len)),
+    );
+
+    const scale_slot = program.instructions[
+        positionOf(&program, .load_renormalization_scale)
+    ].load_renormalization_scale.result;
+    const gradient = program.instructions[
+        positionOf(&program, .scalar_one_loop_gradient)
+    ].scalar_one_loop_gradient;
+    try std.testing.expectEqual(scale_slot, gradient.scale);
+    try std.testing.expect(
+        program.temporaries[scale_slot].live.last_use >=
+            positionOf(&program, .scalar_one_loop_hessian),
+    );
 }
 
 test "tripwires exercise every lowering rollback boundary" {

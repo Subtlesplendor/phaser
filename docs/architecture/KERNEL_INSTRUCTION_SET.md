@@ -75,13 +75,21 @@ Output values are written to caller-provided output buffers, not to slots.
 Every program declares which temporary slot supplies each declared output.
 
 Constant, parameter, scale, and background slots hold `Real64`. Temporary
-descriptors additionally carry a scalar type or one of these real structured
-types:
+descriptors additionally carry a scalar type or one of these structured types:
 
 ```text
 RealSymmetricMatrix(n)  authoritative upper triangle, n * (n + 1) / 2 entries
 RealEigensystem(n)      n real eigenvalues plus real transformation state
+ComplexVector(n)        n Complex64 components in canonical coordinate order
+ComplexMatrix(n)        dense row-major n * n Complex64 entries
 ```
+
+`ComplexVector` and `ComplexMatrix` exist because a spectral derivative
+operation produces one structured result rather than one output per coordinate.
+The Hessian's storage is dense rather than triangular because every entry is
+evaluated from the formula; symmetry is a property to be checked, not a storage
+saving. A structured slot is not itself a publishable output: a declared output
+names an extracted `Complex64` component.
 
 The corresponding matrix, spectrum, and eigensolver regions are workspace
 subregions, not hidden allocations or complex-valued input channels. Parameter,
@@ -110,10 +118,18 @@ build.
 | `assemble_real_symmetric` | \(n(n+1)/2\) `Real64` temporaries | `RealSymmetricMatrix(n)` | copy the canonical upper triangle, section 5.4 |
 | `symmetric_eigensystem` | `RealSymmetricMatrix(n)` | `RealEigensystem(n)` | deterministic real-symmetric eigensolver, section 5.5 |
 | `scalar_one_loop_sum` | `RealEigensystem(n)`, positive `Real64` \(\mu_R\) | `Complex64` | ordered sum of scalar one-loop terms, section 5.6 |
-| `scalar_one_loop_gradient` | eigensystem, \(n_b\) first-derivative matrices, \(\mu_R\) | \(n_b\) `Complex64` temporaries | invariant spectral first derivative, section 5.7 |
-| `scalar_one_loop_hessian` | eigensystem, first- and second-derivative matrices, \(\mu_R\) | \(n_b^2\) `Complex64` temporaries | invariant spectral second derivative, section 5.7 |
+| `scalar_one_loop_gradient` | eigensystem, \(n_b\) first-derivative matrices, \(\mu_R\) | `ComplexVector(n_b)` | invariant spectral first derivative, section 5.7 |
+| `scalar_one_loop_hessian` | eigensystem, first- and second-derivative matrices, \(\mu_R\) | `ComplexMatrix(n_b)` | invariant spectral second derivative, section 5.7 |
+| `extract_element` | `ComplexVector(n)` or `ComplexMatrix(n)`, structural indices | `Complex64` | select one component of a structured result |
 
 No opcode allocates. No opcode reads mutable global state.
+
+`scalar_one_loop_term` is the per-eigenvalue kernel of `scalar_one_loop_sum`
+and of the derivative operations rather than an instruction a program selects
+on its own: no Typed Value IR node denotes a single eigenvalue's contribution,
+so Milestone 3 lowering never emits it standalone. It is catalogued separately
+because its branch and zero-mode behavior are what the operations above are
+defined in terms of.
 
 There is no runtime square-root or `pi` opcode. Exact square roots of rationals
 and the symbolic constant `pi` are compile-time constants folded into
@@ -241,6 +257,11 @@ first-derivative matrix for every ordered background coordinate.
 real-symmetric second-derivative matrices over background-coordinate pairs.
 Their outputs use that same coordinate order; the Hessian instruction writes
 the full dense row-major candidate required by the Potential Kernel interface.
+
+Both operations read the eigensystem the value operation already produced, so
+one point cannot report one spectrum and differentiate another. Their
+structured results reach a caller through `extract_element`, whose structural
+indices are fixed by the validated program.
 
 Both operations evaluate invariant spectral divided differences or another
 method with identical mathematical semantics, as fixed by
