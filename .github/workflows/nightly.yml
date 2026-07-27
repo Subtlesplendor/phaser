@@ -35,14 +35,25 @@ jobs:
       # Per-target iteration budget. Every target must be able to finish it:
       # `zig build fuzz` declares one run per target and the build runner starts
       # at most one per core, so on a four-core runner a budget no target can
-      # reach means the last four targets never start at all. Cold-cache
-      # measurement on the supported macOS ARM64 development machine puts 5K at
-      # three and a half minutes wall for the whole set, of which the heaviest
-      # target (value_ir_builder, whose exact-rational graph building dominates
-      # the campaign) is three minutes and 3 GiB resident. A hosted runner is
-      # slower and narrower, so the estimate there is roughly ten minutes, which
-      # is section 5.3's target.
-      FUZZ_ITERATIONS: 5K
+      # reach means the last four targets never start at all.
+      #
+      # Cold-cache measurement on the supported macOS ARM64 development machine,
+      # ten cores, whole set wall and then the heaviest target
+      # (value_ir_builder, whose exact-rational graph building dominates the
+      # campaign):
+      #
+      #   200K   2m00s   1m
+      #   500K   4m20s   4m
+      #     1M  12m35s  12m
+      #
+      # Cost per input rises as the corpus grows, so the budget is not a free
+      # dial. 500K is the last step that leaves headroom: a hosted runner is
+      # slower and narrower, which puts the heaviest target near ten minutes
+      # there and the campaign inside section 5.3's ten to thirty minute target,
+      # while 1M would spend the whole backstop below. Resident memory is no
+      # longer a constraint at any of these; it stays under 30 MiB per target
+      # since decision 0010 moved the targets off the tracing allocator.
+      FUZZ_ITERATIONS: 500K
       # Wall-clock backstop for the campaign, below `timeout-minutes` so this
       # one fires first and the job survives to report.
       FUZZ_BUDGET: 35m
