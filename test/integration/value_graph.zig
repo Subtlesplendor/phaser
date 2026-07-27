@@ -122,7 +122,8 @@ test "a background-dependent potential differentiates to its exact gradient" {
     });
     try std.testing.expectEqual(@as(i32, 4), builder.massDimension(potential));
 
-    const derived = try value.differentiate(&builder, potential, 0, 1);
+    const background = value.Background{ .order = &.{0}, .mass_dimension = 1 };
+    const derived = try value.differentiate(&builder, potential, background, 0);
 
     // m2 phi + (lambda / 6) phi^3, the fixture's tree_gradient identity.
     const expected = try builder.add(&.{

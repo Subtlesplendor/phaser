@@ -22,7 +22,15 @@ pub const OutputBuffers = interpret_module.OutputBuffers;
 
 pub const CompileError = lower_module.LowerError ||
     program_module.ValidationError ||
-    error{ CapabilityNotDerived, OutOfMemory };
+    error{
+        CapabilityNotDerived,
+        /// The selected contributions produce a `Complex64` result, which the
+        /// Milestone 3 reference backend does not yet evaluate. Reported before
+        /// lowering so the unsupported capability is named rather than surfacing
+        /// as an unsupported opcode.
+        UnsupportedResultType,
+        OutOfMemory,
+    };
 
 pub const Configuration = struct {
     capability: Capability = .value_gradient_hessian,
@@ -112,6 +120,11 @@ pub fn compile(
     artifact: *const calculation.Artifact,
     configuration: Configuration,
 ) CompileError!Kernel {
+    // The Milestone 3 numerical catalog is real. A selection containing a loop
+    // contribution is `Complex64`, so it fails here rather than being silently
+    // truncated to the tree part it can evaluate.
+    if (artifact.result_type != .real64) return error.UnsupportedResultType;
+
     const coordinate_count = artifact.coordinates.len;
     if (configuration.capability.includesGradient() and
         artifact.gradient.len != coordinate_count)
@@ -228,6 +241,17 @@ fn testArtifact(allocator: std.mem.Allocator) !calculation.Artifact {
         .node = phi,
     };
 
+    const loop_totals = try arena.allocator().alloc(calculation.LoopTotal, 1);
+    loop_totals[0] = .{
+        .loop_order = 0,
+        .selection = .{
+            .result_type = .real64,
+            .value = total,
+            .gradient = &.{},
+            .hessian = &.{},
+        },
+    };
+
     return .{
         .arena = arena,
         .graph = graph,
@@ -235,12 +259,16 @@ fn testArtifact(allocator: std.mem.Allocator) !calculation.Artifact {
         .request_fingerprint = .{ .bytes = [_]u8{0} ** 32 },
         .background_mode = .full_scalar_space,
         .scheme = null,
+        .loop_order = 0,
         .coordinates = coordinates,
+        .scale = null,
         .contributions = &.{},
         .absences = &.{},
+        .result_type = .real64,
         .total = total,
         .gradient = &.{},
         .hessian = &.{},
+        .loop_totals = loop_totals,
     };
 }
 

@@ -343,3 +343,191 @@ test "independently derived artifacts render identically" {
     defer second.deinit();
     try std.testing.expectEqualStrings(first.written(), second.written());
 }
+
+// -- order one --------------------------------------------------------------
+
+const one_loop_request =
+    \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+    \\"background":{"mode":"full_scalar_space"},
+    \\"environment":{"kind":"vacuum"},
+    \\"renormalization":{"scheme":"MSbar"},
+    \\"orders":{"loop":{"through":1}}}
+;
+
+fn deriveOneLoop(
+    source_model: *const phaser.Model,
+    request: *const calculation.Request,
+) !calculation.Artifact {
+    const result = try phaser.deriveEffectivePotential(
+        testContext(),
+        source_model,
+        request,
+        .{ .audit = true },
+    );
+    return switch (result) {
+        .artifact => |artifact| artifact,
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            owned.deinit();
+            return error.DerivationFailed;
+        },
+    };
+}
+
+const OneLoopFixture = struct {
+    model: phaser.Model,
+    request: calculation.Request,
+    artifact: calculation.Artifact,
+
+    fn init(source: []const u8) !OneLoopFixture {
+        var model = try loadModel(source);
+        errdefer model.deinit();
+        var request = try parseRequest(one_loop_request);
+        errdefer request.deinit();
+        const artifact = try deriveOneLoop(&model, &request);
+        return .{ .model = model, .request = request, .artifact = artifact };
+    }
+
+    fn deinit(self: *OneLoopFixture) void {
+        self.artifact.deinit();
+        self.request.deinit();
+        self.model.deinit();
+    }
+};
+
+test "the phi4 order-one potential renders in Phaser notation" {
+    var fixture = try OneLoopFixture.init(example_data.phi4_model);
+    defer fixture.deinit();
+
+    var output = try renderPotential(&fixture.artifact, .phaser);
+    defer output.deinit();
+
+    // The heading names the truncation and the scale dependence, the tree terms
+    // keep their exact coefficients, and the loop term keeps its named spectral
+    // operation over the field-dependent mass matrix `m2 + (lambda/2) phi^2`.
+    try std.testing.expectEqualStrings(
+        "V^(<=1)(phi; muR) = omega + 1/2 * m2 * phi^2 + 1/24 * lambda * phi^4" ++
+            " + scalar_one_loop([[m2 + 1/2 * lambda * phi^2]]; muR)",
+        output.written(),
+    );
+}
+
+test "the phi4 order-one contribution renders with its loop-order heading" {
+    var fixture = try OneLoopFixture.init(example_data.phi4_model);
+    defer fixture.deinit();
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try symbolic.writeContribution(
+        &fixture.artifact,
+        .scalar_one_loop,
+        std.testing.allocator,
+        .{ .target = .phaser },
+        &output.writer,
+    );
+    try std.testing.expectEqualStrings(
+        "V^(1)[scalar_one_loop](phi; muR) = " ++
+            "scalar_one_loop([[m2 + 1/2 * lambda * phi^2]]; muR)",
+        output.written(),
+    );
+}
+
+test "the phi4 order-one gradient keeps the invariant spectral derivative" {
+    var fixture = try OneLoopFixture.init(example_data.phi4_model);
+    defer fixture.deinit();
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try symbolic.writeGradientComponent(
+        &fixture.artifact,
+        0,
+        std.testing.allocator,
+        .{ .target = .phaser },
+        &output.writer,
+    );
+    // The loop term is the background derivative of the invariant spectral
+    // value, not a derivative of a sorted eigenvalue.
+    try std.testing.expectEqualStrings(
+        "dV/dphi = m2 * phi + 1/6 * lambda * phi^3" ++
+            " + d[scalar_one_loop([[m2 + 1/2 * lambda * phi^2]]; muR)]/dphi",
+        output.written(),
+    );
+}
+
+test "the phi4 order-one potential renders as a MathJax fragment" {
+    var fixture = try OneLoopFixture.init(example_data.phi4_model);
+    defer fixture.deinit();
+
+    var output = try renderPotential(&fixture.artifact, .latex);
+    defer output.deinit();
+
+    try std.testing.expectEqualStrings(
+        "V^{(\\leq 1)}(\\mathrm{phi}; \\mathrm{muR}) = \\mathrm{omega}" ++
+            " + \\frac{1}{2}\\,\\mathrm{m2}\\,\\mathrm{phi}^{2}" ++
+            " + \\frac{1}{24}\\,\\mathrm{lambda}\\,\\mathrm{phi}^{4}" ++
+            " + \\mathrm{Tr}\\,\\Phi^{(1)}_{\\mathrm{scalar}}\\!\\left(" ++
+            "\\left(\\begin{array}{c}\\mathrm{m2}" ++
+            " + \\frac{1}{2}\\,\\mathrm{lambda}\\,\\mathrm{phi}^{2}" ++
+            "\\end{array}\\right); \\mathrm{muR}\\right)",
+        output.written(),
+    );
+}
+
+test "an order-one export is deterministic and carries no delimiters" {
+    var fixture = try OneLoopFixture.init(example_data.multi_scalar_model);
+    defer fixture.deinit();
+
+    var first = try renderPotential(&fixture.artifact, .latex);
+    defer first.deinit();
+    var second = try renderPotential(&fixture.artifact, .latex);
+    defer second.deinit();
+    try std.testing.expectEqualStrings(first.written(), second.written());
+
+    for ([_][]const u8{ "$", "\\(", "\\[", "\\begin{document}", "\\usepackage" }) |forbidden| {
+        try std.testing.expect(
+            std.mem.indexOf(u8, first.written(), forbidden) == null,
+        );
+    }
+    // A 2x2 fluctuation matrix is rendered as a matrix, not diagonalized.
+    try std.testing.expect(
+        std.mem.indexOf(u8, first.written(), "\\begin{array}{cc}") != null,
+    );
+}
+
+test "a complete order-one export fails rather than truncating" {
+    var fixture = try OneLoopFixture.init(example_data.phi4_model);
+    defer fixture.deinit();
+
+    // The byte budget governs the rendered value, so it is measured against the
+    // value alone rather than against the heading the artifact view adds.
+    const complete = try symbolic.renderAlloc(
+        &fixture.artifact.graph,
+        fixture.artifact.total,
+        std.testing.allocator,
+        .{ .target = .phaser },
+    );
+    defer std.testing.allocator.free(complete);
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try symbolic.writeValue(
+        &fixture.artifact.graph,
+        fixture.artifact.total,
+        std.testing.allocator,
+        .{ .target = .phaser, .max_bytes = complete.len },
+        &output.writer,
+    );
+    try std.testing.expectEqualStrings(complete, output.written());
+
+    // One byte less fails, and publishes nothing.
+    var truncated: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer truncated.deinit();
+    try std.testing.expectError(error.OutputCapacityExceeded, symbolic.writeValue(
+        &fixture.artifact.graph,
+        fixture.artifact.total,
+        std.testing.allocator,
+        .{ .target = .phaser, .max_bytes = complete.len - 1 },
+        &truncated.writer,
+    ));
+    try std.testing.expectEqualStrings("", truncated.written());
+}

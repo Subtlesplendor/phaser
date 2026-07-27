@@ -20,6 +20,7 @@ pub const writePotential = potential.writePotential;
 pub const writeContribution = potential.writeContribution;
 pub const writeGradientComponent = potential.writeGradientComponent;
 pub const writeBackground = potential.writeBackground;
+pub const writeProvenance = potential.writeProvenance;
 pub const writeSummary = potential.writeSummary;
 
 test {

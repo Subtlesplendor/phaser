@@ -203,10 +203,13 @@ pub const MutableRational = struct {
         self: *const MutableRational,
         allocator: std.mem.Allocator,
     ) !Rational {
-        return .{
-            .numerator = try self.numerator.toString(allocator, 10, .lower),
-            .denominator = try self.denominator.toString(allocator, 10, .lower),
-        };
+        // Both parts are separate allocations, so the first has to be released
+        // when the second fails. Publishing is otherwise not atomic and leaks
+        // the numerator under allocation failure.
+        const numerator = try self.numerator.toString(allocator, 10, .lower);
+        errdefer allocator.free(numerator);
+        const denominator = try self.denominator.toString(allocator, 10, .lower);
+        return .{ .numerator = numerator, .denominator = denominator };
     }
 
     fn reduce(self: *MutableRational, allocator: std.mem.Allocator) !void {

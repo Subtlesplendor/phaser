@@ -164,16 +164,10 @@ const Builder = struct {
         while (index > 0) {
             index -= 1;
             if (!self.reachable[index]) continue;
-            switch (self.graph.values[index].node) {
-                .add, .multiply => |children| {
-                    for (children) |child| self.reachable[child.toUsize()] = true;
-                },
-                .divide => |binary| {
-                    self.reachable[binary.numerator.toUsize()] = true;
-                    self.reachable[binary.denominator.toUsize()] = true;
-                },
-                .power => |power_node| self.reachable[power_node.base.toUsize()] = true,
-                else => {},
+            const node = self.graph.values[index].node;
+            var operand: usize = 0;
+            while (value.childAt(node, operand)) |child| : (operand += 1) {
+                self.reachable[child.toUsize()] = true;
             }
         }
     }
@@ -191,18 +185,14 @@ const Builder = struct {
 
         for (self.reachable, 0..) |included, index| {
             if (!included) continue;
-            self.background_dependent[index] = switch (self.graph.values[index].node) {
-                .background => true,
-                .add, .multiply => |children| blk: {
-                    for (children) |child| {
-                        if (self.background_dependent[child.toUsize()]) break :blk true;
-                    }
-                    break :blk false;
-                },
-                .divide => |binary| self.background_dependent[binary.numerator.toUsize()] or
-                    self.background_dependent[binary.denominator.toUsize()],
-                .power => |power_node| self.background_dependent[power_node.base.toUsize()],
-                else => false,
+            const node = self.graph.values[index].node;
+            self.background_dependent[index] = blk: {
+                if (node == .background) break :blk true;
+                var operand: usize = 0;
+                while (value.childAt(node, operand)) |child| : (operand += 1) {
+                    if (self.background_dependent[child.toUsize()]) break :blk true;
+                }
+                break :blk false;
             };
         }
     }
@@ -230,18 +220,10 @@ const Builder = struct {
         for ([_]u1{ 0, 1 }) |stage| {
             for (self.reachable, 0..) |included, index| {
                 if (!included or self.stageOf(index) != stage) continue;
-                switch (self.graph.values[index].node) {
-                    .add, .multiply => |children| {
-                        for (children) |child| self.noteUse(child, position, stage);
-                    },
-                    .divide => |binary| {
-                        self.noteUse(binary.numerator, position, stage);
-                        self.noteUse(binary.denominator, position, stage);
-                    },
-                    .power => |power_node| {
-                        self.noteUse(power_node.base, position, stage);
-                    },
-                    else => {},
+                const node = self.graph.values[index].node;
+                var operand: usize = 0;
+                while (value.childAt(node, operand)) |child| : (operand += 1) {
+                    self.noteUse(child, position, stage);
                 }
                 position += 1;
             }
@@ -366,6 +348,19 @@ const Builder = struct {
                     .exponent = power_node.exponent,
                 } };
             },
+            // The scale channel, the complex domain, real-symmetric matrices,
+            // and the scalar one-loop spectral operations are Milestone 3
+            // symbolic structure whose numerical backend is not yet lowered.
+            // Failing here keeps the unsupported case explicit instead of
+            // silently evaluating a truncated potential.
+            .renormalization_scale,
+            .promote_real_to_complex,
+            .real_symmetric_matrix,
+            .scalar_one_loop_spectral_value,
+            .scalar_one_loop_spectral_gradient,
+            .scalar_one_loop_spectral_hessian,
+            .element,
+            => error.UnsupportedOperation,
         };
     }
 

@@ -149,7 +149,7 @@ fn deriveArtifact(
     request: *const calculation.Request,
     errors: *std.Io.Writer,
 ) Error!calculation.Artifact {
-    const result = phaser.deriveClassicalPotential(
+    const result = phaser.deriveEffectivePotential(
         context(allocator),
         model,
         request,
@@ -197,7 +197,11 @@ pub fn exportSymbolic(
     symbolic.writeBackground(&artifact, out) catch return error.WriteFailed;
 
     if (options.contributions) {
+        // Only the roles the request's truncation covers. A role above it was
+        // not asked for, and reporting it would imply a decision the artifact
+        // never made.
         for (std.meta.tags(calculation.Role)) |role| {
+            if (!artifact.roleIsRequested(role)) continue;
             symbolic.writeContribution(
                 &artifact,
                 role,
