@@ -15,6 +15,9 @@ const Graph = value.Graph;
 const Instruction = program_module.Instruction;
 const Program = program_module.Program;
 const Scalar = program_module.Scalar;
+const SlotType = program_module.SlotType;
+const Temporary = program_module.Temporary;
+const eigensolver = @import("../numerics/root.zig").symmetric_eigensolver;
 
 pub const LowerError = error{
     OutOfMemory,
@@ -24,6 +27,8 @@ pub const LowerError = error{
     /// The value graph uses a node kind this backend does not implement.
     UnsupportedOperation,
     CapacityExceeded,
+    /// A structured shape or workspace requirement is not representable.
+    SizeOverflow,
 };
 
 pub const LowerOptions = struct {
@@ -92,16 +97,22 @@ pub fn lower(
         .gradient = try builder.slotsOf(request.gradient_roots),
         .hessian = try builder.slotsOf(request.hessian_roots),
     };
+    const frame = try builder.layoutFrame();
 
     return .{
         .arena = arena,
         .instructions = try builder.arena.dupe(Instruction, builder.instructions.items),
         .constants = try builder.arena.dupe(Scalar, builder.constants.items),
+        .temporaries = frame.temporaries,
         .outputs = outputs,
         .capability = request.capability,
-        .temporary_count = builder.slot_count,
+        .result_type = builder.resultTypeOf(request.value_root),
+        .frame_bytes = frame.bytes,
+        .scratch_offset = frame.bytes,
+        .scratch_bytes = builder.scratch_bytes,
         .parameter_stage_count = builder.parameter_stage_count,
         .parameter_count = request.parameter_count,
+        .scale_count = builder.scale_count,
         .background_count = request.background_count,
         .coordinate_count = request.coordinate_count,
     };
@@ -124,8 +135,26 @@ const Builder = struct {
     roots: std.ArrayList(ValueId) = .empty,
     instructions: std.ArrayList(Instruction) = .empty,
     constants: std.ArrayList(Scalar) = .empty,
-    free_slots: std.ArrayList(u32) = .empty,
-    slot_count: u32 = 0,
+    /// One entry per allocated temporary, in slot order.
+    pool: std.ArrayList(Slot) = .empty,
+    /// Largest single-operation scratch requirement seen so far. One region is
+    /// shared, because no two operations are in flight at once.
+    scratch_bytes: usize = 0,
+    /// Number of renormalization-scale channels the emitted program reads.
+    /// A selection that reads no scale declares no scale channel, so its
+    /// callers pass none.
+    scale_count: u32 = 0,
+
+    /// A temporary under construction: its type, the instruction that wrote it,
+    /// and the position after which its storage may be reused.
+    const Slot = struct {
+        kind: SlotType,
+        first_write: u32,
+        last_use: u32,
+        /// True while the slot holds a live value. First-fit reuse considers
+        /// only released slots of an identical type.
+        live: bool,
+    };
 
     fn deinit(self: *Builder) void {
         if (self.reachable.len != 0) self.allocator.free(self.reachable);
@@ -137,7 +166,7 @@ const Builder = struct {
         self.roots.deinit(self.allocator);
         self.instructions.deinit(self.allocator);
         self.constants.deinit(self.allocator);
-        self.free_slots.deinit(self.allocator);
+        self.pool.deinit(self.allocator);
     }
 
     fn collectRoots(self: *Builder, request: Request) LowerError!void {
@@ -255,30 +284,90 @@ const Builder = struct {
     }
 
     fn emit(self: *Builder) LowerError!void {
-        var position: usize = 0;
+        // Node position, which `assignSlots` counted the same way, decides when
+        // an operand dies. Instruction position, which one node may advance by
+        // more than one, is what the recorded live ranges use.
+        var node_position: usize = 0;
         for ([_]u1{ 0, 1 }) |stage| {
             for (self.reachable, 0..) |included, index| {
                 if (!included or self.stageOf(index) != stage) continue;
-                if (self.instructions.items.len >= self.options.max_instructions) {
-                    return error.CapacityExceeded;
-                }
                 const id = ValueId.fromUsize(index) catch return error.CapacityExceeded;
                 const node = self.graph.values[index].node;
+
+                // Every operand is read here, so its slot stays live at least
+                // this long.
+                var operand: usize = 0;
+                while (value.childAt(node, operand)) |child| : (operand += 1) {
+                    self.extendLiveRange(self.slotOf(child), self.instructions.items.len);
+                }
 
                 // Operands are read before the result is written, and the
                 // interpreter computes into a local before storing, so a result
                 // may safely reuse a slot that dies at this instruction.
-                try self.releaseExpired(node, position);
-                const result = try self.acquireSlot();
-                self.slots[index] = result;
-
-                try self.instructions.append(
-                    self.allocator,
-                    try self.select(node, result, id),
-                );
-                position += 1;
+                try self.releaseExpired(node, node_position);
+                self.slots[index] = try self.emitNode(node, id);
+                node_position += 1;
             }
+            if (stage == 0) self.parameter_stage_count = @intCast(self.instructions.items.len);
         }
+
+        // A slot still holding a live value is read by the caller after the
+        // last instruction.
+        const end: u32 = @intCast(self.instructions.items.len);
+        for (self.pool.items) |*slot| {
+            if (slot.live) slot.last_use = end;
+        }
+    }
+
+    fn append(self: *Builder, instruction: Instruction) LowerError!void {
+        if (self.instructions.items.len >= self.options.max_instructions) {
+            return error.CapacityExceeded;
+        }
+        try self.instructions.append(self.allocator, instruction);
+    }
+
+    /// Emits the instructions one value node needs and returns the slot holding
+    /// its value.
+    fn emitNode(self: *Builder, node: value.Node, id: ValueId) LowerError!u32 {
+        // The spectral value is the one node that is not a single instruction:
+        // its matrix operand is diagonalized into its own temporary, and the
+        // restricted one-loop sum then runs over that eigensystem.
+        if (node == .scalar_one_loop_spectral_value) {
+            const spectral = node.scalar_one_loop_spectral_value;
+            const dimension = self.graph.valueType(spectral.matrix).shape.matrix.dimension;
+
+            const eigensystem = try self.acquireSlot(
+                .{ .real_eigensystem = dimension },
+                self.instructions.items.len,
+            );
+            try self.append(.{ .symmetric_eigensystem = .{
+                .result = eigensystem,
+                .matrix = self.slotOf(spectral.matrix),
+            } });
+
+            // The solver's own scratch shares one region with every other
+            // operation's, because no two are in flight at once.
+            const layout = eigensolver.workspaceLayout(dimension) catch
+                return error.SizeOverflow;
+            self.scratch_bytes = @max(self.scratch_bytes, layout.bytes);
+
+            self.extendLiveRange(eigensystem, self.instructions.items.len);
+            self.pool.items[eigensystem].live = false;
+            const result = try self.acquireSlot(.complex, self.instructions.items.len);
+            try self.append(.{ .scalar_one_loop_sum = .{
+                .result = result,
+                .eigensystem = eigensystem,
+                .scale = self.slotOf(spectral.scale),
+            } });
+            return result;
+        }
+
+        const result = try self.acquireSlot(
+            try self.slotTypeOf(id),
+            self.instructions.items.len,
+        );
+        try self.append(try self.select(node, result, id));
+        return result;
     }
 
     fn select(
@@ -348,15 +437,26 @@ const Builder = struct {
                     .exponent = power_node.exponent,
                 } };
             },
-            // The scale channel, the complex domain, real-symmetric matrices,
-            // and the scalar one-loop spectral operations are Milestone 3
-            // symbolic structure whose numerical backend is not yet lowered.
-            // Failing here keeps the unsupported case explicit instead of
-            // silently evaluating a truncated potential.
-            .renormalization_scale,
-            .promote_real_to_complex,
-            .real_symmetric_matrix,
-            .scalar_one_loop_spectral_value,
+            .renormalization_scale => |input| blk: {
+                self.scale_count = @max(self.scale_count, input.index + 1);
+                break :blk Instruction{ .load_renormalization_scale = .{
+                    .result = result,
+                    .source = input.index,
+                } };
+            },
+            .promote_real_to_complex => |operand| .{ .promote_real_to_complex = .{
+                .result = result,
+                .operand = self.slotOf(operand),
+            } },
+            .real_symmetric_matrix => |matrix| .{ .assemble_real_symmetric = .{
+                .result = result,
+                .entries = try self.operandSlots(matrix.entries),
+            } },
+            // Handled by `emitNode`, which needs two instructions for it.
+            .scalar_one_loop_spectral_value => unreachable,
+            // The invariant spectral derivatives are a separate numerical
+            // operation. Failing here keeps the unsupported capability explicit
+            // rather than evaluating a potential without its derivatives.
             .scalar_one_loop_spectral_gradient,
             .scalar_one_loop_spectral_hessian,
             .element,
@@ -390,35 +490,109 @@ const Builder = struct {
     }
 
     fn releaseExpired(self: *Builder, node: value.Node, position: usize) LowerError!void {
-        switch (node) {
-            .add, .multiply => |children| {
-                for (children) |child| try self.releaseIfDead(child, position);
-            },
-            .divide => |binary| {
-                try self.releaseIfDead(binary.numerator, position);
-                try self.releaseIfDead(binary.denominator, position);
-            },
-            .power => |power_node| try self.releaseIfDead(power_node.base, position),
-            else => {},
+        var operand: usize = 0;
+        while (value.childAt(node, operand)) |child| : (operand += 1) {
+            self.releaseIfDead(child, position);
         }
     }
 
-    fn releaseIfDead(self: *Builder, id: ValueId, position: usize) LowerError!void {
+    fn releaseIfDead(self: *Builder, id: ValueId, position: usize) void {
         if (self.last_use[id.toUsize()] != position) return;
-        const slot = self.slots[id.toUsize()];
-        // A node consumed twice by one instruction would otherwise be freed
-        // twice.
-        for (self.free_slots.items) |existing| {
-            if (existing == slot) return;
-        }
-        try self.free_slots.append(self.allocator, slot);
+        // A node consumed twice by one instruction releases once; marking a
+        // slot not live twice is harmless but the live range must not shrink.
+        self.pool.items[self.slots[id.toUsize()]].live = false;
     }
 
-    fn acquireSlot(self: *Builder) LowerError!u32 {
-        if (self.free_slots.pop()) |slot| return slot;
-        const slot = self.slot_count;
-        self.slot_count += 1;
-        return slot;
+    /// Deterministic first-fit reuse.
+    ///
+    /// The scan is in slot order and takes the first released slot whose type
+    /// is identical, so the assignment depends only on the instruction sequence
+    /// and never on allocation or iteration order. A different type never
+    /// shares storage, which keeps the frame's typed view sound without any
+    /// runtime type tag.
+    fn acquireSlot(self: *Builder, kind: SlotType, position: usize) LowerError!u32 {
+        const written: u32 = @intCast(position);
+        for (self.pool.items, 0..) |*slot, index| {
+            if (slot.live or !slot.kind.eql(kind)) continue;
+            slot.live = true;
+            slot.last_use = written;
+            return @intCast(index);
+        }
+        const index = self.pool.items.len;
+        try self.pool.append(self.allocator, .{
+            .kind = kind,
+            .first_write = written,
+            .last_use = written,
+            .live = true,
+        });
+        return @intCast(index);
+    }
+
+    /// Records that `slot` is still readable at `position`.
+    fn extendLiveRange(self: *Builder, slot: u32, position: usize) void {
+        const entry = &self.pool.items[slot];
+        entry.last_use = @max(entry.last_use, @as(u32, @intCast(position)));
+    }
+
+    const Frame = struct {
+        temporaries: []const Temporary,
+        bytes: usize,
+    };
+
+    /// Assigns byte offsets to the allocated slots.
+    ///
+    /// Slots that shared a pool entry share their bytes by construction, and
+    /// their live ranges are disjoint because reuse only took a released slot.
+    /// Program validation re-establishes both facts independently.
+    fn layoutFrame(self: *Builder) LowerError!Frame {
+        const temporaries = try self.arena.alloc(Temporary, self.pool.items.len);
+        var offset: usize = 0;
+        for (self.pool.items, temporaries) |slot, *descriptor| {
+            const alignment = slot.kind.alignment();
+            offset = std.mem.alignForward(usize, offset, alignment);
+            const bytes = slot.kind.byteSize() catch return error.SizeOverflow;
+            descriptor.* = .{
+                .kind = slot.kind,
+                .alignment = alignment,
+                .offset = offset,
+                .bytes = bytes,
+                .live = .{ .first_write = slot.first_write, .last_use = slot.last_use },
+            };
+            offset = std.math.add(usize, offset, bytes) catch return error.SizeOverflow;
+        }
+        return .{
+            .temporaries = temporaries,
+            .bytes = std.mem.alignForward(usize, offset, @alignOf(Scalar)),
+        };
+    }
+
+    fn resultTypeOf(self: *const Builder, root: ValueId) program_module.ResultType {
+        return switch (self.graph.valueType(root).domain) {
+            .real => .real64,
+            .complex => .complex64,
+        };
+    }
+
+    /// The temporary type a node's value occupies.
+    ///
+    /// It follows the node's validated value type rather than its kind, so an
+    /// operation that is polymorphic in the scalar domain, such as `add`, lands
+    /// in a slot of the domain its operands actually have.
+    fn slotTypeOf(self: *const Builder, id: ValueId) LowerError!SlotType {
+        const declared = self.graph.valueType(id);
+        return switch (declared.shape) {
+            .scalar => switch (declared.domain) {
+                .real => .real,
+                .complex => .complex,
+            },
+            .matrix => |matrix| if (declared.domain == .real and matrix.symmetric)
+                .{ .real_symmetric_matrix = matrix.dimension }
+            else
+                error.UnsupportedOperation,
+            // A complex vector is a spectral gradient, whose numerical
+            // operation is not part of this catalog.
+            .vector => error.UnsupportedOperation,
+        };
     }
 
     fn internConstant(self: *Builder, scalar: Scalar) LowerError!u32 {
@@ -583,7 +757,7 @@ test "temporary slots are reused once their value is dead" {
     try program.validate(std.testing.allocator, 64);
 
     // Reuse means fewer slots than instructions.
-    try std.testing.expect(program.temporary_count < program.instructions.len);
+    try std.testing.expect(program.temporaries.len < program.instructions.len);
 }
 
 test "lowering is deterministic" {
@@ -613,7 +787,7 @@ test "lowering is deterministic" {
     defer second.deinit();
 
     try std.testing.expectEqual(first.instructions.len, second.instructions.len);
-    try std.testing.expectEqual(first.temporary_count, second.temporary_count);
+    try std.testing.expectEqual(first.temporaries.len, second.temporaries.len);
     try std.testing.expectEqualSlices(Scalar, first.constants, second.constants);
     for (first.instructions, second.instructions) |left, right| {
         try std.testing.expectEqual(

@@ -296,18 +296,20 @@ test "an order-one export shows the spectral operation and its scale" {
     try std.testing.expectEqualStrings("", errors.written());
 }
 
-test "an order-one evaluation reports that the complex backend is unavailable" {
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+test "an order-one evaluation reports that the table has no complex columns" {
+    var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer out.deinit();
-    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer errors.deinit();
 
-    // Milestone 3 delivers the symbolic order-one calculation before its
-    // numerical backend. The unsupported capability is an explicit failure,
-    // never a silent truncation to the tree part.
+    // The order-one value is numerically available through the library's
+    // `Complex64` evaluation method. What this client still lacks is a tabular
+    // rendering with separate real and imaginary columns, so it reports a
+    // result-type mismatch rather than printing a real projection of a complex
+    // result.
     const points = [_]f64{0};
-    try std.testing.expectError(error.CompilationFailed, commands.evaluate(
-        std.testing.allocator,
+    try std.testing.expectError(error.EvaluationFailed, commands.evaluate(
+        test_allocator.allocator,
         example_data.phi4_model,
         phi4_one_loop_request,
         example_data.phi4_point,
@@ -315,6 +317,7 @@ test "an order-one evaluation reports that the complex backend is unavailable" {
         &out.writer,
         &errors.writer,
     ));
+    try std.testing.expectEqualStrings("", out.written());
 }
 
 test "a parameter point missing a value is rejected before evaluation" {
