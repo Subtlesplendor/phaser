@@ -2,6 +2,53 @@ const std = @import("std");
 const phaser = @import("phaser");
 const foundation = phaser.foundation;
 
+// Every target allocates through this rather than `std.testing.allocator`, and
+// the difference is the campaign's iteration budget.
+//
+// Both are `DebugAllocator`, so the checks a fuzz target wants are identical:
+// leak accounting, canaries, double-free and use-after-free detection. What
+// `std.testing.allocator` adds is `stack_trace_frames = 10`, a captured
+// backtrace on every allocation and free. Unwinding those costs more than the
+// exact arithmetic under test: the heaviest target measured 43 seconds for a
+// thousand inputs with traces and about one second without, at 1 GiB resident
+// against 4 MiB. Capturing them was consuming all but a small fraction of the
+// tier's budget. A default-configured `DebugAllocator` in ReleaseSafe captures
+// none, and keeps every other check.
+//
+// The cost is that a leak reports its address and size but not where it was
+// allocated, and it is paid only where it is cheap. `DebugAllocator`'s default
+// frame count follows the build mode: none in the ReleaseSafe campaign, six in
+// Debug. The campaign saves the input that failed, and replaying it the way
+// section 7 of DEVELOPMENT_WORKFLOW.md already prescribes -- add it to the
+// target's corpus and run `zig build fuzz`, which is Debug -- reports the leak
+// with its allocation site. Traces are bought on the one input that failed
+// rather than on the hundreds of thousands that did not.
+var iteration_gpa: std.heap.DebugAllocator(.{}) = .init;
+const iteration_allocator = iteration_gpa.allocator();
+
+/// Give one fuzz input a fresh allocator and fail the campaign if it leaks.
+///
+/// The test runner does this for `std.testing.allocator` around every input on
+/// its own; a private allocator has to say it. Wrapping at the `fuzz` call site
+/// keeps it to one visible place per target, so a target either goes through
+/// the check or plainly does not.
+fn leakChecked(
+    comptime target: fn (void, *std.testing.Smith) anyerror!void,
+) fn (void, *std.testing.Smith) anyerror!void {
+    return struct {
+        fn checked(context: void, smith: *std.testing.Smith) anyerror!void {
+            iteration_gpa = .init;
+            // Runs after the target's own `defer`s, so anything it frees on the
+            // way out is already freed and only a real leak is left.
+            defer if (iteration_gpa.deinit() == .leak) {
+                // The allocator has already named each leaked allocation.
+                @panic("fuzz input leaked memory");
+            };
+            try target(context, smith);
+        }
+    }.checked;
+}
+
 const max_sequence_length = 64;
 
 const Operation = enum(u3) {
@@ -13,7 +60,7 @@ const Operation = enum(u3) {
 };
 
 test "foundation_capacity" {
-    try std.testing.fuzz({}, fuzzCapacity, .{
+    try std.testing.fuzz({}, leakChecked(fuzzCapacity), .{
         .corpus = &.{
             @embedFile("../corpus/foundation_capacity/seed.txt"),
             @embedFile("../corpus/foundation_capacity/zero.txt"),
@@ -27,7 +74,7 @@ test "foundation_capacity" {
 }
 
 test "expression_parser" {
-    try std.testing.fuzz({}, fuzzExpression, .{
+    try std.testing.fuzz({}, leakChecked(fuzzExpression), .{
         .corpus = &.{
             @embedFile("../corpus/expression_parser/empty.txt"),
             @embedFile("../corpus/expression_parser/rational.txt"),
@@ -58,14 +105,14 @@ fn fuzzExpression(_: void, smith: *std.testing.Smith) !void {
         },
     };
     const first = try phaser.expression.parse(
-        std.testing.allocator,
+        iteration_allocator,
         source_id,
         bytes[0..length],
         &parameters,
         options,
     );
     const second = try phaser.expression.parse(
-        std.testing.allocator,
+        iteration_allocator,
         source_id,
         bytes[0..length],
         &parameters,
@@ -91,9 +138,9 @@ fn fuzzExpression(_: void, smith: *std.testing.Smith) !void {
                 .failure => return error.NondeterministicExpressionParse,
             };
             defer second_owned.deinit();
-            var first_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+            var first_output: std.Io.Writer.Allocating = .init(iteration_allocator);
             defer first_output.deinit();
-            var second_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+            var second_output: std.Io.Writer.Allocating = .init(iteration_allocator);
             defer second_output.deinit();
             try first_owned.write(&first_output.writer);
             try second_owned.write(&second_output.writer);
@@ -106,7 +153,7 @@ fn fuzzExpression(_: void, smith: *std.testing.Smith) !void {
 }
 
 test "scalar_model_parser" {
-    try std.testing.fuzz({}, fuzzModel, .{
+    try std.testing.fuzz({}, leakChecked(fuzzModel), .{
         .corpus = &.{
             @embedFile("../corpus/scalar_model_parser/empty.json"),
             @embedFile("../corpus/scalar_model_parser/minimal.json"),
@@ -119,7 +166,7 @@ fn fuzzModel(_: void, smith: *std.testing.Smith) !void {
     const length = smith.valueRangeLessThan(u16, 0, 2049);
     var bytes: [2048]u8 = undefined;
     for (bytes[0..length]) |*byte| byte.* = smith.value(u8);
-    const context = switch (foundation.Context.init(std.testing.allocator, .{
+    const context = switch (foundation.Context.init(iteration_allocator, .{
         .max_diagnostics = 8,
         .max_related_locations = 8,
     })) {
@@ -464,7 +511,7 @@ fn expectRepeatedArithmeticFailure(
 }
 
 test "value_ir_builder" {
-    try std.testing.fuzz({}, fuzzValueGraph, .{
+    try std.testing.fuzz({}, leakChecked(fuzzValueGraph), .{
         .corpus = &.{
             @embedFile("../corpus/value_ir_builder/leaves.bin"),
             @embedFile("../corpus/value_ir_builder/polynomial.bin"),
@@ -547,9 +594,9 @@ fn fuzzValueGraph(_: void, smith: *std.testing.Smith) !void {
         };
     }
 
-    var first = try replay(steps[0..count], std.testing.allocator);
+    var first = try replay(steps[0..count], iteration_allocator);
     defer first.deinit();
-    var second = try replay(steps[0..count], std.testing.allocator);
+    var second = try replay(steps[0..count], iteration_allocator);
     defer second.deinit();
 
     // Construction establishes the published invariants.
@@ -558,9 +605,9 @@ fn fuzzValueGraph(_: void, smith: *std.testing.Smith) !void {
 
     // Independently built graphs of the same script are byte identical, so
     // construction depends on no allocation address or iteration order.
-    var first_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var first_output: std.Io.Writer.Allocating = .init(iteration_allocator);
     defer first_output.deinit();
-    var second_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var second_output: std.Io.Writer.Allocating = .init(iteration_allocator);
     defer second_output.deinit();
     try first.writeCanonical(&first_output.writer);
     try second.writeCanonical(&second_output.writer);
@@ -574,14 +621,14 @@ fn fuzzValueGraph(_: void, smith: *std.testing.Smith) !void {
 /// structurally equal node, which is how the `power` and `divide` lookup
 /// omission first showed up.
 fn expectDistinctNodes(graph: phaser.value.Graph) !void {
-    var seen = std.StringHashMap(void).init(std.testing.allocator);
+    var seen = std.StringHashMap(void).init(iteration_allocator);
     defer {
         var iterator = seen.keyIterator();
-        while (iterator.next()) |key| std.testing.allocator.free(key.*);
+        while (iterator.next()) |key| iteration_allocator.free(key.*);
         seen.deinit();
     }
 
-    var rendered: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var rendered: std.Io.Writer.Allocating = .init(iteration_allocator);
     defer rendered.deinit();
     try graph.writeCanonical(&rendered.writer);
 
@@ -593,10 +640,10 @@ fn expectDistinctNodes(graph: phaser.value.Graph) !void {
         // duplicate would retain.
         const space = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
         const body = line[space + 1 ..];
-        const owned = try std.testing.allocator.dupe(u8, body);
-        errdefer std.testing.allocator.free(owned);
+        const owned = try iteration_allocator.dupe(u8, body);
+        errdefer iteration_allocator.free(owned);
         if (seen.contains(owned)) {
-            std.testing.allocator.free(owned);
+            iteration_allocator.free(owned);
             return error.DuplicateInternedNode;
         }
         try seen.put(owned, {});
@@ -604,7 +651,7 @@ fn expectDistinctNodes(graph: phaser.value.Graph) !void {
 }
 
 test "calculation_request_parser" {
-    try std.testing.fuzz({}, fuzzRequest, .{
+    try std.testing.fuzz({}, leakChecked(fuzzRequest), .{
         .corpus = &.{
             @embedFile("../corpus/calculation_request_parser/full_space.json"),
             @embedFile("../corpus/calculation_request_parser/component_slice.json"),
@@ -618,7 +665,7 @@ fn fuzzRequest(_: void, smith: *std.testing.Smith) !void {
     var bytes: [1024]u8 = undefined;
     for (bytes[0..length]) |*byte| byte.* = smith.value(u8);
 
-    const context = switch (foundation.Context.init(std.testing.allocator, .{
+    const context = switch (foundation.Context.init(iteration_allocator, .{
         .max_diagnostics = 8,
         .max_related_locations = 8,
     })) {
@@ -675,8 +722,8 @@ fn fuzzRequest(_: void, smith: *std.testing.Smith) !void {
                 phaser.calculation.supported_loop_order,
                 first_owned.loop_order,
             );
-            const first_fingerprint = try first_owned.fingerprint(std.testing.allocator);
-            const second_fingerprint = try second_owned.fingerprint(std.testing.allocator);
+            const first_fingerprint = try first_owned.fingerprint(iteration_allocator);
+            const second_fingerprint = try second_owned.fingerprint(iteration_allocator);
             try std.testing.expectEqualSlices(
                 u8,
                 &first_fingerprint.bytes,
@@ -687,7 +734,7 @@ fn fuzzRequest(_: void, smith: *std.testing.Smith) !void {
 }
 
 test "symbolic_exporter" {
-    try std.testing.fuzz({}, fuzzExporter, .{
+    try std.testing.fuzz({}, leakChecked(fuzzExporter), .{
         .corpus = &.{
             @embedFile("../corpus/symbolic_exporter/leaves.bin"),
             @embedFile("../corpus/symbolic_exporter/polynomial.bin"),
@@ -713,7 +760,7 @@ fn fuzzExporter(_: void, smith: *std.testing.Smith) !void {
         };
     }
 
-    var graph = try replay(steps[0..count], std.testing.allocator);
+    var graph = try replay(steps[0..count], iteration_allocator);
     defer graph.deinit();
 
     const root = phaser.value.ValueId.fromUsize(graph.values.len - 1) catch return;
@@ -727,7 +774,7 @@ fn fuzzExporter(_: void, smith: *std.testing.Smith) !void {
     const first = phaser.symbolic.renderAlloc(
         &graph,
         root,
-        std.testing.allocator,
+        iteration_allocator,
         options,
     ) catch |err| switch (err) {
         // A budget below the required size is an ordinary failure that
@@ -735,16 +782,16 @@ fn fuzzExporter(_: void, smith: *std.testing.Smith) !void {
         error.OutputCapacityExceeded => return,
         else => return err,
     };
-    defer std.testing.allocator.free(first);
+    defer iteration_allocator.free(first);
 
     // Deterministic for fixed source, target, and options.
     const second = try phaser.symbolic.renderAlloc(
         &graph,
         root,
-        std.testing.allocator,
+        iteration_allocator,
         options,
     );
-    defer std.testing.allocator.free(second);
+    defer iteration_allocator.free(second);
     try std.testing.expectEqualStrings(first, second);
 
     // A complete export never exceeds the budget it accepted.
@@ -757,16 +804,16 @@ fn fuzzExporter(_: void, smith: *std.testing.Smith) !void {
     }
 
     // A preview either renders or visibly states that it omitted content.
-    var preview: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var preview: std.Io.Writer.Allocating = .init(iteration_allocator);
     defer preview.deinit();
     try phaser.symbolic.writeValuePreview(
         &graph,
         root,
-        std.testing.allocator,
+        iteration_allocator,
         options,
         &preview.writer,
     );
-    const nodes = try phaser.symbolic.countNodes(&graph, root, std.testing.allocator);
+    const nodes = try phaser.symbolic.countNodes(&graph, root, iteration_allocator);
     if (nodes > options.max_preview_nodes) {
         try std.testing.expect(
             std.mem.indexOf(u8, preview.written(), "omitted from preview") != null,
@@ -775,7 +822,7 @@ fn fuzzExporter(_: void, smith: *std.testing.Smith) !void {
 }
 
 test "kernel_lowering" {
-    try std.testing.fuzz({}, fuzzKernel, .{
+    try std.testing.fuzz({}, leakChecked(fuzzKernel), .{
         .corpus = &.{
             @embedFile("../corpus/kernel_lowering/leaves.bin"),
             @embedFile("../corpus/kernel_lowering/polynomial.bin"),
@@ -802,11 +849,11 @@ fn fuzzKernel(_: void, smith: *std.testing.Smith) !void {
         };
     }
 
-    var graph = try replay(steps[0..count], std.testing.allocator);
+    var graph = try replay(steps[0..count], iteration_allocator);
     defer graph.deinit();
 
     const root = phaser.value.ValueId.fromUsize(graph.values.len - 1) catch return;
-    var program = phaser.kernel.lower(std.testing.allocator, .{
+    var program = phaser.kernel.lower(iteration_allocator, .{
         .graph = &graph,
         .capability = .value,
         .value_root = root,
@@ -823,15 +870,15 @@ fn fuzzKernel(_: void, smith: *std.testing.Smith) !void {
     defer program.deinit();
 
     // A published program always satisfies every validation rule.
-    try program.validate(std.testing.allocator, 64);
+    try program.validate(iteration_allocator, 64);
 
     const layout = program.workspaceLayout(2);
-    const workspace = try std.testing.allocator.alignedAlloc(
+    const workspace = try iteration_allocator.alignedAlloc(
         u8,
         .of(phaser.kernel.Scalar),
         layout.bytes,
     );
-    defer std.testing.allocator.free(workspace);
+    defer iteration_allocator.free(workspace);
 
     var parameters: [8]phaser.kernel.Scalar = undefined;
     for (&parameters, 0..) |*slot, index| {
@@ -882,7 +929,7 @@ fn fuzzKernel(_: void, smith: *std.testing.Smith) !void {
 }
 
 test "parameter_point_parser" {
-    try std.testing.fuzz({}, fuzzParameterPoint, .{
+    try std.testing.fuzz({}, leakChecked(fuzzParameterPoint), .{
         .corpus = &.{
             @embedFile("../corpus/parameter_point_parser/valid.json"),
             @embedFile("../corpus/parameter_point_parser/scientific.json"),
@@ -896,7 +943,7 @@ fn fuzzParameterPoint(_: void, smith: *std.testing.Smith) !void {
     var bytes: [1024]u8 = undefined;
     for (bytes[0..length]) |*byte| byte.* = smith.value(u8);
 
-    const context = switch (foundation.Context.init(std.testing.allocator, .{
+    const context = switch (foundation.Context.init(iteration_allocator, .{
         .max_diagnostics = 8,
         .max_related_locations = 8,
     })) {

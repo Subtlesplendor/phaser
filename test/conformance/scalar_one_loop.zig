@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_allocator = @import("test_allocator");
 const comparison = @import("numerical_comparison");
 const fixture_data = @import("conformance_fixture_data");
 
@@ -221,7 +222,7 @@ fn expectNumericalCases(
 fn expectFixtureContracts(source: []const u8) !void {
     var parsed = try std.json.parseFromSlice(
         std.json.Value,
-        std.testing.allocator,
+        test_allocator.allocator,
         source,
         .{
             .duplicate_field_behavior = .@"error",

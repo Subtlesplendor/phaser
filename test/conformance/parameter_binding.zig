@@ -7,6 +7,7 @@
 //! slot were clobbered by reuse — the two paths would disagree.
 
 const std = @import("std");
+const test_allocator = @import("test_allocator");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
 
@@ -15,7 +16,7 @@ const kernel_module = phaser.kernel;
 const Scalar = kernel_module.Scalar;
 
 fn testContext() phaser.Context {
-    return switch (phaser.Context.init(std.testing.allocator, .{
+    return switch (phaser.Context.init(test_allocator.allocator, .{
         .max_diagnostics = 16,
         .max_related_locations = 32,
     })) {
@@ -142,11 +143,11 @@ const Fixture = struct {
         errdefer request.deinit();
         var artifact = try derive(&model, &request);
         errdefer artifact.deinit();
-        var kernel = try kernel_module.compile(std.testing.allocator, &artifact, .{
+        var kernel = try kernel_module.compile(test_allocator.allocator, &artifact, .{
             .capability = capability,
         });
         errdefer kernel.deinit();
-        const workspace = try std.testing.allocator.alignedAlloc(
+        const workspace = try test_allocator.allocator.alignedAlloc(
             u8,
             .of(Scalar),
             kernel.workspaceLayout(8).bytes,
@@ -161,7 +162,7 @@ const Fixture = struct {
     }
 
     fn deinit(self: *Fixture) void {
-        std.testing.allocator.free(self.workspace);
+        test_allocator.allocator.free(self.workspace);
         self.kernel.deinit();
         self.artifact.deinit();
         self.request.deinit();
@@ -181,7 +182,7 @@ test "staged and unstaged evaluation agree bitwise" {
     defer point.deinit();
 
     var binding = try kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &fixture.kernel,
         &fixture.model,
         &point,
@@ -238,7 +239,7 @@ test "a parameter-stage division status survives binding" {
     var point = try parsePoint(zero_divisor_point);
     defer point.deinit();
     var binding = try kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &fixture.kernel,
         &fixture.model,
         &point,
@@ -312,7 +313,7 @@ test "fresh and rebound bindings agree" {
 
     {
         var binding = try kernel_module.bind(
-            std.testing.allocator,
+            test_allocator.allocator,
             &fixture.kernel,
             &fixture.model,
             &point,
@@ -330,7 +331,7 @@ test "fresh and rebound bindings agree" {
     defer reparsed.deinit();
     {
         var binding = try kernel_module.bind(
-            std.testing.allocator,
+            test_allocator.allocator,
             &fixture.kernel,
             &fixture.model,
             &reparsed,
@@ -353,7 +354,7 @@ test "a binding is reusable across many background batches" {
     var point = try parsePoint(phi4_point);
     defer point.deinit();
     var binding = try kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &fixture.kernel,
         &fixture.model,
         &point,
@@ -418,7 +419,7 @@ test "binding rejects an incomplete or unknown parameter point" {
     var incomplete = try parsePoint(missing);
     defer incomplete.deinit();
     try std.testing.expectError(error.MissingParameterValue, kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &fixture.kernel,
         &fixture.model,
         &incomplete,
@@ -432,7 +433,7 @@ test "binding rejects an incomplete or unknown parameter point" {
     var unknown = try parsePoint(extra);
     defer unknown.deinit();
     try std.testing.expectError(error.UnknownParameterValue, kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &fixture.kernel,
         &fixture.model,
         &unknown,
@@ -453,7 +454,7 @@ test "a parameter the calculation ignores is still required by the point" {
         fixture.model.parameters.len,
     );
     var binding = try kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &fixture.kernel,
         &fixture.model,
         &point,
@@ -471,7 +472,7 @@ test "binding retains the scheme and reference scale of its values" {
     var point = try parsePoint(phi4_point);
     defer point.deinit();
     var binding = try kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &fixture.kernel,
         &fixture.model,
         &point,
@@ -496,7 +497,7 @@ test "binding packs channels by name rather than by position" {
     var point = try parsePoint(shuffled);
     defer point.deinit();
     var binding = try kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &fixture.kernel,
         &fixture.model,
         &point,
@@ -514,7 +515,7 @@ test "the phi4 potential through a binding matches its closed form" {
     var point = try parsePoint(phi4_point);
     defer point.deinit();
     var binding = try kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &fixture.kernel,
         &fixture.model,
         &point,
@@ -562,7 +563,7 @@ test "workspace boundaries still hold through a binding" {
     var point = try parsePoint(phi4_point);
     defer point.deinit();
     var binding = try kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &fixture.kernel,
         &fixture.model,
         &point,
@@ -599,7 +600,7 @@ test "a declared artifact scheme is threaded to the kernel and accepted" {
     defer request.deinit();
     var artifact = try derive(&model, &request);
     defer artifact.deinit();
-    var kernel = try kernel_module.compile(std.testing.allocator, &artifact, .{
+    var kernel = try kernel_module.compile(test_allocator.allocator, &artifact, .{
         .capability = .value,
     });
     defer kernel.deinit();
@@ -610,7 +611,7 @@ test "a declared artifact scheme is threaded to the kernel and accepted" {
     var point = try parsePoint(phi4_point);
     defer point.deinit();
     var binding = try kernel_module.bind(
-        std.testing.allocator,
+        test_allocator.allocator,
         &kernel,
         &model,
         &point,
@@ -651,14 +652,14 @@ const Bound = struct {
         errdefer request.deinit();
         var artifact = try derive(&model, &request);
         errdefer artifact.deinit();
-        var kernel = try kernel_module.compile(std.testing.allocator, &artifact, .{
+        var kernel = try kernel_module.compile(test_allocator.allocator, &artifact, .{
             .capability = .value,
         });
         errdefer kernel.deinit();
         var point = try parsePoint(phi4_point);
         defer point.deinit();
         const binding = try kernel_module.bind(
-            std.testing.allocator,
+            test_allocator.allocator,
             &kernel,
             &model,
             &point,
@@ -692,12 +693,12 @@ test "a binding survives its kernel struct being moved" {
     defer bound.deinit();
 
     const layout = bound.binding.workspaceLayout(1);
-    const workspace = try std.testing.allocator.alignedAlloc(
+    const workspace = try test_allocator.allocator.alignedAlloc(
         u8,
         .of(Scalar),
         layout.bytes,
     );
-    defer std.testing.allocator.free(workspace);
+    defer test_allocator.allocator.free(workspace);
 
     var values: [1]Scalar = undefined;
     var statuses: [1]kernel_module.Status = undefined;
@@ -722,7 +723,7 @@ test "representative allocation failures never publish a partial binding" {
     defer point.deinit();
 
     for (0..16) |fail_index| {
-        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        var failing = std.testing.FailingAllocator.init(test_allocator.allocator, .{
             .fail_index = fail_index,
         });
         var binding = kernel_module.bind(

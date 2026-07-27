@@ -8,6 +8,7 @@
 //! either.
 
 const std = @import("std");
+const test_allocator = @import("test_allocator");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
 
@@ -18,7 +19,7 @@ const kernel_module = phaser.kernel;
 const Scalar = kernel_module.Scalar;
 
 fn testContext() phaser.Context {
-    return switch (phaser.Context.init(std.testing.allocator, .{
+    return switch (phaser.Context.init(test_allocator.allocator, .{
         .max_diagnostics = 16,
         .max_related_locations = 32,
     })) {
@@ -162,13 +163,13 @@ const Harness = struct {
         errdefer request.deinit();
         var artifact = try derive(&model, &request);
         errdefer artifact.deinit();
-        var kernel = try kernel_module.compile(std.testing.allocator, &artifact, .{
+        var kernel = try kernel_module.compile(test_allocator.allocator, &artifact, .{
             .capability = capability,
         });
         errdefer kernel.deinit();
 
         const layout = kernel.workspaceLayout(1);
-        const workspace = try std.testing.allocator.alignedAlloc(
+        const workspace = try test_allocator.allocator.alignedAlloc(
             u8,
             .of(Scalar),
             layout.bytes,
@@ -183,7 +184,7 @@ const Harness = struct {
     }
 
     fn deinit(self: *Harness) void {
-        std.testing.allocator.free(self.workspace);
+        test_allocator.allocator.free(self.workspace);
         self.kernel.deinit();
         self.artifact.deinit();
         self.request.deinit();
@@ -456,12 +457,12 @@ test "misaligned workspace is rejected before execution" {
     defer harness.deinit();
 
     const layout = harness.kernel.workspaceLayout(1);
-    const oversized = try std.testing.allocator.alignedAlloc(
+    const oversized = try test_allocator.allocator.alignedAlloc(
         u8,
         .of(Scalar),
         layout.bytes + @alignOf(Scalar),
     );
-    defer std.testing.allocator.free(oversized);
+    defer test_allocator.allocator.free(oversized);
 
     // A deliberately offset view of correctly sized storage. This is exactly
     // what a foreign caller can hand over, and it must be rejected rather than

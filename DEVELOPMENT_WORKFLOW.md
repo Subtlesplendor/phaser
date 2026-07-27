@@ -14,7 +14,9 @@ reproducibility, and review goals.
 
 ## 1. Repository and authority
 
-Phaser is developed in a private Git repository hosted on GitHub.
+Phaser is developed in a public Git repository hosted on GitHub. The repository
+is public so that the design and its verification record can be read as they
+develop; the library itself is not fit for use, as `README.md` states.
 
 The `main` branch is protected once implementation work begins:
 
@@ -32,20 +34,41 @@ The repository owner retains merge and release authority. An implementing agent
 MUST NOT merge a pull request, create a release or tag, publish an artifact, or
 change repository protection without explicit permission.
 
-Server-side branch protection requires a paid plan for a private repository and
-is currently unavailable. Local hooks in `.githooks/` refuse a commit or push on
-`main` in its place. They are advisory: enable them per clone with
+### 1.1 Enforcement
+
+The rules above are enforced server-side by a repository ruleset on the default
+branch, which requires a pull request, requires the bounded per-change checks
+`Repository checks`, `Build and test (Linux x86-64)` and
+`Build and test (macOS ARM64)` to pass against an up-to-date branch, and refuses
+deletion and non-fast-forward pushes. The ruleset lists no bypass actors, so it
+binds the repository owner as well; relaxing it is a deliberate, auditable edit
+to the ruleset rather than an ambient administrative privilege.
+
+Local hooks in `.githooks/` refuse a commit or push on `main`. They are now a
+fast local pre-check rather than the only protection: enable them per clone with
 
 ```sh
 git config core.hooksPath .githooks
 ```
 
-A clone that has not done so is unprotected, and `--no-verify` bypasses them
-deliberately. They are a guard against mistakes, not an authorization boundary.
+A clone that has not done so still cannot push to `main`, and `--no-verify`
+bypasses the hooks but not the ruleset. They remain a guard against mistakes,
+not an authorization boundary.
 
-Phaser initially uses squash merging. The resulting commit on `main` MUST
-describe one coherent change and preserve the pull request as the detailed
-review record.
+Phaser uses squash merging, which the repository permits as the only merge
+method. The resulting commit on `main` MUST describe one coherent change and
+preserve the pull request as the detailed review record. Merged branches are
+deleted automatically.
+
+### 1.2 Outside contributions
+
+Nobody outside the repository has write access; a contribution arrives as a pull
+request from a fork and is subject to the same ruleset and the same review. Such
+a pull request runs under the `pull_request` event, so it receives a read-only
+token and no repository secrets, and workflow runs from all external
+contributors require the owner's approval before any job starts. A change that
+would grant a workflow more than read access, or that would introduce a
+dependency, remains subject to section 9 regardless of its origin.
 
 ## 2. From design to implementation
 
@@ -172,6 +195,16 @@ fuzzing. If the number of targets makes that too expensive, targets rotate on a
 documented schedule while the most important trust boundaries continue to run
 nightly.
 
+What that budget buys depends on what the targets allocate through. Fuzz targets
+use a private allocator that keeps leak, double-free, and use-after-free
+detection but, in the ReleaseSafe campaign, captures no allocation backtraces:
+capturing them was consuming all but a small fraction of the search. A leak found
+nightly is therefore reported without its allocation site, and the Debug replay
+that section 7 already requires reports it with one. Decision
+[0010](docs/decisions/0010-fuzz-search-budget.md) records the measurements and
+the per-target budget they set. A campaign that runs out of wall clock reports
+what it searched and passes; only a failure fails the job.
+
 The mutation campaign rotates under exactly that allowance, because a mutant
 costs a full rebuild of the oracle and the whole repository would take hours.
 `tools/ci/mutation_rotation.sh` assigns every (source file, mutation operator)
@@ -184,6 +217,15 @@ Mutation runs use `zig build test-mutation` as their oracle, which contains only
 deterministic tiers: it excludes fuzz replay and the randomized property
 campaign. Mutation runs do not fail on survivors. Decision
 [0005](docs/decisions/0005-mutation-testing-dependency.md) records why.
+
+The oracle runs that suite with `-Dtest-allocation-traces=false`, which keeps
+leak, double-free, and use-after-free detection but stops capturing an allocation
+backtrace the campaign never reads, and costs about an order of magnitude less
+per mutant. Only the oracle passes it: every pull-request check, every other
+nightly job, and every local `zig build test` keeps the traces and the runner's
+per-test leak attribution. Decision
+[0011](docs/decisions/0011-test-allocation-traces.md) records the measurements
+and what the untraced mode gives up.
 
 A surviving mutant is a standing property of the test suite, not a regression in
 the commit that happened to be current. Treat it as a gap to close deliberately,

@@ -1,5 +1,18 @@
 # Phaser
 
+> [!WARNING]
+> **Work in progress. Not fit for use.**
+>
+> Phaser is under active early development and is not ready for scientific,
+> production, or any other use. It has not been validated against independent
+> implementations or published results, its public API and on-disk formats
+> change without notice or deprecation, and no result it produces should be
+> trusted or cited. There is no release, no versioning guarantee, and no
+> support.
+>
+> The repository is public so that the design and its verification record can be
+> read and critiqued as they develop — not because the library is usable yet.
+
 Phaser is a Zig library for deriving and evaluating perturbative quantum field
 theory calculations. Milestone 1 provides the exact-expression and canonical
 real-scalar model foundation for the first numerical vertical slice.
@@ -188,6 +201,10 @@ a pull request. Configuration lives in `zentinel.toml`, and decision
 
 The C ABI and
 language bindings are not implemented yet.
+
+## License
+
+Phaser is licensed under the [MIT License](LICENSE).
 
 The architecture and milestone contracts are documented in
 [DESIGN.md](DESIGN.md) and

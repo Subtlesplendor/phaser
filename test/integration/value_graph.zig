@@ -4,13 +4,14 @@
 //! models the conformance fixtures reference.
 
 const std = @import("std");
+const test_allocator = @import("test_allocator");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
 
 const value = phaser.value;
 
 fn loadModel(source: []const u8) !phaser.Model {
-    const context = switch (phaser.Context.init(std.testing.allocator, .{
+    const context = switch (phaser.Context.init(test_allocator.allocator, .{
         .max_diagnostics = 16,
         .max_related_locations = 32,
     })) {
@@ -35,7 +36,7 @@ test "model expressions import into one shared value arena" {
     var model = try loadModel(example_data.phi4_model);
     defer model.deinit();
 
-    var builder = try value.Builder.init(std.testing.allocator, .{});
+    var builder = try value.Builder.init(test_allocator.allocator, .{});
     errdefer builder.deinit();
 
     // Every model expression lands in the same arena, so shared structure is
@@ -61,7 +62,7 @@ test "importing the same expression twice yields one identifier" {
     var model = try loadModel(example_data.phi4_model);
     defer model.deinit();
 
-    var builder = try value.Builder.init(std.testing.allocator, .{});
+    var builder = try value.Builder.init(test_allocator.allocator, .{});
     defer builder.deinit();
 
     const quartic = model.scalarTensorExpression(.scalar_quartic, &.{ 0, 0, 0, 0 }).?;
@@ -77,7 +78,7 @@ test "the multi-scalar mass tensor imports with its declared dimensions" {
     var model = try loadModel(example_data.multi_scalar_model);
     defer model.deinit();
 
-    var builder = try value.Builder.init(std.testing.allocator, .{});
+    var builder = try value.Builder.init(test_allocator.allocator, .{});
     defer builder.deinit();
 
     // Every scalar_mass_squared component carries mass dimension 2.
@@ -95,7 +96,7 @@ test "a background-dependent potential differentiates to its exact gradient" {
     var model = try loadModel(example_data.phi4_model);
     defer model.deinit();
 
-    var builder = try value.Builder.init(std.testing.allocator, .{});
+    var builder = try value.Builder.init(test_allocator.allocator, .{});
     defer builder.deinit();
 
     const phi = try builder.background(0, "phi", 1);

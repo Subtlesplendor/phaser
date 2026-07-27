@@ -8,6 +8,7 @@
 //! this milestone's export surface.
 
 const std = @import("std");
+const test_allocator = @import("test_allocator");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
 
@@ -15,7 +16,7 @@ const symbolic = phaser.symbolic;
 const calculation = phaser.calculation;
 
 fn testContext() phaser.Context {
-    return switch (phaser.Context.init(std.testing.allocator, .{
+    return switch (phaser.Context.init(test_allocator.allocator, .{
         .max_diagnostics = 16,
         .max_related_locations = 32,
     })) {
@@ -85,11 +86,11 @@ fn renderPotential(
     artifact: *const calculation.Artifact,
     target: symbolic.Target,
 ) !std.Io.Writer.Allocating {
-    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     errdefer output.deinit();
     try symbolic.writePotential(
         artifact,
-        std.testing.allocator,
+        test_allocator.allocator,
         .{ .target = target },
         &output.writer,
     );
@@ -142,12 +143,12 @@ test "the phi4 gradient renders with its exact coefficients" {
     var artifact = try derive(&model, &request);
     defer artifact.deinit();
 
-    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer output.deinit();
     try symbolic.writeGradientComponent(
         &artifact,
         0,
-        std.testing.allocator,
+        test_allocator.allocator,
         .{ .target = .phaser },
         &output.writer,
     );
@@ -167,12 +168,12 @@ test "a structurally absent contribution renders as an explicit zero" {
     var artifact = try derive(&model, &request);
     defer artifact.deinit();
 
-    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer output.deinit();
     try symbolic.writeContribution(
         &artifact,
         .scalar_cubic,
-        std.testing.allocator,
+        test_allocator.allocator,
         .{ .target = .phaser },
         &output.writer,
     );
@@ -191,12 +192,12 @@ test "the multi-scalar quartic contribution shows its orbit coefficients" {
     var artifact = try derive(&model, &request);
     defer artifact.deinit();
 
-    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer output.deinit();
     try symbolic.writeContribution(
         &artifact,
         .scalar_quartic,
-        std.testing.allocator,
+        test_allocator.allocator,
         .{ .target = .phaser },
         &output.writer,
     );
@@ -225,7 +226,7 @@ test "a component slice discloses its embedding and fluctuation sector" {
     var artifact = try derive(&model, &request);
     defer artifact.deinit();
 
-    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer output.deinit();
     try symbolic.writeBackground(&artifact, &output.writer);
 
@@ -246,11 +247,11 @@ test "the artifact summary is bounded and reports its counts" {
     var artifact = try derive(&model, &request);
     defer artifact.deinit();
 
-    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer output.deinit();
     try symbolic.writeSummary(
         &artifact,
-        std.testing.allocator,
+        test_allocator.allocator,
         .{ .target = .phaser, .max_preview_nodes = 4 },
         &output.writer,
     );
@@ -273,7 +274,7 @@ test "exported Phaser notation round trips for a parameter-only value" {
     var model = try loadModel(example_data.multi_scalar_model);
     defer model.deinit();
 
-    var builder = try phaser.value.Builder.init(std.testing.allocator, .{});
+    var builder = try phaser.value.Builder.init(test_allocator.allocator, .{});
     const component = model.scalarTensorExpression(
         .scalar_mass_squared,
         &.{ 0, 1 },
@@ -285,16 +286,16 @@ test "exported Phaser notation round trips for a parameter-only value" {
     const text = try symbolic.renderAlloc(
         &graph,
         imported,
-        std.testing.allocator,
+        test_allocator.allocator,
         .{ .target = .phaser },
     );
-    defer std.testing.allocator.free(text);
+    defer test_allocator.allocator.free(text);
 
     const parameters = [_]phaser.expression.Parameter{
         .{ .name = "m_hs2", .id = 10, .mass_dimension = 2 },
     };
     const reparsed = try phaser.expression.parse(
-        std.testing.allocator,
+        test_allocator.allocator,
         try phaser.SourceId.fromUsize(2),
         text,
         &parameters,
