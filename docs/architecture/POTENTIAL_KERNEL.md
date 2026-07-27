@@ -548,8 +548,14 @@ automatic differentiation is an initial candidate, not a mandated solution.
 Differentiating through a generic eigenvalue-labeling procedure is not by itself
 a sufficient contract near degeneracies.
 
-Spectral derivatives SHOULD be expressed through invariant matrix or spectral
-operations where practical. Their implementation MUST declare:
+The scalar one-loop gradient and Hessian use the specialized invariant
+Fréchet/divided-difference operation selected by
+[Decision 0009](../decisions/0009-scalar-spectral-derivatives.md). It fixes the
+eigenbasis formulas, deterministic nonzero degeneracy clusters, stable
+close-pair evaluation, exact-zero block criterion, and point-atomic failure
+behavior.
+
+Every later spectral derivative implementation MUST declare:
 
 - supported matrix properties;
 - degeneracy behavior;
@@ -557,8 +563,6 @@ operations where practical. Their implementation MUST declare:
 - derivative order;
 - numerical tolerances; and
 - unsupported domains.
-
-The exact spectral-derivative algorithm is deferred.
 
 ### 12.4 Finite differences
 
@@ -845,7 +849,9 @@ This specification deliberately does not fix:
 - JIT support;
 - scalar types beyond complete `f64` support;
 - complex inputs and result types beyond `Complex64`;
-- spectral-derivative algorithms beyond their invariant semantic contract;
+- spectral-derivative algorithms for operations beyond the scalar one-loop
+  contract fixed by
+  [Decision 0009](../decisions/0009-scalar-spectral-derivatives.md);
 - master-integral and thermal-function implementations;
 - automatic-differentiation implementation;
 - precise numerical tolerance catalogs;

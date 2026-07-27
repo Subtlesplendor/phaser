@@ -319,6 +319,10 @@ meanings. Those prerequisites are now discharged:
 - [Decision 0008](../decisions/0008-symmetric-eigensolver.md) selects the
   deterministic real-symmetric cyclic Jacobi solver, direct small-size paths,
   exact caller-workspace accounting, and explicit `nonconvergent` behavior.
+- [Decision 0009](../decisions/0009-scalar-spectral-derivatives.md) selects the
+  specialized invariant Fréchet/divided-difference gradient and Hessian,
+  deterministic nonzero degeneracy clusters, stable close-pair evaluation, and
+  the exact zero-block singularity criterion.
 - [Kernel Instruction Set](KERNEL_INSTRUCTION_SET.md) and
   [Internal Representations](INTERNAL_REPRESENTATIONS.md#54-matrices-and-spectral-operations)
   define mixed real and `Complex64` temporaries, real matrix and eigensolver

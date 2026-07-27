@@ -510,8 +510,9 @@ nodes, not persistent eigenvalue labels or a general matrix-algebra language.
   near-degenerate inputs or decides symbolic equality.
 - **Differentiation.** The gradient may differentiate to the Hessian. Further
   differentiation is unsupported in Milestone 3 and is rejected during
-  construction or lowering. Both implemented orders use invariant spectral
-  divided differences or another method with the same semantics, never
+  construction or lowering. Both implemented orders use the specialized
+  invariant Fréchet/divided-difference operation fixed by
+  [Decision 0009](../decisions/0009-scalar-spectral-derivatives.md), never
   differentiation of an arbitrary eigensolver presentation.
 - **Backend support.** The Milestone 3 reference backend supports value,
   gradient, and Hessian only for the domains its spectral derivative operation
