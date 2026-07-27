@@ -435,6 +435,89 @@ A backend MUST NOT assume such a property merely because it is expected
 physically; the property must have been established by construction or
 validation.
 
+Milestone 3 adds the following closed node subset. These are scientific value
+nodes, not persistent eigenvalue labels or a general matrix-algebra language.
+
+#### 5.4.1 `real_symmetric_matrix`
+
+- **Operands and result type.** The operands are the
+  \(n(n+1)/2\) real scalar upper-triangular entries in lexical index order. The
+  result is a real symmetric \(n\times n\) matrix with structural dimension
+  \(n\).
+- **Semantics.** Matrix construction is exact while its scalar operands remain
+  exact. The upper triangle is authoritative; the lower triangle denotes the
+  corresponding identical operands rather than separately rounded values.
+- **Domain and branch.** Every entry must be a real scalar of the same required
+  mass dimension. There is no branch choice.
+- **Canonicalization.** Node identity contains \(n\) and the ordered
+  upper-triangular `ValueId` list. Construction does not diagonalize the matrix,
+  average triangles, or identify orthogonally related matrices.
+- **Differentiation.** Differentiation with respect to a background coordinate
+  differentiates each stored entry and preserves its position and symmetry.
+  First and second matrix derivatives are ordinary real-symmetric matrix nodes.
+- **Backend support.** The Milestone 3 reference backend supports finite
+  `f64` entries and materializes any required dense mirrored form in
+  caller-provided workspace.
+
+#### 5.4.2 `scalar_one_loop_spectral_value`
+
+- **Operands and result type.** A real-symmetric mass-squared matrix and one
+  positive real renormalization-scale input produce a `Complex64` scalar of
+  mass dimension four.
+- **Semantics.** The node denotes formula version `scalar-vacuum-msbar/1` over
+  the complete real eigenvalue multiset, including multiplicity, as specified
+  in
+  [Zero-Temperature One-Loop Scalar Effective Potential §3](../calculations/SCALAR_ONE_LOOP_EFFECTIVE_POTENTIAL.md#3-one-loop-convention).
+  It is exact symbolic structure whose numerical evaluation begins only after
+  lowering.
+- **Domain and branch.** The scale is finite and positive. Negative
+  eigenvalues use the principal logarithm with `Arg(z) in (-pi, pi]`; an exact
+  zero eigenvalue contributes exact complex zero without evaluating a
+  logarithm. A nonzero imaginary component is inside the successful domain.
+- **Canonicalization.** Identity contains the exact matrix operand, scale input,
+  formula version, and branch policy. The node does not sort symbolic
+  eigenvalues, infer degeneracy from a tolerance, or identify matrices related
+  by a basis transformation. Basis covariance is a semantic property tested
+  independently, not an interning rule.
+- **Differentiation.** Differentiation produces the invariant derivative nodes
+  of section 5.4.3. It never constructs derivatives of an ordered eigenvalue or
+  eigenvector phase.
+- **Backend support.** The Milestone 3 reference backend supports real `f64`
+  matrices and scales, deterministic real-symmetric eigensolution, and
+  `Complex64` output. Unsupported matrix size, precision, or backend fails
+  during lowering.
+
+#### 5.4.3 `scalar_one_loop_spectral_gradient` and
+`scalar_one_loop_spectral_hessian`
+
+- **Operands and result types.** Each node refers to one
+  `scalar_one_loop_spectral_value`, the ordered background-coordinate set, and
+  the required first- and, for the Hessian, second-derivative
+  real-symmetric matrices. Results are respectively a `Complex64` vector and a
+  symmetric `Complex64` matrix in canonical background-coordinate order.
+- **Semantics.** They are the mathematical background derivatives of the
+  invariant spectral value, including the background embedding and complete
+  eigenvalue multiplicity. Their value is independent of numerical eigenvalue
+  ordering, eigenvector signs, and rotations inside a degenerate eigenspace.
+- **Domain and branch.** They retain the value node's principal branch. The
+  finite analytic zero-mode value and first-derivative limits are used before
+  numerical arithmetic. A required divergent second derivative is the
+  point-level `singular_derivative` outcome; an analytically established finite
+  cancellation remains successful.
+- **Canonicalization.** Identity contains the parent value node, derivative
+  order, coordinate order, and exact matrix-derivative operands. Mixed Hessian
+  coordinates use canonical coordinate order. No tolerance merges
+  near-degenerate inputs or decides symbolic equality.
+- **Differentiation.** The gradient may differentiate to the Hessian. Further
+  differentiation is unsupported in Milestone 3 and is rejected during
+  construction or lowering. Both implemented orders use invariant spectral
+  divided differences or another method with the same semantics, never
+  differentiation of an arbitrary eigensolver presentation.
+- **Backend support.** The Milestone 3 reference backend supports value,
+  gradient, and Hessian only for the domains its spectral derivative operation
+  declares. Lowering records each supported derivative capability; it does not
+  silently substitute finite differences.
+
 ### 5.5 Interning and equality
 
 `ValueId` equality denotes structural identity within one value arena.
@@ -637,7 +720,7 @@ This specification deliberately does not fix:
 - detailed simplification and differentiation algorithms;
 - the boundary between symbolic contraction and component lowering for each
   backend;
-- the first kernel instruction set;
+- concrete kernel instruction-record layouts;
 - interpreter, AOT, JIT, or accelerator implementation details;
 - public calculation-artifact serialization; or
 - a stable provenance interchange schema.

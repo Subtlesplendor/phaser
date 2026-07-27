@@ -149,6 +149,10 @@ Initial capability categories are conceptually:
 ```text
 value
 value_batch
+gradient
+gradient_batch
+hessian
+hessian_batch
 value_gradient
 value_gradient_batch
 value_gradient_hessian
@@ -177,6 +181,14 @@ separate value, gradient, and Hessian calls. Separate calls MAY repeat work.
 Every fused call evaluates all requested outputs at one input point and under
 one consistent status and branch policy.
 
+Publication is point-atomic. A fused operation computes into workspace and
+publishes none of a point's requested outputs until every required value and
+derivative has succeeded. If a requested Hessian produces
+`singular_derivative`, the fused call publishes no value or gradient for that
+point even when those lower-order quantities are finite. The caller may issue a
+separate value or gradient operation at the same point; each operation has its
+own status and publication boundary.
+
 ### 5.3 Capability sets and identity
 
 The compiled capability set contributes to kernel identity when it changes the
@@ -189,10 +201,17 @@ expand the kernel's capability set dynamically.
 
 ### 6.1 Initial production type
 
-`f64` is the initial real input and real-result scalar type. Calculations whose
-mathematical value is complex MAY additionally provide a complete
-`Complex64 { re: f64, im: f64 }` result capability while retaining real `f64`
-parameters, scales, environments, and backgrounds.
+`f64` is the initial real input scalar type and the result type for a selected
+tree-only output. Every output selection containing a loop contribution uses
+`Complex64 { re: f64, im: f64 }` for values, gradient entries, Hessian entries,
+and separated loop-order or contribution-group outputs. Real contributions
+promote to `(x, 0)`. Parameters, scales, environments, backgrounds,
+field-dependent mass matrices, eigenvalues, and eigensolver work remain real
+`f64`.
+
+The result type is kernel metadata and does not change by point. A finite
+nonzero imaginary component is a successful `Complex64` result with status
+`ok`.
 
 Every operation used by such a kernel MUST support its declared real or complex
 result domain consistently,
@@ -353,6 +372,11 @@ status                        status record
 
 Only declared outputs are present.
 
+Each logical element has the result type declared by the selected contribution
+set under section 6.1. In particular, an order-one selected value, gradient, or
+Hessian element is `Complex64` even at a point where its imaginary component is
+zero.
+
 ### 9.2 Batch outputs
 
 Batch output prepends the point dimension:
@@ -427,8 +451,10 @@ Every implemented instruction kind defines:
 - reproducibility behavior; and
 - reference implementation.
 
-The complete opcode catalog is deferred. It is a closed, exhaustively checked
-tagged union for each Phaser build.
+The reference backend's complete semantic opcode catalog is specified in
+[Kernel Instruction Set](KERNEL_INSTRUCTION_SET.md). It is a closed,
+exhaustively checked tagged union for each Phaser build. Concrete Zig and binary
+layouts remain internal.
 
 ### 10.3 Scheduling and temporaries
 
@@ -571,8 +597,10 @@ subregions or per-worker constraints.
 
 Workspace may include:
 
-- numerical temporary slots;
-- matrix and eigensolver scratch;
+- typed real and `Complex64` numerical temporary slots;
+- authoritative and materialized real-symmetric matrices;
+- real eigenvalues, scaled working matrices, eigenvectors or equivalent
+  transformation state, and residual scratch;
 - derivative values;
 - contraction scratch;
 - special-function state;
@@ -581,6 +609,10 @@ Workspace may include:
 - per-worker storage.
 
 Callers MUST NOT infer workspace solely from public input and output shapes.
+Matrix dimension and the selected eigensolver are fixed kernel structure, so
+the query accounts for their exact checked byte sizes and alignments rather than
+returning an asymptotic estimate. Exact-size workspace succeeds and one byte
+less fails before evaluation.
 
 ### 13.3 Allocation
 
@@ -605,8 +637,31 @@ Every numerical instruction must map its expected domain and convergence
 failures into the kernel status system. Internal invalid opcodes, slot types,
 or buffer plans are asserted programmer errors after kernel validation.
 
+The initial point statuses and meanings are:
+
+```text
+ok
+non_finite
+division_by_zero
+nonconvergent
+singular_derivative
+```
+
+`non_finite` reports non-finite input to a point operation or non-finite
+arithmetic for which no analytic limit applies. `nonconvergent` reports a
+bounded numerical operation that exhausted its convergence or postcondition
+contract. `singular_derivative` reports a mathematically singular requested
+derivative, including an uncancelled zero-mode scalar Hessian term. These
+statuses MUST NOT be collapsed into one another. A negative mass-squared
+eigenvalue and a finite nonzero imaginary component remain `ok`.
+
 A batch SHOULD retain independent status for each point. A failed point MUST
 NOT corrupt another point's output or workspace.
+
+For a failed point, an operation publishes none of that point's declared
+outputs. This point-atomic rule applies to scalar, batch, fused, loop-order, and
+contribution-group outputs. Other points in a collecting batch retain their
+independent successful outputs.
 
 The kernel MUST NOT silently:
 
@@ -754,6 +809,11 @@ Required execution tests include:
 - safe and optimized implementations agree under their declared policy;
 - exact constants and normalized decimals convert correctly;
 - negative, zero, degenerate, hierarchical, and near-singular cases;
+- finite complex results are `ok`, while `non_finite`, `nonconvergent`, and
+  `singular_derivative` are exercised separately;
+- a failed fused point publishes no partial lower-order, loop-order, or
+  contribution-group output, while a separate supported lower-order operation
+  at the same point succeeds;
 - no unrequested real-part, absolute-value, penalty, or precision fallback; and
 - concurrent evaluation with separate workspaces agrees with serial execution.
 
@@ -777,15 +837,15 @@ Fuzzing SHOULD target:
 
 This specification deliberately does not fix:
 
-- exact instruction opcodes and binary layout;
+- concrete instruction-record and binary layouts;
 - public configuration syntax;
 - C ABI handles and function signatures;
 - Python class and method names;
 - the first optimized or AOT backend;
 - JIT support;
 - scalar types beyond complete `f64` support;
-- complex-kernel support;
-- eigensolver and spectral-derivative algorithms;
+- complex inputs and result types beyond `Complex64`;
+- spectral-derivative algorithms beyond their invariant semantic contract;
 - master-integral and thermal-function implementations;
 - automatic-differentiation implementation;
 - precise numerical tolerance catalogs;

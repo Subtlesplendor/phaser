@@ -360,9 +360,24 @@ fluctuations, returns the full principal-branch complex value as specified in
 [Zero-Temperature One-Loop Scalar Effective Potential](SCALAR_ONE_LOOP_EFFECTIVE_POTENTIAL.md).
 There is no implicit “take the real part” policy.
 
-A non-finite or complex result at a particular background does not retroactively
-make the structural artifact invalid. Evaluation reports the point-specific
-status according to the selected policy.
+The numerical result type is determined structurally by the selected
+contributions:
+
+- a selected tree-only value, gradient, or Hessian may remain real `f64`;
+- every selected output that contains a loop contribution is `Complex64`,
+  including a loop-order output, selected sum, gradient, or Hessian; and
+- a real contribution included in such an output promotes exactly to
+  `(real_value, 0)`.
+
+This type does not vary from point to point. A loop-containing output remains
+`Complex64` where its imaginary component happens to be zero.
+
+A finite nonzero imaginary component is a successful result with point status
+`ok`. It does not retroactively make the structural artifact invalid and is not
+an `unsupported_complex`, `non_finite`, or instability status. Evaluation
+distinguishes `non_finite`, `nonconvergent`, and `singular_derivative` as
+different point-level outcomes according to
+[Evaluation Lifecycle §9](../architecture/EVALUATION_LIFECYCLE.md#9-errors-and-per-point-status).
 
 ## 11. Differentiation
 
@@ -448,6 +463,13 @@ points; those points need not be known during lowering. The complete lifecycle
 and evaluation-shape contract is
 [Evaluation Lifecycle and API Semantics](../architecture/EVALUATION_LIFECYCLE.md).
 
+Fused output publication is point-atomic. If any requested derivative makes a
+point fail, no value, gradient, Hessian, loop-order, or contribution-group
+output requested by that fused operation is published for that point. This does
+not make a supported lower-order quantity unavailable: a caller may request a
+separate value or gradient operation at the same background, with its own
+status and atomic publication boundary.
+
 Lowering MUST NOT embed one currently bound parameter point. A future explicit
 specialization capability would require its own recorded contract.
 
@@ -497,6 +519,12 @@ Required tests include:
 - spectral values are invariant under permitted basis transformations;
 - exact and near-degenerate spectra;
 - negative eigenvalues, zero modes, and branch boundaries;
+- loop-containing outputs have a stable `Complex64` type even where their
+  imaginary component is zero, while selected tree-only outputs may remain
+  real;
+- a finite nonzero imaginary component succeeds with status `ok`;
+- `non_finite`, `nonconvergent`, and `singular_derivative` remain distinct, and
+  a failed fused operation publishes none of that point's outputs;
 - analytic or automatic derivatives agree with independent finite differences
   at well-conditioned test points;
 - Hessians have the required symmetry within the declared numerical policy;

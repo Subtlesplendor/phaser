@@ -277,6 +277,18 @@ value_gradient_hessian(point)
 A fused operation computes its requested outputs consistently at one point and
 under one status policy.
 
+Fused publication is point-atomic. Candidate outputs remain in workspace until
+every requested value and derivative for that point has succeeded. If any
+requested derivative fails, none of the fused outputs for that point are
+published. For example, a `value_gradient_hessian` call that reaches a singular
+zero-mode Hessian returns `singular_derivative` without publishing its otherwise
+finite value or gradient.
+
+Atomicity is per operation, not a claim that every lower-order quantity is
+undefined. A caller that needs the supported lower-order result at the same
+background may request `value` or `gradient` separately; that operation has its
+own status and publication boundary.
+
 The API MUST NOT silently calculate a derivative by finite differences because
 a symbolic, analytic, or automatic derivative capability is unavailable.
 Finite differences are an explicit numerical workflow or explicitly selected
@@ -372,16 +384,30 @@ These errors are detected before numerical evaluation where practical.
 Point-level status includes failures or exceptional domains arising only for a
 particular background, such as:
 
-- unsupported complex values;
-- singular matrix or loop-function arguments;
-- nonconvergence;
-- overflow or non-finite results; and
-- branch or domain violations.
+- `non_finite`, for non-finite inputs or arithmetic not covered by an analytic
+  limit;
+- `division_by_zero`, for a zero divisor in the ordinary real instruction set;
+- `nonconvergent`, for a bounded numerical operation that exhausts its
+  convergence or postcondition contract; and
+- `singular_derivative`, for a requested derivative that is mathematically
+  singular.
+
+`ok` denotes success. These outcomes are distinct: a singular zero-mode Hessian
+is not manufactured as infinity and reported `non_finite`, and a failed
+eigensolver is not reported as a derivative singularity. For the supported
+scalar one-loop principal branch, a negative eigenvalue and a finite nonzero
+imaginary component are `ok`; they are not exceptional domains.
 
 A batch interface SHOULD be able to return one status per point so a failed
 point does not erase valid results for unrelated points. An explicit
-`fail_fast` policy MAY be provided. Partial-output semantics and the complete
-status enumeration remain to be specified by the numerical API.
+`fail_fast` policy MAY be provided.
+
+Output publication is point-atomic for every scalar, batch, or fused operation.
+A failed point publishes none of the outputs declared by that operation,
+including lower-order, loop-order, and contribution-group outputs. Successful
+points before or after it in a collecting batch retain their results. A
+`fail_fast` call may stop before later points, but it MUST NOT expose candidate
+outputs from the point that caused the stop.
 
 The core MUST NOT silently replace a failed point with \(+\infty\), a real part,
 an absolute value, or another optimizer-oriented penalty. A workflow adapter MAY
@@ -504,6 +530,11 @@ Required tests include:
 - core evaluation performs no allocation;
 - call-level validation occurs before unsafe buffer use;
 - one failed batch point does not corrupt unrelated outputs;
+- each failed point publishes none of that operation's outputs;
+- a fused `singular_derivative` publishes no finite lower-order candidate,
+  while a separate supported value or gradient call at the same point succeeds;
+- finite nonzero imaginary results are `ok`, and `non_finite`,
+  `nonconvergent`, and `singular_derivative` are distinguished;
 - explicit `fail_fast` and collect policies agree on preceding valid points;
 - concurrent evaluation with separate workspaces agrees with serial execution;
 - Python convenience and low-level buffer interfaces agree; and
@@ -526,7 +557,6 @@ This specification deliberately does not fix:
 - concrete bound-context ownership and mutation APIs;
 - zero-length batch semantics;
 - supported strided or column-major layouts;
-- the initial per-point status enumeration;
 - default collect versus fail-fast policy;
 - exact batch workspace formulas;
 - backend threading and preferred block sizes;
