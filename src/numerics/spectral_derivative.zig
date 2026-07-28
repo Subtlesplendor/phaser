@@ -548,6 +548,12 @@ pub fn dividedDifference(left: Scalar, right: Scalar, scale: Scalar) Complex64 {
             const logarithm = @log(@abs(middle) / (scale * scale));
             return .{
                 .re = (logarithm - series) / (32.0 * std.math.pi * std.math.pi),
+                // `< 0` and `<= 0` are equivalent here: this branch is only
+                // reached when `left` and `right` are both nonzero and same
+                // sign, so their average `middle` cannot be exactly zero
+                // either, the same way `scalarOneLoopTerm` in
+                // kernel/interpret.zig excludes zero upstream of its own
+                // otherwise-identical branch.
                 .im = if (middle < 0) 1.0 / (32.0 * std.math.pi) else 0,
             };
         }

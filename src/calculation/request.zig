@@ -803,6 +803,37 @@ test "presentation metadata does not change calculation identity" {
     );
 }
 
+test "json nesting past the request's own limit is rejected" {
+    // Default `request_json_nesting` is 16; this is not a valid request
+    // either way, but only the real scan step returns `capacity_exceeded` for
+    // it specifically. A scan that never counted depth at all would fall
+    // through to ordinary schema validation and report a different code
+    // instead, for a document a schema check never reaches structurally.
+    const deeply_nested = "[" ** 17 ++ "]" ** 17;
+    try expectDiagnostic(deeply_nested, .capacity_exceeded);
+}
+
+test "json token count past the request's own limit is rejected" {
+    // Default `request_json_tokens` is 4096; a flat array keeps nesting at 1
+    // so only the token count trips, isolating it from the nesting check
+    // above.
+    const source = "[" ++ "0," ** 4100 ++ "0]";
+    try expectDiagnostic(source, .capacity_exceeded);
+}
+
+test "identifier validation accepts underscore-led names and rejects invalid bytes" {
+    try std.testing.expect(!validIdentifier(""));
+    try std.testing.expect(validIdentifier("_"));
+    try std.testing.expect(validIdentifier("phi"));
+    try std.testing.expect(validIdentifier("_phi2"));
+    try std.testing.expect(validIdentifier("phi_2"));
+    // A leading digit is not itself alphabetic or an underscore.
+    try std.testing.expect(!validIdentifier("2phi"));
+    // A byte inside the identifier that is neither alphanumeric nor an
+    // underscore, distinct from the leading-byte check above.
+    try std.testing.expect(!validIdentifier("phi-2"));
+}
+
 test "each unsupported combination reports its own diagnostic" {
     try expectDiagnostic(
         \\{"schema":"phaser.calculation/0.2","kind":"effective_potential",

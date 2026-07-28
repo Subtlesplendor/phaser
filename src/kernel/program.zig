@@ -417,6 +417,14 @@ pub const Program = struct {
         for (self.instructions) |instruction| {
             try self.validateInstruction(instruction, written, exponent_limit);
             const slot = instruction.result();
+            // Defense in depth rather than a reachable branch: every current
+            // instruction kind already validates its own result slot inside
+            // `validateInstruction`, either through `requireResultType` or a
+            // direct `slotType` lookup, so this never actually fires against
+            // today's instruction catalog. It stays because that is a property
+            // of the catalog, not a guarantee `Instruction.result()` or this
+            // loop makes on its own -- an instruction kind added later without
+            // its own check would rely on exactly this.
             if (slot >= self.temporaries.len) return error.ResultOutOfRange;
             written[slot] = true;
         }
@@ -456,6 +464,15 @@ pub const Program = struct {
             if (temporary.alignment != temporary.kind.alignment()) {
                 return error.InvalidSlotLayout;
             }
+            // The `alignment == 0` disjunct guards the modulo just after it
+            // from dividing by zero, but every `SlotType.alignment()` today
+            // returns a fixed nonzero `@alignOf(Scalar)`, and the check just
+            // above already rejects any temporary whose declared alignment
+            // does not match it -- so this can never observe a zero here
+            // either. Kept for the same reason as the result-slot check in
+            // `validate`: a future slot kind with its own alignment could
+            // make it reachable, and the modulo below is only safe because of
+            // it.
             if (temporary.alignment == 0 or
                 temporary.offset % temporary.alignment != 0)
             {
@@ -777,11 +794,14 @@ test "reading an unwritten slot is rejected" {
 }
 
 test "an out of range operand is rejected" {
+    // Exactly at the boundary (2 temporaries declared, operand names slot 2)
+    // rather than far past it, which an off-by-one would reject just as
+    // readily.
     var program = try programForTest(
         std.testing.allocator,
         &.{
             .{ .load_constant = .{ .result = 0, .source = 0 } },
-            .{ .negate = .{ .result = 1, .operand = 9 } },
+            .{ .negate = .{ .result = 1, .operand = 2 } },
         },
         .{ .value = 1, .gradient = &.{}, .hessian = &.{} },
         2,
@@ -793,10 +813,54 @@ test "an out of range operand is rejected" {
     );
 }
 
-test "an out of range constant or input source is rejected" {
+test "a result slot exactly at the temporary count is rejected" {
+    // `requireResultType` is what a plain load's result passes through, and
+    // its own range check is what this exercises: one temporary declared,
+    // result names slot 1.
     var program = try programForTest(
         std.testing.allocator,
-        &.{.{ .load_constant = .{ .result = 0, .source = 7 } }},
+        &.{.{ .load_constant = .{ .result = 1, .source = 0 } }},
+        .{ .value = 0, .gradient = &.{}, .hessian = &.{} },
+        1,
+    );
+    defer program.deinit();
+    try std.testing.expectError(
+        error.ResultOutOfRange,
+        program.validate(std.testing.allocator, 64),
+    );
+}
+
+test "an assembled matrix's out of range result slot is rejected before its shape" {
+    // `assemble_real_symmetric` reads its own result slot's declared type
+    // before anything else in the instruction, to learn the dimension its
+    // entry count must match -- so an out of range result here is caught by
+    // that direct lookup, not by `requireResultType`, and reports
+    // `OperandOutOfRange` rather than `ResultOutOfRange`. That distinction is
+    // what tells the two code paths apart.
+    var program = try programForTest(
+        std.testing.allocator,
+        &.{
+            .{ .load_constant = .{ .result = 0, .source = 0 } },
+            .{ .assemble_real_symmetric = .{ .result = 1, .entries = &.{0} } },
+        },
+        .{ .value = 0, .gradient = &.{}, .hessian = &.{} },
+        1,
+    );
+    defer program.deinit();
+    try std.testing.expectError(
+        error.OperandOutOfRange,
+        program.validate(std.testing.allocator, 64),
+    );
+}
+
+test "an out of range constant or input source is rejected" {
+    // Exactly at the boundary: `programForTest` fixes two constants, so index
+    // 2 is the first invalid one. A far-out-of-range index would pass under an
+    // off-by-one as readily as under the correct check, so it cannot tell them
+    // apart the way the boundary itself does.
+    var program = try programForTest(
+        std.testing.allocator,
+        &.{.{ .load_constant = .{ .result = 0, .source = 2 } }},
         .{ .value = 0, .gradient = &.{}, .hessian = &.{} },
         1,
     );
@@ -806,9 +870,10 @@ test "an out of range constant or input source is rejected" {
         program.validate(std.testing.allocator, 64),
     );
 
+    // `programForTest` fixes parameter_count at 2.
     var parameter_program = try programForTest(
         std.testing.allocator,
-        &.{.{ .load_parameter = .{ .result = 0, .source = 5 } }},
+        &.{.{ .load_parameter = .{ .result = 0, .source = 2 } }},
         .{ .value = 0, .gradient = &.{}, .hessian = &.{} },
         1,
     );
@@ -816,6 +881,19 @@ test "an out of range constant or input source is rejected" {
     try std.testing.expectError(
         error.SourceOutOfRange,
         parameter_program.validate(std.testing.allocator, 64),
+    );
+
+    // `programForTest` fixes background_count at 1.
+    var background_program = try programForTest(
+        std.testing.allocator,
+        &.{.{ .load_background = .{ .result = 0, .source = 1 } }},
+        .{ .value = 0, .gradient = &.{}, .hessian = &.{} },
+        1,
+    );
+    defer background_program.deinit();
+    try std.testing.expectError(
+        error.SourceOutOfRange,
+        background_program.validate(std.testing.allocator, 64),
     );
 
     // The scale channel is its own slot space, so an index valid for parameters
@@ -867,6 +945,37 @@ test "an oversized exponent is rejected" {
     );
 }
 
+test "an exponent exactly at the limit is accepted and one past it is not" {
+    // The far-oversized case above cannot tell a strict limit from an
+    // off-by-one one; only the boundary itself can.
+    var at_limit = try programForTest(
+        std.testing.allocator,
+        &.{
+            .{ .load_parameter = .{ .result = 0, .source = 0 } },
+            .{ .power_integer = .{ .result = 1, .base = 0, .exponent = 64 } },
+        },
+        .{ .value = 1, .gradient = &.{}, .hessian = &.{} },
+        2,
+    );
+    defer at_limit.deinit();
+    try at_limit.validate(std.testing.allocator, 64);
+
+    var one_over = try programForTest(
+        std.testing.allocator,
+        &.{
+            .{ .load_parameter = .{ .result = 0, .source = 0 } },
+            .{ .power_integer = .{ .result = 1, .base = 0, .exponent = 65 } },
+        },
+        .{ .value = 1, .gradient = &.{}, .hessian = &.{} },
+        2,
+    );
+    defer one_over.deinit();
+    try std.testing.expectError(
+        error.ExponentTooLarge,
+        one_over.validate(std.testing.allocator, 64),
+    );
+}
+
 test "an undeclared output slot is rejected" {
     var program = try programForTest(
         std.testing.allocator,
@@ -878,6 +987,23 @@ test "an undeclared output slot is rejected" {
     defer program.deinit();
     try std.testing.expectError(
         error.OutputNotWritten,
+        program.validate(std.testing.allocator, 64),
+    );
+}
+
+test "an output slot exactly at the temporary count is out of range" {
+    // Distinct from the case above: slot 2 does not exist at all (one
+    // temporary declared), rather than existing but unwritten, which is what
+    // separates `OutputOutOfRange` from `OutputNotWritten`.
+    var program = try programForTest(
+        std.testing.allocator,
+        &.{.{ .load_constant = .{ .result = 0, .source = 0 } }},
+        .{ .value = 1, .gradient = &.{}, .hessian = &.{} },
+        1,
+    );
+    defer program.deinit();
+    try std.testing.expectError(
+        error.OutputOutOfRange,
         program.validate(std.testing.allocator, 64),
     );
 }
@@ -923,9 +1049,15 @@ test "two temporaries may share bytes only when their live ranges are disjoint" 
     const early = LiveRange{ .first_write = 0, .last_use = 3 };
     const late = LiveRange{ .first_write = 4, .last_use = 9 };
     const straddling = LiveRange{ .first_write = 2, .last_use = 6 };
+    // Touching at exactly one instruction position is still overlapping: both
+    // ranges are live during that instruction, so a slot shared there is read
+    // or written by two temporaries at once.
+    const touching = LiveRange{ .first_write = 3, .last_use = 5 };
     try std.testing.expect(!early.overlaps(late));
     try std.testing.expect(early.overlaps(straddling));
     try std.testing.expect(late.overlaps(straddling));
+    try std.testing.expect(early.overlaps(touching));
+    try std.testing.expect(touching.overlaps(early));
 
     var program = try programForTest(
         std.testing.allocator,
@@ -951,6 +1083,50 @@ test "two temporaries may share bytes only when their live ranges are disjoint" 
     // The same sharing is sound once the ranges are disjoint.
     temporaries[0].live = .{ .first_write = 0, .last_use = 1 };
     temporaries[1].live = .{ .first_write = 2, .last_use = 2 };
+    try program.validate(std.testing.allocator, 64);
+}
+
+test "a temporary's declared alignment must match its slot type" {
+    var program = try programForTest(
+        std.testing.allocator,
+        &.{.{ .load_constant = .{ .result = 0, .source = 0 } }},
+        .{ .value = 0, .gradient = &.{}, .hessian = &.{} },
+        1,
+    );
+    defer program.deinit();
+
+    // Zero is as good a mismatch as any other for this check, and it is the
+    // one value that would panic the modulo two lines below if this check
+    // ever let it through instead of catching it here.
+    const temporaries = @constCast(program.temporaries);
+    temporaries[0].alignment = 0;
+    try std.testing.expectError(
+        error.InvalidSlotLayout,
+        program.validate(std.testing.allocator, 64),
+    );
+}
+
+test "adjacently packed temporaries in reverse offset order are disjoint at the boundary" {
+    var program = try programForTest(
+        std.testing.allocator,
+        &.{
+            .{ .load_constant = .{ .result = 0, .source = 0 } },
+            .{ .load_constant = .{ .result = 1, .source = 1 } },
+            .{ .add = .{ .result = 1, .operands = &.{ 0, 1 } } },
+        },
+        .{ .value = 1, .gradient = &.{}, .hessian = &.{} },
+        2,
+    );
+    defer program.deinit();
+
+    // Slot 1 (the second temporary in declaration order) is packed *before*
+    // slot 0 in the frame, touching it exactly at the boundary: disjoint, not
+    // overlapping. This is the ordering the disjointness check's second
+    // clause covers, distinct from the touching-in-declaration-order case
+    // above; both clauses' boundaries need their own coverage.
+    const temporaries = @constCast(program.temporaries);
+    temporaries[0].offset = @sizeOf(Scalar);
+    temporaries[1].offset = 0;
     try program.validate(std.testing.allocator, 64);
 }
 
@@ -1139,6 +1315,48 @@ test "a derivative matrix of the wrong dimension is rejected" {
     );
 }
 
+test "extracting a matrix column exactly at its dimension is rejected" {
+    // A one-by-one Hessian has exactly one column, index 0; index 1 names the
+    // column immediately past it. "an extraction outside its source shape is
+    // rejected" covers the vector case (`extract_element` on a
+    // `.complex_vector` source); this is the matrix case, whose column check
+    // is a separate boundary.
+    var program = try typedProgramForTest(
+        std.testing.allocator,
+        &.{
+            .{ .load_constant = .{ .result = 0, .source = 0 } },
+            .{ .assemble_real_symmetric = .{ .result = 1, .entries = &.{0} } },
+            .{ .symmetric_eigensystem = .{ .result = 2, .matrix = 1 } },
+            .{ .load_renormalization_scale = .{ .result = 3, .source = 0 } },
+            .{ .assemble_real_symmetric = .{ .result = 4, .entries = &.{0} } },
+            .{ .scalar_one_loop_hessian = .{
+                .result = 5,
+                .eigensystem = 2,
+                .first = &.{4},
+                .second = &.{4},
+                .scale = 3,
+            } },
+            .{ .extract_element = .{ .result = 6, .source = 5, .row = 0, .column = 1 } },
+        },
+        .{ .value = 6, .gradient = &.{}, .hessian = &.{} },
+        &.{
+            .real,
+            .{ .real_symmetric_matrix = 1 },
+            .{ .real_eigensystem = 1 },
+            .real,
+            .{ .real_symmetric_matrix = 1 },
+            .{ .complex_matrix = 1 },
+            .complex,
+        },
+        .complex64,
+    );
+    defer program.deinit();
+    try std.testing.expectError(
+        error.ShapeMismatch,
+        program.validate(std.testing.allocator, 64),
+    );
+}
+
 test "structured complex slot sizes follow their declared shape" {
     // A gradient over two coordinates is two complex components; the Hessian
     // over the same coordinates is the full dense four.
@@ -1159,6 +1377,12 @@ test "structured complex slot sizes follow their declared shape" {
         .eql(.{ .real_eigensystem = 2 }));
     try std.testing.expect((SlotType{ .complex_matrix = 2 })
         .eql(.{ .complex_matrix = 2 }));
+
+    // The two unstructured kinds are likewise never confused with each other.
+    try std.testing.expect((SlotType{ .real = {} }).eql(.{ .real = {} }));
+    try std.testing.expect(!(SlotType{ .real = {} }).eql(.{ .complex = {} }));
+    try std.testing.expect((SlotType{ .complex = {} }).eql(.{ .complex = {} }));
+    try std.testing.expect(!(SlotType{ .complex = {} }).eql(.{ .real = {} }));
 
     // A structured slot is not a publishable result element on its own; only
     // an extracted component is.
