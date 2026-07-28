@@ -1,0 +1,19 @@
+# Line-ending policy.
+#
+# Phaser compares committed golden output byte for byte, and reproduces fuzz
+# findings from committed corpus inputs byte for byte. Neither survives a
+# version-control system that rewrites line endings per platform, so this file
+# takes that decision away from the checkout.
+
+# Every text file is LF in the working tree on every platform, including
+# Windows, where Git would otherwise check out CRLF and make each golden
+# comparison fail on an invisible difference.
+* text=auto eol=lf
+
+# Fuzz corpora are byte-exact regression inputs: the bytes are the test. They
+# are marked binary explicitly rather than left to Git's content heuristic,
+# which classifies a file as text when it finds no NUL byte -- and most of these
+# inputs have none while still containing 0x0A bytes that a conversion would
+# rewrite. A corrupted corpus entry does not fail loudly; it silently stops
+# reproducing the finding it was minimized from.
+test/corpus/** -text

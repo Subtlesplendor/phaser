@@ -108,6 +108,12 @@ also called `phaser.lib`, which would silently replace the static
 ELF and Mach-O have no such collision, so they keep `libphaser.a` beside
 `libphaser.so` or `libphaser.dylib`.
 
+Both distributed library products MUST be position-independent. A shared library
+requires it, and in practice the static library does too: mainstream Linux
+distributions default their compilers to `-pie`, so an ordinary
+`cc client.c libphaser.a` against a non-position-independent archive fails to
+link. A consumer MUST NOT have to pass `-no-pie` to use the static library.
+
 The repository owns the authoritative `include/phaser.h`. A generated header MAY
 be used only if its generator is deterministic, its output is checked in or
 otherwise available to consumers, and CI verifies the generated and authoritative

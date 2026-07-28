@@ -44,9 +44,25 @@ pub fn build(b: *std.Build) void {
     const windows_target = target.result.os.tag == .windows;
     const static_library_name = if (windows_target) "phaser_static" else "phaser";
 
+    // The distributed library products are built position-independent, which
+    // the tests and CLI do not need and so do not pay for.
+    //
+    // A shared library requires it. So, in practice, does the static one: every
+    // current mainstream Linux distribution defaults its compiler to `-pie`, so
+    // an ordinary `cc client.c libphaser.a` against a non-PIC archive fails to
+    // link with "relocation R_X86_64_32S ... can not be used when making a PIE
+    // object". Building the archive PIC is what makes static linkage work for a
+    // consumer who has not been told to pass `-no-pie`.
+    const library_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+    });
+
     const library = b.addLibrary(.{
         .name = static_library_name,
-        .root_module = phaser_module,
+        .root_module = library_module,
         .linkage = .static,
     });
     b.installArtifact(library);
@@ -56,7 +72,7 @@ pub fn build(b: *std.Build) void {
     // linkage mode is an unsupported one.
     const shared_library = b.addLibrary(.{
         .name = "phaser",
-        .root_module = phaser_module,
+        .root_module = library_module,
         .linkage = .dynamic,
     });
     b.installArtifact(shared_library);
