@@ -114,6 +114,34 @@ distributions default their compilers to `-pie`, so an ordinary
 `cc client.c libphaser.a` against a non-position-independent archive fails to
 link. A consumer MUST NOT have to pass `-no-pie` to use the static library.
 
+The static library MUST also carry the compiler-support routines the
+implementation language would otherwise contribute at its own link step, because
+a distributed archive is linked by the consumer's toolchain rather than ours.
+
+### 4.1 Known limitation: MSVC and static linkage
+
+`link.exe` cannot consume the static library as of ABI version 0. Both available
+configurations fail:
+
+- with the Zig compiler-support object bundled, `link.exe` rejects it with
+  `LNK1143: invalid or corrupt file: no symbol for COMDAT section`; and
+- without it, `__divti3` and `__udivti3` are undefined, because the library
+  references them and the Microsoft C runtime provides no 128-bit division
+  helpers.
+
+A Windows consumer linking statically therefore uses `lld-link`, which ships
+with LLVM and with the Zig toolchain, and which links the same archive
+successfully. Compilation is unaffected: MSVC compiles `phaser.h` and consumer
+sources normally, and only the final link step differs.
+
+Windows consumers who cannot change linker SHOULD use the DLL and its import
+library, which `link.exe` consumes without difficulty.
+
+This is a limitation of the interaction between the two toolchains, not a
+property of the ABI, and it does not affect Linux or macOS. Conformance runs the
+Windows static-linkage check through `lld-link` so the archive itself stays
+exercised; what remains untested is `link.exe` specifically.
+
 The repository owns the authoritative `include/phaser.h`. A generated header MAY
 be used only if its generator is deterministic, its output is checked in or
 otherwise available to consumers, and CI verifies the generated and authoritative

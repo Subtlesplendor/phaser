@@ -133,7 +133,13 @@ Beyond compiling the header, the per-change tier gains:
   implementations must agree on one documented set, not maintain two.
 - **Both linkages, all three platforms.** The C conformance client is built and
   run against the static and the shared library on Linux x86-64, macOS ARM64,
-  and Windows x86-64.
+  and Windows x86-64. The Windows static link uses `lld-link` rather than
+  `link.exe`, which cannot consume the archive; MSVC still compiles the header
+  and the client, so the independent-compiler requirement is met by the front
+  end that reads them. The limitation and its two failing configurations are
+  recorded in
+  [Language and Interoperability §4.1](../architecture/LANGUAGE_AND_INTEROPERABILITY.md#41-known-limitation-msvc-and-static-linkage),
+  where a Windows consumer will look for it.
 - **Layout parity across ABIs.** The layout tests run on all three platforms
   rather than one, because the Windows x64 calling convention and structure
   packing rules are where a divergence would appear if one exists.

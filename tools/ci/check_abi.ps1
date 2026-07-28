@@ -119,15 +119,58 @@ try {
     # 2. The C client builds and runs against both linkage modes.
     # -----------------------------------------------------------------------
 
+    # -----------------------------------------------------------------------
+    # The static library is linked with lld-link rather than link.exe.
+    #
+    # MSVC's linker cannot consume the archive today, and neither available
+    # path fixes it. With Zig's compiler_rt bundled, link.exe rejects
+    # compiler_rt.obj outright: "LNK1143: invalid or corrupt file: no symbol
+    # for COMDAT section". Without it, __divti3 and __udivti3 are undefined --
+    # Phaser's own object references them and the Microsoft CRT has no
+    # 128-bit division helpers to supply.
+    #
+    # cl.exe still compiles both the header and this client, which is what the
+    # independent-compiler requirement of Language and Interoperability
+    # section 11 actually asks for: a front end that is not Zig's reading the
+    # header. Only the final link differs. The residual gap -- link.exe itself
+    # consuming the archive -- is recorded as a known limitation in
+    # Language and Interoperability section 4, because a Windows consumer
+    # linking statically has to know about it.
+    #
+    # The object cl.exe emits carries its own /DEFAULTLIB directives, so
+    # lld-link resolves the C runtime from the environment vcvars64 set up
+    # without being told which libraries to use.
+    # -----------------------------------------------------------------------
+
     Write-Section 'C client links and runs against the static library'
-    $staticClient = Join-Path $work 'client_static.exe'
-    & cl.exe /nologo /W4 /WX /std:c11 "/I$includeDirectory" $client `
-        "/Fo$work\client_static.obj" "/Fe$staticClient" /link $staticLibrary
-    if ($LASTEXITCODE -ne 0) {
-        Add-Failure 'C client did not build against the static library'
+    $lldLink = $null
+    $candidates = @(
+        (Get-Command lld-link.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
+        (Join-Path $env:ProgramFiles 'LLVM\bin\lld-link.exe')
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { $lldLink = $candidate; break }
+    }
+    if (-not $lldLink) {
+        Add-Failure 'lld-link.exe not found; cannot link the static library on Windows'
     } else {
-        & $staticClient
-        if ($LASTEXITCODE -ne 0) { Add-Failure 'C client failed against the static library' }
+        Write-Host "-- linker: $lldLink"
+        $staticObject = Join-Path $work 'client_static.obj'
+        $staticClient = Join-Path $work 'client_static.exe'
+        & cl.exe /nologo /c /W4 /WX /std:c11 "/I$includeDirectory" $client "/Fo$staticObject"
+        if ($LASTEXITCODE -ne 0) {
+            Add-Failure 'C client did not compile for the static link'
+        } else {
+            & $lldLink /nologo "/OUT:$staticClient" $staticObject $staticLibrary
+            if ($LASTEXITCODE -ne 0) {
+                Add-Failure 'C client did not link against the static library'
+            } else {
+                & $staticClient
+                if ($LASTEXITCODE -ne 0) {
+                    Add-Failure 'C client failed against the static library'
+                }
+            }
+        }
     }
 
     Write-Section 'C client links and runs against the shared library'
