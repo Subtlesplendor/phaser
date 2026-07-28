@@ -246,14 +246,26 @@ test "a parameter-stage division status survives binding" {
     );
     defer binding.deinit();
 
-    var staged_values: [2]Scalar = undefined;
+    // `evaluate`'s documented contract is that a point whose status is not
+    // `.ok` leaves its output buffers untouched (interpret.zig), and every
+    // point here is expected to fail with `division_by_zero`. `values` is
+    // therefore seeded with a sentinel rather than left `undefined`: comparing
+    // two independently `undefined` buffers only happened to pass because
+    // Debug and ReleaseSafe poison-fill undefined memory with the same
+    // pattern. ReleaseFast and ReleaseSmall do not, so the comparison read
+    // whatever was already on the stack at each call site and failed --
+    // platform-dependently, since the leftover bits differ by call history and
+    // target. See the same pattern in
+    // `test/conformance/one_loop_derivatives.zig`.
+    const sentinel: Scalar = -12345.5;
+    var staged_values = [_]Scalar{sentinel} ** 2;
     var staged_statuses: [2]kernel_module.Status = undefined;
     try binding.evaluate(&.{}, 2, fixture.workspace, .{
         .values = &staged_values,
         .statuses = &staged_statuses,
     });
 
-    var direct_values: [2]Scalar = undefined;
+    var direct_values = [_]Scalar{sentinel} ** 2;
     var direct_statuses: [2]kernel_module.Status = undefined;
     try fixture.kernel.evaluate(
         .{ .parameters = binding.parameters, .backgrounds = &.{} },
@@ -262,7 +274,6 @@ test "a parameter-stage division status survives binding" {
         .{ .values = &direct_values, .statuses = &direct_statuses },
     );
 
-    try std.testing.expectEqualSlices(Scalar, &direct_values, &staged_values);
     try std.testing.expectEqualSlices(
         kernel_module.Status,
         &direct_statuses,
@@ -276,6 +287,10 @@ test "a parameter-stage division status survives binding" {
         kernel_module.Status.division_by_zero,
         staged_statuses[1],
     );
+    try std.testing.expectEqual(sentinel, staged_values[0]);
+    try std.testing.expectEqual(sentinel, staged_values[1]);
+    try std.testing.expectEqual(sentinel, direct_values[0]);
+    try std.testing.expectEqual(sentinel, direct_values[1]);
 }
 
 test "the parameter stage is a nonempty prefix that reads no coordinate" {
