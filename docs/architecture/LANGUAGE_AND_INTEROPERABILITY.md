@@ -146,8 +146,10 @@ included from C++, selected in
 [Decision 0014](../decisions/0014-public-header-and-toolchain-baseline.md). That
 decision also makes the header authoritative and hand-written rather than
 generated, and records the supported linkage and platform matrix: static and
-shared linkage on Linux x86-64 and macOS ARM64. Windows is not claimed by
-Milestone 4.
+shared linkage on Linux x86-64, macOS ARM64, and Windows x86-64, each a required
+native test platform. On Windows the single export macro must additionally
+distinguish building the shared library from consuming it, because
+`__declspec(dllimport)` has no ELF or Mach-O counterpart.
 
 ### 5.3 Opaque objects
 
@@ -508,7 +510,6 @@ This specification still leaves open:
 
 - exact parameter lists, which the authoritative header fixes;
 - package repositories and distribution channels;
-- Windows support, deliberately not claimed by Milestone 4;
 - symbol versioning mechanisms;
 - custom allocator hooks;
 - the exact C++ result and exception APIs;

@@ -66,6 +66,13 @@ deletion and non-fast-forward pushes. The ruleset lists no bypass actors, so it
 binds the repository owner as well; relaxing it is a deliberate, auditable edit
 to the ruleset rather than an ambient administrative privilege.
 
+Milestone 4 adds `Build and test (Windows x86-64)` to the per-change suite under
+[Decision 0014](docs/decisions/0014-public-header-and-toolchain-baseline.md).
+Adding it to the *required* set is a ruleset edit, which only the repository
+owner can make; until that edit lands the check runs but does not block, so the
+protection this section describes is weaker for Windows than for the other two
+platforms.
+
 Local hooks in `.githooks/` refuse a commit or push on `main`. They are now a
 fast local pre-check rather than the only protection: enable them per clone with
 
@@ -193,10 +200,12 @@ The pull-request matrix covers these concerns without taking their full Cartesia
 product. Linux x86-64 runs the deterministic core in Debug, the complete bounded
 suite in ReleaseSafe, and the differential suite in ReleaseFast. macOS ARM64 runs
 the complete bounded suite in ReleaseSafe, including the standard property
-budget. Broader build-mode and native-platform combinations remain scheduled
-checks. A push to `main` repeats repository checks and the Linux ReleaseSafe
-suite against the published commit, rather than repeating the complete
-pull-request matrix.
+budget. From Milestone 4, Windows x86-64 runs the complete bounded suite in
+ReleaseSafe together with the public-header, linkage, and symbol checks that
+only MSVC and `dumpbin` can perform. Broader build-mode and native-platform
+combinations remain scheduled checks. A push to `main` repeats repository checks
+and the Linux ReleaseSafe suite against the published commit, rather than
+repeating the complete pull-request matrix.
 
 ### 5.3 Nightly checks
 
@@ -427,15 +436,24 @@ incorrectly approved without its required bounded checks.
 
 ## 10. Initial native platform policy
 
-The initial native platforms are:
+The native platforms are:
 
-- Linux x86-64 as the primary required CI platform; and
-- macOS ARM64 as a required native platform once the basic build exists.
+- Linux x86-64 as the primary required CI platform;
+- macOS ARM64 as a required native platform once the basic build exists; and
+- Windows x86-64 as a required native platform from Milestone 4.
 
-Windows may begin as a compile-only target when relevant. It becomes a required
-native test platform when Phaser claims Windows support, expected no later than
-the public C ABI and shared-library work if that support is part of the
-milestone.
+Windows was originally left as a possible compile-only target, to become
+required "when Phaser claims Windows support, expected no later than the public
+C ABI and shared-library work."
+[Decision 0014](docs/decisions/0014-public-header-and-toolchain-baseline.md)
+made that claim for Milestone 4, so the condition is met and Windows is a
+required native test platform with the same standing as the other two. Its
+compiler is MSVC, which is what Windows C clients use; Phaser's own code builds
+with the pinned Zig toolchain targeting `x86_64-windows-msvc`.
+
+One consequence is worth stating plainly: MSVC runs only on Windows, so a
+maintainer on Linux or macOS cannot reproduce a Windows-only check locally. That
+tier's failures are diagnosed from CI output.
 
 Cross-compilation checks portability but does not replace native execution.
 Every claimed supported platform has a documented native test tier.
@@ -483,9 +501,11 @@ The following remain deliberately empirical:
 - exact per-target property and fuzz budgets;
 - when the number of targets requires nightly rotation;
 - the first dedicated benchmark or continuous-fuzzing runner;
-- the initial coverage-reporting mechanism;
-- Windows native-support timing; and
+- the initial coverage-reporting mechanism; and
 - detailed release automation.
+
+Windows native-support timing was on this list and is now settled: section 10
+makes it a required native platform from Milestone 4.
 
 These choices are resolved from implementation evidence without weakening the
 bounded pull-request suite, permanent regression policy, or explicit release

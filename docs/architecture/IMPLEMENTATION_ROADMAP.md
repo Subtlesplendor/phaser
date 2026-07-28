@@ -93,6 +93,9 @@ added.
 Neither a plotting package nor notebook-execution package is selected by this
 roadmap. Adding one is subject to the external-dependency proposal and explicit
 approval required by [Phaser Engineering Style](../../ENGINEERING_STYLE.md).
+[Decision 0015](../decisions/0015-phase-b-python-dependencies.md) carries those
+proposals for Milestone 4; until each is approved, no notebook depending on it
+may be added.
 
 Before Milestone 4, examples SHOULD produce the same models, reference data, and
 LaTeX fragments that the first notebook will later consume. A Python notebook is
@@ -459,19 +462,22 @@ implementation may begin at all:
   handle set, ownership model, status space, and diagnostics lifetime. Accepted.
 - [Decision 0014](../decisions/0014-public-header-and-toolchain-baseline.md)
   fixes the authoritative header, the minimum C and C++ language versions, the
-  linkage and platform matrix, and the public-symbol allow-list. Accepted except
-  for its independent-compiler dependency proposal, which awaits the repository
-  owner's approval.
+  linkage and platform matrix, and the public-symbol allow-list. Accepted, and
+  its independent-compiler dependency proposal is approved. It also claims
+  Windows x86-64 as a required native platform, which
+  [Development Workflow §10](../../DEVELOPMENT_WORKFLOW.md#10-initial-native-platform-policy)
+  expected this milestone to answer; Phase A carries that cost.
 - [Language and Interoperability §5](LANGUAGE_AND_INTEROPERABILITY.md#5-c-abi)
   carries the operation-level contract those decisions imply. Its exact
   signatures were deferred "until the corresponding core lifecycles have
   executable prototypes"; Milestone 3 produced them, so the deferral has expired.
-- The Phase B dependencies are unapproved and unproposed: CPython Limited API
-  headers, a plotting package, and notebook-execution tooling. Section 17 still
-  defers the last two, while section 3 requires a notebook that cannot be
-  produced without them — the deferral and the requirement have to be resolved
-  together. No Phase B work may begin before each dependency has been proposed
-  and approved under
+- The Phase B dependencies are now proposed in
+  [Decision 0015](../decisions/0015-phase-b-python-dependencies.md) — CPython
+  Limited API headers, a plotting package, and notebook-execution tooling —
+  and each awaits the repository owner's approval. Section 17 deferred the
+  last two while section 3 required a notebook impossible without them;
+  decision 0015 is where that is resolved. No Phase B work may begin against an
+  unapproved item, under
   [Phaser Engineering Style](../../ENGINEERING_STYLE.md) and the repository
   [agent instructions](../../AGENTS.md).
 
@@ -491,7 +497,11 @@ two milestones: the common gate closes once, over both phases.
 - C conformance client under `examples/`, exercising parse, diagnose, derive,
   compile, bind, query workspace, and evaluate.
 - Header layout, constant, and public-symbol checks under independent C and C++
-  compilers.
+  compilers, on every supported platform.
+- Windows x86-64 brought up as a required native platform: the pinned toolchain
+  installer extended to it, an MSVC-built conformance client, the
+  `__declspec` export path, DLL and import-library packaging, and the
+  `dumpbin`-based symbol allow-list.
 - Stable command-line workflows for the supported slice.
 
 #### Phase B: the researcher-facing surface
@@ -534,7 +544,11 @@ independently checkable and close first.
 - `phaser.h` compiles clean as C and as C++ under independent compilers, and the
   header's layout, constants, and exported-symbol set are checked against the
   ABI rather than against themselves.
-- Static and shared linkage both execute the C conformance client.
+- Static and shared linkage both execute the C conformance client, on Linux
+  x86-64, macOS ARM64, and Windows x86-64.
+- Windows results agree with the other two platforms under the same numerical
+  policy, and the Windows tier runs the same bounded suite natively rather than
+  by cross-compilation.
 - Per-point statuses cross the boundary undamaged: a negative eigenvalue remains
   a successful complex result, and no point-level outcome is collapsed into a
   control-plane status code.
@@ -822,8 +836,7 @@ have demonstrated their usefulness for the modern 3D EFT workflow.
 - The first complete higher-loop gauge-theory target.
 - The first beta-function derivation scope.
 - Detailed dimensional-reduction accuracy and supported gauge-model subset.
-- Plotting and notebook-execution dependencies. Milestone 4 Phase B is where
-  this deferral runs out: its required notebook cannot be produced without both.
-- Committed notebook-output and rendered-artifact policy. Same expiry.
+- Committed notebook-output and rendered-artifact policy. Milestone 4 Phase B is
+  where this deferral runs out.
 - Release numbering and compatibility promises for each milestone.
 - Calendar estimates and staffing.

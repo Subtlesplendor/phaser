@@ -353,12 +353,21 @@ exists, uses the same operation-specific bounds; it does not receive a separate,
 looser cross-platform tolerance.
 
 What is currently observed is stronger and is deliberately not promised: on the
-two required native platforms, Linux x86-64 and macOS ARM64, the pre-one-loop
+required native platforms Linux x86-64 and macOS ARM64, the pre-one-loop
 conformance and differential comparisons agree bitwise, because the lowered
 program is the same and every `f64` operation in it is correctly rounded. The
 Milestone 3 policies apply in cross-platform context with the same bounds; their
 current prototype evidence is native macOS ARM64, and the pull-request matrix
 supplies the required Linux x86-64 measurement.
+
+Milestone 4 adds Windows x86-64 as a third required native platform. It is worth
+being precise about what that does and does not add here: Windows x86-64 and
+Linux x86-64 execute the same instruction set with the same rounding, so a third
+platform is not a third *arithmetic*. It can expose a divergence in compiler
+code generation, calling convention, or library `log` implementation, and it
+does not weaken the observation above. The one operation that could distinguish
+the supported platforms remains the one-loop logarithm, and the platform that
+could distinguish it from x86-64 remains macOS ARM64.
 
 ## 7. Milestone 3 measurement
 
