@@ -5,6 +5,12 @@ pub const phi4_point = @embedFile("phi4/point.json");
 pub const phi4_equations = @embedFile("phi4/equations.txt");
 pub const phi4_equations_latex = @embedFile("phi4/equations.tex");
 pub const phi4_scan = @embedFile("phi4/scan.tsv");
+pub const phi4_one_loop_request = @embedFile("phi4/request_one_loop.json");
+pub const phi4_one_loop_equations = @embedFile("phi4/equations_one_loop.txt");
+pub const phi4_one_loop_equations_latex = @embedFile("phi4/equations_one_loop.tex");
+pub const phi4_tree_scan = @embedFile("phi4/scan_tree.tsv");
+pub const phi4_one_loop_scan = @embedFile("phi4/scan_one_loop.tsv");
+pub const phi4_total_scan = @embedFile("phi4/scan_total.tsv");
 
 pub const multi_scalar_model = @embedFile("multi_scalar/model.json");
 pub const multi_scalar_inspection = @embedFile("multi_scalar/inspection.txt");

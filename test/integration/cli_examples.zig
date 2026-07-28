@@ -260,13 +260,145 @@ test "an unsupported request reports its own diagnostic" {
     );
 }
 
-const phi4_one_loop_request =
-    \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
-    \\"background":{"mode":"full_scalar_space"},
-    \\"environment":{"kind":"vacuum"},
-    \\"renormalization":{"scheme":"MSbar"},
-    \\"orders":{"loop":{"through":1}}}
-;
+const phi4_one_loop_request = example_data.phi4_one_loop_request;
+
+fn renderOneLoopScan(
+    selection: commands.Selection,
+) !std.Io.Writer.Allocating {
+    const points = try commands.expandScan(
+        test_allocator.allocator,
+        1,
+        0,
+        0,
+        600,
+        13,
+    );
+    defer test_allocator.allocator.free(points);
+    return renderOneLoop(.{
+        .outputs = .gradient,
+        .format = .tsv,
+        .selection = selection,
+        .points = points,
+        .point_count = 13,
+    });
+}
+
+test "the phi4 order-one equation workflow reproduces its golden output" {
+    var out = try renderExport(
+        example_data.phi4_model,
+        phi4_one_loop_request,
+        .{ .target = .phaser, .contributions = true, .gradient = true },
+    );
+    defer out.deinit();
+    try std.testing.expectEqualStrings(
+        example_data.phi4_one_loop_equations,
+        out.written(),
+    );
+
+    var latex = try renderExport(
+        example_data.phi4_model,
+        phi4_one_loop_request,
+        .{ .target = .latex },
+    );
+    defer latex.deinit();
+    try std.testing.expectEqualStrings(
+        example_data.phi4_one_loop_equations_latex,
+        latex.written(),
+    );
+}
+
+test "the three phi4 order-one scans reproduce their golden sampled data" {
+    var tree = try renderOneLoopScan(.{ .loop_order = 0 });
+    defer tree.deinit();
+    try std.testing.expectEqualStrings(
+        example_data.phi4_tree_scan,
+        tree.written(),
+    );
+
+    var loop = try renderOneLoopScan(.{ .loop_order = 1 });
+    defer loop.deinit();
+    try std.testing.expectEqualStrings(
+        example_data.phi4_one_loop_scan,
+        loop.written(),
+    );
+
+    var total = try renderOneLoopScan(.total);
+    defer total.deinit();
+    try std.testing.expectEqualStrings(
+        example_data.phi4_total_scan,
+        total.written(),
+    );
+}
+
+test "the sampled order-one data is the sum of its sampled parts" {
+    // The three files share one background grid, so a plotting client can add
+    // the curves point by point. That is only meaningful if the summed file
+    // really is the sum, which is what this checks.
+    var tree_rows = rowsOf(example_data.phi4_tree_scan);
+    var loop_rows = rowsOf(example_data.phi4_one_loop_scan);
+    var total_rows = rowsOf(example_data.phi4_total_scan);
+
+    var seen: usize = 0;
+    var branch_cut_crossed = false;
+    while (tree_rows.next()) |tree_row| {
+        const loop_row = loop_rows.next() orelse return error.MissingRow;
+        const total_row = total_rows.next() orelse return error.MissingRow;
+
+        // Column 0 is the background; the real tree file then has one value
+        // column, and the complex files have a real/imaginary pair.
+        try std.testing.expectEqualStrings(
+            fieldOf(tree_row, 0),
+            fieldOf(total_row, 0),
+        );
+        const tree_value = try parseField(tree_row, 1);
+        const loop_real = try parseField(loop_row, 1);
+        const loop_imaginary = try parseField(loop_row, 2);
+        const total_real = try parseField(total_row, 1);
+        const total_imaginary = try parseField(total_row, 2);
+
+        // The tree part is promoted, not recomputed, so the sum is exact.
+        try std.testing.expectEqual(tree_value + loop_real, total_real);
+        try std.testing.expectEqual(loop_imaginary, total_imaginary);
+        if (loop_imaginary != 0) branch_cut_crossed = true;
+        seen += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 13), seen);
+    try std.testing.expectEqual(@as(?[]const u8, null), loop_rows.next());
+    try std.testing.expectEqual(@as(?[]const u8, null), total_rows.next());
+
+    // The scanned interval spans the sign change of the field-dependent
+    // mass-squared, so the sampled data exercises both principal branches
+    // rather than only the real one.
+    try std.testing.expect(branch_cut_crossed);
+}
+
+const RowIterator = struct {
+    lines: std.mem.SplitIterator(u8, .scalar),
+
+    fn next(self: *RowIterator) ?[]const u8 {
+        while (self.lines.next()) |line| {
+            if (line.len == 0 or line[0] == '#') continue;
+            // The single header row starts with the coordinate name.
+            if (std.mem.startsWith(u8, line, "phi\t")) continue;
+            return line;
+        }
+        return null;
+    }
+};
+
+fn rowsOf(text: []const u8) RowIterator {
+    return .{ .lines = std.mem.splitScalar(u8, text, '\n') };
+}
+
+fn fieldOf(row: []const u8, index: usize) []const u8 {
+    var columns = std.mem.splitScalar(u8, row, '\t');
+    for (0..index) |_| _ = columns.next();
+    return columns.next() orelse "";
+}
+
+fn parseField(row: []const u8, index: usize) !f64 {
+    return std.fmt.parseFloat(f64, fieldOf(row, index));
+}
 
 test "an order-one export shows the spectral operation and its scale" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -296,28 +428,214 @@ test "an order-one export shows the spectral operation and its scale" {
     try std.testing.expectEqualStrings("", errors.written());
 }
 
-test "an order-one evaluation reports that the table has no complex columns" {
+fn renderOneLoop(
+    options: commands.EvaluateOptions,
+) !std.Io.Writer.Allocating {
     var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
-    defer out.deinit();
+    errdefer out.deinit();
     var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer errors.deinit();
-
-    // The order-one value is numerically available through the library's
-    // `Complex64` evaluation method. What this client still lacks is a tabular
-    // rendering with separate real and imaginary columns, so it reports a
-    // result-type mismatch rather than printing a real projection of a complex
-    // result.
-    const points = [_]f64{0};
-    try std.testing.expectError(error.EvaluationFailed, commands.evaluate(
+    try commands.evaluate(
         test_allocator.allocator,
         example_data.phi4_model,
         phi4_one_loop_request,
         example_data.phi4_point,
-        .{ .points = &points, .point_count = 1 },
+        options,
         &out.writer,
         &errors.writer,
-    ));
-    try std.testing.expectEqualStrings("", out.written());
+    );
+    try std.testing.expectEqualStrings("", errors.written());
+    return out;
+}
+
+test "an order-one evaluation reports separate real and imaginary columns" {
+    const points = [_]f64{ 0, 200 };
+    var out = try renderOneLoop(.{
+        .outputs = .gradient,
+        .format = .tsv,
+        .points = &points,
+        .point_count = points.len,
+    });
+    defer out.deinit();
+    const text = out.written();
+
+    // The complex result is reported as exact component pairs rather than as a
+    // formatted `a+bi` string a downstream reader would have to split.
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        text,
+        "phi\tvalue.re\tvalue.im\tdV/dphi.re\tdV/dphi.im\tstatus\n",
+    ) != null);
+
+    // The header states the conventions the number depends on, so a saved file
+    // is readable without the command line that produced it.
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        text,
+        "# phaser evaluate effective_potential\n",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\n# selection total\n") != null);
+    try std.testing.expect(
+        std.mem.indexOf(u8, text, "\n# result_type complex64\n") != null,
+    );
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        text,
+        "# contribution scalar_one_loop formula scalar-vacuum-msbar/1" ++
+            " branch arg(-pi,pi] precision binary64 resummation none\n",
+    ) != null);
+
+    // At `phi = 0` this model's mass-squared is negative, so the principal
+    // branch contributes a nonzero imaginary part that a real projection would
+    // have silently discarded.
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#' or line[0] == 'p') continue;
+        var columns = std.mem.splitScalar(u8, line, '\t');
+        _ = columns.next();
+        _ = columns.next();
+        const imaginary = std.fmt.parseFloat(
+            f64,
+            columns.next() orelse return error.MissingColumn,
+        ) catch return error.MissingColumn;
+        try std.testing.expect(imaginary > 0);
+        break;
+    }
+}
+
+test "an order-one selection restricts the evaluated contributions" {
+    const points = [_]f64{200};
+    var total = try renderOneLoop(.{
+        .format = .tsv,
+        .points = &points,
+        .point_count = points.len,
+    });
+    defer total.deinit();
+    var loop = try renderOneLoop(.{
+        .format = .tsv,
+        .selection = .{ .loop_order = 1 },
+        .points = &points,
+        .point_count = points.len,
+    });
+    defer loop.deinit();
+    var tree = try renderOneLoop(.{
+        .format = .tsv,
+        .selection = .{ .loop_order = 0 },
+        .points = &points,
+        .point_count = points.len,
+    });
+    defer tree.deinit();
+
+    // A tree-level selection of an order-one request is real, so it has one
+    // value column rather than a component pair.
+    try std.testing.expect(
+        std.mem.indexOf(u8, tree.written(), "\n# result_type real64\n") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, tree.written(), "phi\tvalue\tstatus\n") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, tree.written(), "\n# selection loop:0\n") != null,
+    );
+    // Selecting one loop order lists only that order's contributions.
+    try std.testing.expect(
+        std.mem.indexOf(u8, loop.written(), "# contribution scalar_one_loop") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, loop.written(), "# contribution scalar_quartic") == null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, tree.written(), "# contribution scalar_one_loop") == null,
+    );
+
+    // The complete truncation is the sum of its parts: its real component is
+    // the tree value plus the loop value.
+    const tree_value = try lastValue(tree.written(), 1);
+    const loop_real = try lastValue(loop.written(), 1);
+    const total_real = try lastValue(total.written(), 1);
+    try std.testing.expectEqual(tree_value + loop_real, total_real);
+}
+
+test "a role selection names exactly one contribution" {
+    const points = [_]f64{200};
+    var out = try renderOneLoop(.{
+        .format = .tsv,
+        .selection = .{ .role = .scalar_one_loop },
+        .points = &points,
+        .point_count = points.len,
+    });
+    defer out.deinit();
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        out.written(),
+        "\n# selection role:scalar_one_loop\n",
+    ) != null);
+
+    var loop = try renderOneLoop(.{
+        .format = .tsv,
+        .selection = .{ .loop_order = 1 },
+        .points = &points,
+        .point_count = points.len,
+    });
+    defer loop.deinit();
+    // This model's only order-one contribution is the scalar loop, so naming
+    // the role and naming the order select the same number.
+    try std.testing.expectEqual(
+        try lastValue(loop.written(), 1),
+        try lastValue(out.written(), 1),
+    );
+}
+
+test "a failed point prints NA rather than an unpublished number" {
+    // A non-finite background makes the mass matrix non-finite, so the point
+    // publishes nothing at all. The row still exists, and every output column
+    // says so instead of showing whatever the buffer happened to hold.
+    const points = [_]f64{ 200, std.math.inf(f64) };
+    var out = try renderOneLoop(.{
+        .outputs = .gradient,
+        .format = .tsv,
+        .points = &points,
+        .point_count = points.len,
+    });
+    defer out.deinit();
+    try std.testing.expect(
+        std.mem.endsWith(u8, out.written(), "\tNA\tNA\tNA\tNA\tnon_finite\n"),
+    );
+
+    var table = try renderOneLoop(.{
+        .outputs = .gradient,
+        .points = &points,
+        .point_count = points.len,
+    });
+    defer table.deinit();
+    // The aligned rendering keeps the column grid: every unpublished cell is
+    // right-aligned `NA` in its own column rather than a collapsed row.
+    const rendered = table.written();
+    const last = std.mem.trimEnd(u8, rendered, "\n");
+    const row = last[std.mem.lastIndexOfScalar(u8, last, '\n').? + 1 ..];
+    var fields = std.mem.tokenizeScalar(u8, row, ' ');
+    const expected = [_][]const u8{ "inf", "NA", "NA", "NA", "NA", "non_finite" };
+    for (expected) |field| {
+        try std.testing.expectEqualStrings(
+            field,
+            fields.next() orelse return error.MissingColumn,
+        );
+    }
+    try std.testing.expectEqual(@as(?[]const u8, null), fields.next());
+}
+
+/// The `column`-th numerical field of the last data row of a TSV rendering.
+fn lastValue(text: []const u8, column: usize) !f64 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var found: ?f64 = null;
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#' or line[0] == 'p') continue;
+        var columns = std.mem.splitScalar(u8, line, '\t');
+        for (0..column) |_| _ = columns.next();
+        const text_field = columns.next() orelse continue;
+        found = std.fmt.parseFloat(f64, text_field) catch continue;
+    }
+    return found orelse error.MissingColumn;
 }
 
 test "a parameter point missing a value is rejected before evaluation" {
