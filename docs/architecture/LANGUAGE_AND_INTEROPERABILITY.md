@@ -92,13 +92,74 @@ A native Phaser distribution is expected eventually to contain:
 
 ```text
 include/phaser.h
-lib/libphaser.a
-lib/libphaser.so, libphaser.dylib, or phaser.dll
+lib/libphaser.a          (Windows: lib/phaser_static.lib)
+lib/libphaser.so, libphaser.dylib
+bin/phaser.dll, lib/phaser.lib   (Windows: the DLL and its import library)
 bin/phaser
 ```
 
 The build MAY provide static libraries, shared libraries, or both. The same
 public header and behavioral contract apply to both linkage modes.
+
+The static library carries a distinct name on Windows because the plain name
+collides: a shared build produces `phaser.dll` together with an import library
+also called `phaser.lib`, which would silently replace the static
+`phaser.lib` in the same directory and leave static linkage with no artifact.
+ELF and Mach-O have no such collision, so they keep `libphaser.a` beside
+`libphaser.so` or `libphaser.dylib`.
+
+Both distributed library products MUST be position-independent. A shared library
+requires it, and in practice the static library does too: mainstream Linux
+distributions default their compilers to `-pie`, so an ordinary
+`cc client.c libphaser.a` against a non-position-independent archive fails to
+link. A consumer MUST NOT have to pass `-no-pie` to use the static library.
+
+The static library MUST also carry the compiler-support routines the
+implementation language would otherwise contribute at its own link step, because
+a distributed archive is linked by the consumer's toolchain rather than ours.
+
+The distributed products are stripped, which removes the implementation
+language's stack-trace symbolizer along with its debug info. A client cannot act
+on an implementation-language stack trace, and §5.7 requires that no such panic
+cross the boundary in any case. Stripping also removes what that machinery
+drags in: it roughly tripled the artifacts, and on Windows it referenced an
+ntdll entry point the platform SDK's import library does not export, failing a
+consumer's static link over a feature they could not use. Runtime safety checks
+are unaffected; a violated check still traps, without symbolizing.
+
+### 4.1 Linking statically on Windows
+
+Two things a Windows consumer must know, neither of which applies to Linux or
+macOS.
+
+**Link `ntdll.lib`.** The static library reaches the NT native API directly for
+files, memory sections, and timing, so a static link needs `ntdll.lib` in
+addition to the C runtime. Nothing in the archive carries a `/DEFAULTLIB`
+directive for it. Omitting it produces around twenty undefined `Ldr*`, `Nt*`,
+and `Rtl*` symbols. The shared library is unaffected: it resolves them
+internally, and a consumer of the DLL links only its import library.
+
+**`link.exe` cannot consume the static library** as of ABI version 0. Both
+available configurations fail:
+
+- with the Zig compiler-support object bundled, `link.exe` rejects it with
+  `LNK1143: invalid or corrupt file: no symbol for COMDAT section`; and
+- without it, `__divti3` and `__udivti3` are undefined, because the library
+  references them and the Microsoft C runtime provides no 128-bit division
+  helpers.
+
+A Windows consumer linking statically therefore uses `lld-link`, which ships
+with LLVM and with the Zig toolchain, and which links the same archive
+successfully. Compilation is unaffected: MSVC compiles `phaser.h` and consumer
+sources normally, and only the final link step differs.
+
+Windows consumers who cannot change linker SHOULD use the DLL and its import
+library, which `link.exe` consumes without difficulty.
+
+This is a limitation of the interaction between the two toolchains, not a
+property of the ABI, and it does not affect Linux or macOS. Conformance runs the
+Windows static-linkage check through `lld-link` so the archive itself stays
+exercised; what remains untested is `link.exe` specifically.
 
 The repository owns the authoritative `include/phaser.h`. A generated header MAY
 be used only if its generator is deterministic, its output is checked in or

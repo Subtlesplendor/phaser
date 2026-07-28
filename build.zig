@@ -34,11 +34,57 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // On Windows the static library and the shared library's import library
+    // would both be `phaser.lib`, and the second one installed silently
+    // replaces the first -- leaving static linkage with no artifact at all. The
+    // static library therefore carries a distinct name there. ELF and Mach-O
+    // have no such collision (`libphaser.a` beside `libphaser.so`/`.dylib`), so
+    // they keep the plain name. Recorded in Language and Interoperability
+    // section 4.
+    const windows_target = target.result.os.tag == .windows;
+    const static_library_name = if (windows_target) "phaser_static" else "phaser";
+
+    // The distributed library products are built position-independent, which
+    // the tests and CLI do not need and so do not pay for.
+    //
+    // A shared library requires it. So, in practice, does the static one: every
+    // current mainstream Linux distribution defaults its compiler to `-pie`, so
+    // an ordinary `cc client.c libphaser.a` against a non-PIC archive fails to
+    // link with "relocation R_X86_64_32S ... can not be used when making a PIE
+    // object". Building the archive PIC is what makes static linkage work for a
+    // consumer who has not been told to pass `-no-pie`.
+    //
+    // They are also stripped, which removes Zig's stack-trace symbolizer along
+    // with the debug info it reads.
+    //
+    // That machinery has no consumer here. A C caller cannot act on a Zig stack
+    // trace, and the interoperability specification requires that no Zig panic
+    // cross the boundary at all. What it does have is cost: it roughly triples
+    // the archive, and on Windows it reaches for `LdrRegisterDllNotification`,
+    // which ntdll exports at runtime but the Windows SDK import library does
+    // not, so a consumer's static link fails on a symbol belonging to a feature
+    // they cannot use. Safety checks are unaffected -- ReleaseSafe still traps;
+    // it simply does not symbolize.
+    const library_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+        .strip = true,
+    });
+
     const library = b.addLibrary(.{
-        .name = "phaser",
-        .root_module = phaser_module,
+        .name = static_library_name,
+        .root_module = library_module,
         .linkage = .static,
     });
+    // A distributed static library is linked by the consumer's toolchain, not
+    // by Zig, so it has to carry the compiler-support routines Zig's own link
+    // step would otherwise supply. Without this the archive references symbols
+    // such as `__zig_probe_stack` and defines none of them, and a link with the
+    // platform linker fails on undefined references that mention Zig internals
+    // the consumer has never heard of.
+    library.bundle_compiler_rt = true;
     b.installArtifact(library);
 
     // Both linkage modes are supported and both are tested, per decision 0014:
@@ -46,7 +92,7 @@ pub fn build(b: *std.Build) void {
     // linkage mode is an unsupported one.
     const shared_library = b.addLibrary(.{
         .name = "phaser",
-        .root_module = phaser_module,
+        .root_module = library_module,
         .linkage = .dynamic,
     });
     b.installArtifact(shared_library);

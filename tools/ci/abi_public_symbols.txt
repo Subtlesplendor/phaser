@@ -1,0 +1,30 @@
+# The complete public symbol set of the Phaser C ABI.
+#
+# One symbol per line, sorted, without any platform decoration: the checker
+# strips the leading underscore Mach-O adds before comparing. Blank lines and
+# lines beginning with '#' are ignored.
+#
+# This file is the allow-list, not a report. `tools/ci/check_abi.sh` fails on a
+# symbol present in the library but missing here, which is how an accidentally
+# exported internal stops being an ABI commitment nobody chose, and equally on a
+# symbol listed here but missing from the library, which is how a function that
+# silently stopped being emitted gets noticed.
+#
+# Adding a line is an ABI addition. Removing or renaming one is an ABI break,
+# permitted while version 0 is experimental but never silent: see
+# docs/decisions/0014-public-header-and-toolchain-baseline.md.
+
+phaser_abi_experimental
+phaser_abi_version
+phaser_context_create
+phaser_context_destroy
+phaser_diagnostics_at
+phaser_diagnostics_count
+phaser_diagnostics_destroy
+phaser_diagnostics_render
+phaser_library_version
+phaser_model_destroy
+phaser_model_fingerprint
+phaser_model_load
+phaser_model_parameter_count
+phaser_model_scalar_field_count
