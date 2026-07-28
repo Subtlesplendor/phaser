@@ -644,7 +644,9 @@ metadata, and reference comparisons MUST also be available to machine tests.
 A notebook is not accepted as the sole evidence for a numerical or scientific
 claim. Maintained notebooks use public APIs, deterministic inputs, bounded
 runtime, and fresh-kernel execution. Notebook execution belongs to the
-appropriate CI tier once its tooling has been explicitly approved.
+appropriate CI tier; the tooling that condition waited on is approved in
+[Decision 0015](../decisions/0015-phase-b-python-dependencies.md), and that
+tier runs with a bounded timeout and no network access.
 
 ## 24. Deferred decisions
 

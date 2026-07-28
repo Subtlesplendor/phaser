@@ -146,8 +146,10 @@ included from C++, selected in
 [Decision 0014](../decisions/0014-public-header-and-toolchain-baseline.md). That
 decision also makes the header authoritative and hand-written rather than
 generated, and records the supported linkage and platform matrix: static and
-shared linkage on Linux x86-64 and macOS ARM64. Windows is not claimed by
-Milestone 4.
+shared linkage on Linux x86-64, macOS ARM64, and Windows x86-64, each a required
+native test platform. On Windows the single export macro must additionally
+distinguish building the shared library from consuming it, because
+`__declspec(dllimport)` has no ELF or Mach-O counterpart.
 
 ### 5.3 Opaque objects
 
@@ -425,6 +427,9 @@ The production binding SHOULD be a thin CPython extension written in Zig against
 Python's Limited API. The initial planned minimum is CPython 3.11 because the
 complete `Py_buffer` structure and the relevant buffer operations are part of the
 Stable ABI from that version.
+[Decision 0015](../decisions/0015-phase-b-python-dependencies.md) approves that
+dependency at `Py_LIMITED_API` `0x030B0000`, together with the plotting and
+notebook-execution packages the first notebook needs.
 
 The extension SHOULD:
 
@@ -508,7 +513,6 @@ This specification still leaves open:
 
 - exact parameter lists, which the authoritative header fixes;
 - package repositories and distribution channels;
-- Windows support, deliberately not claimed by Milestone 4;
 - symbol versioning mechanisms;
 - custom allocator hooks;
 - the exact C++ result and exception APIs;
