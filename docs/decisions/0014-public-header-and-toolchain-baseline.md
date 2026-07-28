@@ -88,7 +88,7 @@ build clients on.
 
 Claiming it commits Milestone 4 to:
 
-- **A third native test tier.** `windows-latest`, running the same bounded
+- **A third native test tier.** `windows-2025`, running the same bounded
   suites the other two platforms run, per §10's rule that cross-compilation
   checks portability but does not replace native execution.
 - **A third compiler family.** MSVC (`cl.exe`) is the compiler Windows C clients
@@ -103,7 +103,11 @@ Claiming it commits Milestone 4 to:
   macro must distinguish building from consuming — a distinction the ELF-only
   form would not have needed.
 - **DLL packaging.** A shared build produces `phaser.dll` and its import
-  library; both are consumed by the conformance client.
+  library; both are consumed by the conformance client. The import library is
+  also `phaser.lib`, which collides with the static library's name, so the
+  static library is `phaser_static.lib` on Windows only. Without the rename the
+  second artifact installed silently replaces the first and static linkage has
+  nothing to link against. ELF and Mach-O have no such collision.
 - **A second symbol-allow-list mechanism.** PE exports are enumerated with
   `dumpbin /exports` rather than `nm`, so the allow-list check has two
   implementations that must agree on the same documented public set.
@@ -129,7 +133,13 @@ Beyond compiling the header, the per-change tier gains:
   implementations must agree on one documented set, not maintain two.
 - **Both linkages, all three platforms.** The C conformance client is built and
   run against the static and the shared library on Linux x86-64, macOS ARM64,
-  and Windows x86-64.
+  and Windows x86-64. The Windows static link uses `lld-link` rather than
+  `link.exe`, which cannot consume the archive; MSVC still compiles the header
+  and the client, so the independent-compiler requirement is met by the front
+  end that reads them. The limitation and its two failing configurations are
+  recorded in
+  [Language and Interoperability §4.1](../architecture/LANGUAGE_AND_INTEROPERABILITY.md#41-known-limitation-msvc-and-static-linkage),
+  where a Windows consumer will look for it.
 - **Layout parity across ABIs.** The layout tests run on all three platforms
   rather than one, because the Windows x64 calling convention and structure
   packing rules are where a divergence would appear if one exists.
@@ -145,7 +155,7 @@ stated.**
 - **Exact dependency and source.** GCC and Clang as preinstalled on the
   `ubuntu-24.04` GitHub-hosted runner image, Apple Clang as preinstalled on
   `macos-15`, and MSVC (`cl.exe`) with `dumpbin` as preinstalled on
-  `windows-latest`. No package is installed, downloaded, pinned, or vendored;
+  `windows-2025`. No package is installed, downloaded, pinned, or vendored;
   the proposal is to *invoke* compilers the runner images already contain.
 - **Purpose.** To compile `include/phaser.h` and the C conformance client
   through a toolchain that shares no front end with the implementation, as
