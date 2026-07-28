@@ -14,11 +14,13 @@
 const std = @import("std");
 const phaser = @import("phaser");
 const example_data = @import("example_data");
+const oracle_fixture = @import("scalar_oracle_fixture");
 const numerical_comparison = @import("numerical_comparison");
 
 const calculation = phaser.calculation;
 const kernel_module = phaser.kernel;
 const Scalar = kernel_module.Scalar;
+const Complex64 = kernel_module.Complex64;
 
 const batch_sizes = [_]usize{ 1, 8, 64, 1024 };
 const measurement_sample_count = 7;
@@ -232,6 +234,30 @@ const UnstagedRun = struct {
     }
 };
 
+/// The `Complex64` counterpart of `StagedRun`, for an order-one selection.
+const ComplexStagedRun = struct {
+    binding: *const kernel_module.Binding,
+    backgrounds: []const Scalar,
+    point_count: usize,
+    workspace: []u8,
+    outputs: kernel_module.ComplexOutputBuffers,
+
+    fn unitCount(self: *const ComplexStagedRun) usize {
+        return self.point_count;
+    }
+
+    fn execute(self: *const ComplexStagedRun, repetitions: usize) !void {
+        for (0..repetitions) |_| {
+            try self.binding.evaluateComplex(
+                self.backgrounds,
+                self.point_count,
+                self.workspace,
+                self.outputs,
+            );
+        }
+    }
+};
+
 const DirectRun = struct {
     baseline: DirectBaseline,
     parameters: []const Scalar,
@@ -387,6 +413,9 @@ pub fn main(init: std.process.Init) !void {
         example_data.multi_scalar_point,
         multi_scalar_direct,
     );
+    for (one_loop_workloads) |workload| {
+        try reportOneLoop(init.gpa, init.io, out, workload);
+    }
     try out.flush();
 }
 
@@ -452,7 +481,7 @@ fn derive(
     request: *const calculation.Request,
     derivatives: calculation.Derivatives,
 ) !calculation.Artifact {
-    return switch (try phaser.deriveClassicalPotential(
+    return switch (try phaser.deriveEffectivePotential(
         context(allocator),
         model,
         request,
@@ -801,6 +830,304 @@ fn reportModel(
     );
 }
 
+/// The one-loop workloads: a one-by-one mass matrix and a dense three-by-three
+/// one, each timed for value only and for the fused value, gradient, and
+/// Hessian.
+///
+/// The dense case is the one that reaches the cyclic Jacobi sweeps, so the two
+/// sizes bracket the eigensolver's direct and iterative paths.
+const OneLoopWorkload = struct {
+    name: []const u8,
+    model_source: []const u8,
+    request_source: []const u8,
+    point_source: []const u8,
+    /// The exact spectrum of the mass matrix at background one, which the
+    /// verification pass below reproduces independently of the eigensolver.
+    spectrum: []const Scalar,
+    /// The point file's reference scale, restated so the closed form can use it.
+    scale: Scalar,
+};
+
+/// The three-scalar slice `(r,s,t) = (b,0,0)`, on which the fixture's mass
+/// matrix is `b` times its recorded integer coupling matrix.
+const three_scalar_slice_request =
+    \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+    \\"background":{"mode":"component_slice","coordinates":[{"id":"b","scalar":"r"}]},
+    \\"environment":{"kind":"vacuum"},
+    \\"renormalization":{"scheme":"MSbar"},
+    \\"orders":{"loop":{"through":1}}}
+;
+
+/// The fixture's `positive_dense` couplings, whose matrix has the exact
+/// spectrum `{9, 36, 81}` at background one.
+const three_scalar_point =
+    \\{"schema":"phaser.parameter-point/0.1",
+    \\"units":{"mass":"GeV"},
+    \\"renormalization":{"scheme":"MSbar","reference_scale":3.0},
+    \\"values":{"c111":53.0,"c112":26.0,"c113":-4.0,
+    \\"c122":44.0,"c123":-22.0,"c133":29.0}}
+;
+
+/// `m2 = 1`, `lambda = 2`, so the one-by-one mass matrix is `1 + phi^2` and its
+/// spectrum at background one is `{2}`.
+const phi4_one_loop_point =
+    \\{"schema":"phaser.parameter-point/0.1",
+    \\"units":{"mass":"GeV"},
+    \\"renormalization":{"scheme":"MSbar","reference_scale":2.0},
+    \\"values":{"lambda":2.0,"m2":1.0,"omega":0.0}}
+;
+
+const one_loop_workloads = [_]OneLoopWorkload{
+    .{
+        .name = "phi4_one_loop_1x1",
+        .model_source = example_data.phi4_model,
+        .request_source = example_data.phi4_one_loop_request,
+        .point_source = phi4_one_loop_point,
+        .spectrum = &.{2},
+        .scale = 2,
+    },
+    .{
+        .name = "three_scalar_one_loop_3x3",
+        .model_source = oracle_fixture.three_scalar_model,
+        .request_source = three_scalar_slice_request,
+        .point_source = three_scalar_point,
+        .spectrum = &.{ 9, 36, 81 },
+        .scale = 3,
+    },
+};
+
+/// The principal-branch scalar one-loop sum over an explicit spectrum.
+///
+/// Verification only: it builds no matrix and calls no eigensolver, so
+/// agreement with the kernel is evidence that the timed workload computed the
+/// intended quantity rather than a cheaper one.
+fn oneLoopClosedForm(eigenvalues: []const Scalar, scale: Scalar) struct {
+    value: Complex64,
+    unsigned: Complex64,
+} {
+    var total = Complex64{ .re = 0, .im = 0 };
+    var unsigned = Complex64{ .re = 0, .im = 0 };
+    for (eigenvalues) |eigenvalue| {
+        if (eigenvalue == 0) continue;
+        const square = eigenvalue * eigenvalue;
+        const logarithm = @log(@abs(eigenvalue) / (scale * scale));
+        const real = square * (logarithm - 1.5) /
+            (64.0 * std.math.pi * std.math.pi);
+        const imaginary: Scalar = if (eigenvalue < 0)
+            square / (64.0 * std.math.pi)
+        else
+            0;
+        total.re += real;
+        total.im += imaginary;
+        unsigned.re += @abs(real);
+        unsigned.im += @abs(imaginary);
+    }
+    return .{ .value = total, .unsigned = unsigned };
+}
+
+fn reportOneLoop(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    workload: OneLoopWorkload,
+) !void {
+    try out.print("\n## {s}\n", .{workload.name});
+
+    var model = try loadModel(allocator, workload.model_source);
+    defer model.deinit();
+    var request = try loadRequest(allocator, workload.request_source);
+    defer request.deinit();
+    var artifact = try derive(allocator, &model, &request, .gradient_hessian);
+    defer artifact.deinit();
+
+    var value_kernel = try kernel_module.compile(allocator, &artifact, .{
+        .capability = .value,
+        .selection = .{ .role = .scalar_one_loop },
+    });
+    defer value_kernel.deinit();
+    var fused_kernel = try kernel_module.compile(allocator, &artifact, .{
+        .capability = .value_gradient_hessian,
+        .selection = .{ .role = .scalar_one_loop },
+    });
+    defer fused_kernel.deinit();
+
+    var point = switch (try phaser.parseParameterPoint(context(allocator), .{
+        .source_id = try phaser.SourceId.fromUsize(2),
+        .bytes = workload.point_source,
+    }, .{})) {
+        .point => |value| value,
+        .diagnostics => return error.InvalidParameterPoint,
+    };
+    defer point.deinit();
+
+    var value_binding = try kernel_module.bind(
+        allocator,
+        &value_kernel,
+        &model,
+        &point,
+    );
+    defer value_binding.deinit();
+    var fused_binding = try kernel_module.bind(
+        allocator,
+        &fused_kernel,
+        &model,
+        &point,
+    );
+    defer fused_binding.deinit();
+
+    const coordinates = value_kernel.coordinateCount();
+    try reportProgram(out, "value", &value_kernel.program);
+    try reportProgram(out, "fused", &fused_kernel.program);
+
+    const largest = batch_sizes[batch_sizes.len - 1];
+    const points = try allocator.alloc(Scalar, largest * coordinates);
+    defer allocator.free(points);
+    // Every point is a background of one in the first coordinate, so the whole
+    // batch shares the workload's exact spectrum and one closed form verifies
+    // all of it.
+    @memset(points, 0);
+    for (0..largest) |index| points[index * coordinates] = 1;
+
+    const value_layout = value_binding.workspaceLayout(largest);
+    const fused_layout = fused_binding.workspaceLayout(largest);
+    if (value_layout.alignment > @alignOf(Scalar) or
+        fused_layout.alignment > @alignOf(Scalar))
+    {
+        return error.UnsupportedBenchmarkWorkspaceAlignment;
+    }
+    const workspace = try allocator.alignedAlloc(
+        u8,
+        .of(Scalar),
+        @max(value_layout.bytes, fused_layout.bytes),
+    );
+    defer allocator.free(workspace);
+
+    const values = try allocator.alloc(Complex64, largest);
+    defer allocator.free(values);
+    const fused_values = try allocator.alloc(Complex64, largest);
+    defer allocator.free(fused_values);
+    const gradients = try allocator.alloc(Complex64, largest * coordinates);
+    defer allocator.free(gradients);
+    const hessians = try allocator.alloc(
+        Complex64,
+        largest * coordinates * coordinates,
+    );
+    defer allocator.free(hessians);
+    const statuses = try allocator.alloc(kernel_module.Status, largest);
+    defer allocator.free(statuses);
+    const fused_statuses = try allocator.alloc(kernel_module.Status, largest);
+    defer allocator.free(fused_statuses);
+
+    try value_binding.evaluateComplex(points, largest, workspace, .{
+        .values = values,
+        .statuses = statuses,
+    });
+    try fused_binding.evaluateComplex(points, largest, workspace, .{
+        .values = fused_values,
+        .gradients = gradients,
+        .hessians = hessians,
+        .statuses = fused_statuses,
+    });
+
+    const expected = oneLoopClosedForm(workload.spectrum, workload.scale);
+    for (0..largest) |index| {
+        if (statuses[index] != .ok or fused_statuses[index] != .ok) {
+            return error.StatusVerificationFailed;
+        }
+        if (values[index].re != fused_values[index].re or
+            values[index].im != fused_values[index].im)
+        {
+            return error.FusedValueVerificationFailed;
+        }
+        try numerical_comparison.spectral_value_known_spectrum.expectCloseAt(
+            expected.value.re,
+            values[index].re,
+            .{ .magnitude = expected.unsigned.re },
+        );
+        try numerical_comparison.spectral_value_known_spectrum.expectCloseAt(
+            expected.value.im,
+            values[index].im,
+            .{ .magnitude = expected.unsigned.im },
+        );
+    }
+
+    try out.writeAll(
+        "measurement\tmedian ns/unit\tmin ns/unit\tmax ns/unit\trepetitions\tunits/repetition\n",
+    );
+
+    var scalar_value = ComplexStagedRun{
+        .binding = &value_binding,
+        .backgrounds = points[0..coordinates],
+        .point_count = 1,
+        .workspace = workspace,
+        .outputs = .{ .values = values[0..1], .statuses = statuses[0..1] },
+    };
+    try reportMeasurement(
+        out,
+        "scalar_one_loop_value",
+        try measure(io, &scalar_value),
+    );
+
+    var scalar_fused = ComplexStagedRun{
+        .binding = &fused_binding,
+        .backgrounds = points[0..coordinates],
+        .point_count = 1,
+        .workspace = workspace,
+        .outputs = .{
+            .values = fused_values[0..1],
+            .gradients = gradients[0..coordinates],
+            .hessians = hessians[0 .. coordinates * coordinates],
+            .statuses = fused_statuses[0..1],
+        },
+    };
+    try reportMeasurement(
+        out,
+        "scalar_one_loop_value_gradient_hessian",
+        try measure(io, &scalar_fused),
+    );
+
+    try out.writeAll(
+        "\nbatch_size\tpath\tmedian ns/point\tmin ns/point\tmax ns/point\trepetitions\n",
+    );
+    for (batch_sizes) |size| {
+        var batch_value = ComplexStagedRun{
+            .binding = &value_binding,
+            .backgrounds = points[0 .. size * coordinates],
+            .point_count = size,
+            .workspace = workspace,
+            .outputs = .{
+                .values = values[0..size],
+                .statuses = statuses[0..size],
+            },
+        };
+        try reportBatchMeasurement(
+            out,
+            size,
+            "value",
+            try measure(io, &batch_value),
+        );
+
+        var batch_fused = ComplexStagedRun{
+            .binding = &fused_binding,
+            .backgrounds = points[0 .. size * coordinates],
+            .point_count = size,
+            .workspace = workspace,
+            .outputs = .{
+                .values = fused_values[0..size],
+                .gradients = gradients[0 .. size * coordinates],
+                .hessians = hessians[0 .. size * coordinates * coordinates],
+                .statuses = fused_statuses[0..size],
+            },
+        };
+        try reportBatchMeasurement(
+            out,
+            size,
+            "fused",
+            try measure(io, &batch_fused),
+        );
+    }
+}
+
 fn reportProgram(
     out: *std.Io.Writer,
     name: []const u8,
@@ -812,7 +1139,7 @@ fn reportProgram(
             name,
             program.instructions.len,
             name,
-            program.temporary_count,
+            program.temporaryCount(),
             name,
             program.parameter_stage_count,
         },
@@ -943,6 +1270,16 @@ fn reportControlMeasurement(
     try writeNanoseconds(out, measurement.maximum_picoseconds_per_unit);
     try out.print("\t{d}\n", .{measurement.repetitions});
     try out.flush();
+}
+
+test "the benchmark driver stays compilable from the test tier" {
+    // `addTest` analyzes only what a test reaches, so nothing here referenced
+    // the entry point or the report functions it calls. A renamed field in a
+    // public kernel type therefore broke `zig build bench` silently: the whole
+    // bounded suite passed while the driver no longer compiled. Taking the
+    // entry point's address forces its body, and everything it calls, through
+    // semantic analysis in `zig build test`.
+    _ = &main;
 }
 
 test "measurement sample sorting preserves values and orders them" {

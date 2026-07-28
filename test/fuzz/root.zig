@@ -535,6 +535,13 @@ const Step = struct {
 /// Steps whose operands are dimensionally incompatible, or which exhaust a
 /// limit, are skipped: rejecting them is correct behavior, and the property
 /// under test is that whatever is accepted is canonical and deterministic.
+///
+/// The script covers the typed and structured node kinds as well as the real
+/// scalar ones, so a generated graph can carry `Complex64` values, symmetric
+/// matrices of two dimensions, structured element access, and the scalar
+/// spectral value. Most generated combinations are rejected — a matrix needs
+/// three entries of mass dimension two in a row — which is why the pool is
+/// seeded with operands those constructions can actually use.
 fn replay(steps: []const Step, allocator: std.mem.Allocator) !phaser.value.Graph {
     var builder = try phaser.value.Builder.init(allocator, .{
         .value_nodes = 4096,
@@ -556,13 +563,20 @@ fn replay(steps: []const Step, allocator: std.mem.Allocator) !phaser.value.Graph
     pool_length += 1;
     pool[pool_length] = try builder.integer(1, 0);
     pool_length += 1;
+    // A mass-squared parameter and the renormalization scale, which are the
+    // two operands a spectral value cannot be built without.
+    pool[pool_length] = try builder.parameter(1, "m2", 2);
+    pool_length += 1;
+    const scale = try builder.renormalizationScale(0, "muR");
+    pool[pool_length] = scale;
+    pool_length += 1;
 
     for (steps) |step| {
         const first = pool[step.a % pool_length];
         const second = pool[step.b % pool_length];
         const third = pool[step.c % pool_length];
 
-        const produced: ?phaser.value.ValueId = switch (step.kind % 7) {
+        const produced: ?phaser.value.ValueId = switch (step.kind % 12) {
             0 => builder.add(&.{ first, second }) catch null,
             1 => builder.add(&.{ first, second, third }) catch null,
             2 => builder.multiply(&.{ first, second }) catch null,
@@ -570,6 +584,15 @@ fn replay(steps: []const Step, allocator: std.mem.Allocator) !phaser.value.Graph
             4 => builder.power(first, step.b % 6) catch null,
             5 => builder.divide(first, second) catch null,
             6 => builder.subtract(first, second) catch null,
+            7 => builder.promoteRealToComplex(first) catch null,
+            8 => builder.realSymmetricMatrix(1, &.{first}, 2) catch null,
+            9 => builder.realSymmetricMatrix(
+                2,
+                &.{ first, second, third },
+                2,
+            ) catch null,
+            10 => builder.scalarOneLoopSpectralValue(first, scale) catch null,
+            11 => builder.element(first, step.b % 2, step.c % 2) catch null,
             else => unreachable,
         };
         if (produced) |id| {
@@ -827,6 +850,7 @@ test "kernel_lowering" {
             @embedFile("../corpus/kernel_lowering/leaves.bin"),
             @embedFile("../corpus/kernel_lowering/polynomial.bin"),
             @embedFile("../corpus/kernel_lowering/deep.bin"),
+            @embedFile("../corpus/kernel_lowering/structured_root.bin"),
         },
     });
 }
@@ -863,8 +887,13 @@ fn fuzzKernel(_: void, smith: *std.testing.Smith) !void {
         .background_count = 2,
         .coordinate_count = 2,
     }, .{}) catch |err| switch (err) {
-        // A constant outside the conversion policy is an ordinary failure.
-        error.ConstantNotRepresentable, error.CapacityExceeded => return,
+        // A constant outside the conversion policy is an ordinary failure, as
+        // is a root whose shape is not a publishable output.
+        error.ConstantNotRepresentable,
+        error.CapacityExceeded,
+        error.UnsupportedOperation,
+        error.SizeOverflow,
+        => return,
         else => return err,
     };
     defer program.deinit();
@@ -885,47 +914,404 @@ fn fuzzKernel(_: void, smith: *std.testing.Smith) !void {
         slot.* = 0.5 + @as(phaser.kernel.Scalar, @floatFromInt(index)) * 0.25;
     }
     const backgrounds = [_]phaser.kernel.Scalar{ 1.25, -0.75, 2.5, 0.5 };
+    // The scale channel exists exactly when the lowered program reads it, and
+    // it must be finite and positive.
+    var scales: [1]phaser.kernel.Scalar = .{2.5};
+    const inputs = phaser.kernel.Inputs{
+        .parameters = &parameters,
+        .scales = scales[0..program.scale_count],
+        .backgrounds = &backgrounds,
+    };
 
-    var values: [2]phaser.kernel.Scalar = undefined;
-    var statuses: [2]phaser.kernel.Status = undefined;
-    try phaser.kernel.evaluate(
-        &program,
-        .{ .parameters = &parameters, .backgrounds = &backgrounds },
-        2,
-        workspace,
-        .{ .values = &values, .statuses = &statuses },
-    );
-
-    // Each point evaluated alone agrees with its place in the batch.
-    for (0..2) |point| {
-        var single: [1]phaser.kernel.Scalar = undefined;
-        var single_status: [1]phaser.kernel.Status = undefined;
-        try phaser.kernel.evaluate(
+    // The result type is a structural property of the program, so the buffers
+    // it needs are known before it runs.
+    switch (program.result_type) {
+        .real64 => try expectKernelAgreement(
+            phaser.kernel.Scalar,
             &program,
-            .{
-                .parameters = &parameters,
-                .backgrounds = backgrounds[point * 2 ..][0..2],
-            },
-            1,
+            inputs,
+            backgrounds[0..],
             workspace,
-            .{ .values = &single, .statuses = &single_status },
-        );
-        try std.testing.expectEqual(statuses[point], single_status[point - point]);
+            layout,
+        ),
+        .complex64 => try expectKernelAgreement(
+            phaser.kernel.Complex64,
+            &program,
+            inputs,
+            backgrounds[0..],
+            workspace,
+            layout,
+        ),
+    }
+}
+
+/// Batch, scalar, and workspace properties of one lowered program.
+fn expectKernelAgreement(
+    comptime Element: type,
+    program: *const phaser.kernel.Program,
+    inputs: phaser.kernel.Inputs,
+    backgrounds: []const phaser.kernel.Scalar,
+    workspace: []align(@alignOf(phaser.kernel.Scalar)) u8,
+    layout: phaser.kernel.WorkspaceLayout,
+) !void {
+    const complex = Element == phaser.kernel.Complex64;
+    const sentinel: Element = if (complex) .{ .re = -98765, .im = -56789 } else -98765;
+
+    var values = [_]Element{sentinel} ** 2;
+    var statuses: [2]phaser.kernel.Status = undefined;
+    const run = if (complex)
+        phaser.kernel.evaluateComplex(program, inputs, 2, workspace, .{
+            .values = &values,
+            .statuses = &statuses,
+        })
+    else
+        phaser.kernel.evaluate(program, inputs, 2, workspace, .{
+            .values = &values,
+            .statuses = &statuses,
+        });
+    try run;
+
+    for (0..2) |point| {
+        var single = [_]Element{sentinel};
+        var single_status: [1]phaser.kernel.Status = undefined;
+        const point_inputs = phaser.kernel.Inputs{
+            .parameters = inputs.parameters,
+            .scales = inputs.scales,
+            .backgrounds = backgrounds[point * 2 ..][0..2],
+        };
+        const alone = if (complex)
+            phaser.kernel.evaluateComplex(program, point_inputs, 1, workspace, .{
+                .values = &single,
+                .statuses = &single_status,
+            })
+        else
+            phaser.kernel.evaluate(program, point_inputs, 1, workspace, .{
+                .values = &single,
+                .statuses = &single_status,
+            });
+        try alone;
+
+        // Each point evaluated alone agrees with its place in the batch, and a
+        // failed point publishes nothing in either call.
+        try std.testing.expectEqual(statuses[point], single_status[0]);
         if (statuses[point] == .ok) {
             try std.testing.expectEqual(values[point], single[0]);
+        } else {
+            try std.testing.expectEqual(sentinel, values[point]);
+            try std.testing.expectEqual(sentinel, single[0]);
         }
     }
 
     // One byte below the queried size is always rejected.
     if (layout.bytes > 0) {
-        try std.testing.expectError(error.WorkspaceTooSmall, phaser.kernel.evaluate(
-            &program,
-            .{ .parameters = &parameters, .backgrounds = &backgrounds },
-            2,
-            workspace[0 .. layout.bytes - 1],
-            .{ .values = &values, .statuses = &statuses },
-        ));
+        const short = workspace[0 .. layout.bytes - 1];
+        const rejected = if (complex)
+            phaser.kernel.evaluateComplex(program, inputs, 2, short, .{
+                .values = &values,
+                .statuses = &statuses,
+            })
+        else
+            phaser.kernel.evaluate(program, inputs, 2, short, .{
+                .values = &values,
+                .statuses = &statuses,
+            });
+        try std.testing.expectError(error.WorkspaceTooSmall, rejected);
     }
+
+    // Calling with the other element type is a call-level error, never a
+    // reinterpretation of the caller's buffers.
+    if (complex) {
+        var real_values: [2]phaser.kernel.Scalar = undefined;
+        try std.testing.expectError(
+            error.ResultTypeMismatch,
+            phaser.kernel.evaluate(program, inputs, 2, workspace, .{
+                .values = &real_values,
+                .statuses = &statuses,
+            }),
+        );
+    } else {
+        var complex_values: [2]phaser.kernel.Complex64 = undefined;
+        try std.testing.expectError(
+            error.ResultTypeMismatch,
+            phaser.kernel.evaluateComplex(program, inputs, 2, workspace, .{
+                .values = &complex_values,
+                .statuses = &statuses,
+            }),
+        );
+    }
+}
+
+test "one_loop_pipeline" {
+    try std.testing.fuzz({}, leakChecked(fuzzOneLoopPipeline), .{
+        .corpus = &.{
+            @embedFile("../corpus/one_loop_pipeline/positive.bin"),
+            @embedFile("../corpus/one_loop_pipeline/indefinite.bin"),
+            @embedFile("../corpus/one_loop_pipeline/degenerate.bin"),
+            @embedFile("../corpus/one_loop_pipeline/extreme.bin"),
+            @embedFile("../corpus/one_loop_pipeline/status_independence.bin"),
+        },
+    });
+}
+
+/// Largest fluctuation dimension the pipeline target builds. Three is the
+/// smallest size that reaches the cyclic Jacobi path.
+const max_fluctuation_dimension = 3;
+
+/// Drives the whole order-one path: matrix assembly, the symmetric
+/// eigensolver, the spectral sum, the invariant derivatives, and complex
+/// publication.
+///
+/// The mass matrix is `b` times a matrix of generated coefficients, so a
+/// generated case controls the spectrum directly — degenerate, indefinite,
+/// zero, and extreme spectra are all reachable — while the derivative matrices
+/// stay exact: `dM/db` is the coefficient matrix and `d2M/db2` is zero.
+///
+/// The properties are the ones the kernel contract states independently of any
+/// particular spectrum: a published program validates, execution stays inside
+/// its queried workspace, publication is point-atomic, an `ok` point is finite,
+/// the principal branch never produces a negative imaginary part, and scalar
+/// and batch evaluation agree bitwise.
+fn fuzzOneLoopPipeline(_: void, smith: *std.testing.Smith) !void {
+    const dimension = smith.valueRangeLessThan(u32, 1, max_fluctuation_dimension + 1);
+    const entry_count = phaser.value.upperTriangleCount(dimension);
+
+    const built = try buildOneLoopGraph(dimension);
+    var graph = built.graph;
+    defer graph.deinit();
+    try std.testing.expect(graph.audit());
+
+    var program = phaser.kernel.lower(iteration_allocator, .{
+        .graph = &graph,
+        .capability = .value_gradient_hessian,
+        .value_root = built.value,
+        .gradient_roots = &.{built.gradient},
+        .hessian_roots = &.{built.hessian},
+        .parameter_count = @intCast(entry_count),
+        .background_count = 1,
+        .coordinate_count = 1,
+    }, .{}) catch |err| switch (err) {
+        error.ConstantNotRepresentable, error.CapacityExceeded => return,
+        else => return err,
+    };
+    defer program.deinit();
+
+    try program.validate(iteration_allocator, 64);
+    try std.testing.expectEqual(
+        phaser.kernel.ResultType.complex64,
+        program.result_type,
+    );
+
+    var parameters: [6]phaser.kernel.Scalar = undefined;
+    for (parameters[0..entry_count]) |*slot| slot.* = generatedScalar(smith);
+    const scales = [_]phaser.kernel.Scalar{generatedScalar(smith)};
+    const point_count = 3;
+    var backgrounds: [point_count]phaser.kernel.Scalar = undefined;
+    for (&backgrounds) |*slot| slot.* = generatedScalar(smith);
+
+    const inputs = phaser.kernel.Inputs{
+        .parameters = parameters[0..entry_count],
+        .scales = &scales,
+        .backgrounds = &backgrounds,
+    };
+
+    const layout = program.workspaceLayout(point_count);
+    const workspace = try iteration_allocator.alignedAlloc(
+        u8,
+        .of(phaser.kernel.Scalar),
+        layout.bytes,
+    );
+    defer iteration_allocator.free(workspace);
+
+    const sentinel = phaser.kernel.Complex64{ .re = -13579, .im = -24680 };
+    var values = [_]phaser.kernel.Complex64{sentinel} ** point_count;
+    var gradients = [_]phaser.kernel.Complex64{sentinel} ** point_count;
+    var hessians = [_]phaser.kernel.Complex64{sentinel} ** point_count;
+    var statuses: [point_count]phaser.kernel.Status = undefined;
+    const buffers = phaser.kernel.ComplexOutputBuffers{
+        .values = &values,
+        .gradients = &gradients,
+        .hessians = &hessians,
+        .statuses = &statuses,
+    };
+
+    phaser.kernel.evaluateComplex(
+        &program,
+        inputs,
+        point_count,
+        workspace,
+        buffers,
+    ) catch |err| switch (err) {
+        // A scale that is not finite and positive is rejected for the whole
+        // call, before any point runs.
+        error.InvalidScale => {
+            try std.testing.expect(!(std.math.isFinite(scales[0]) and scales[0] > 0));
+            for (values) |published| {
+                try std.testing.expectEqual(sentinel, published);
+            }
+            return;
+        },
+        else => return err,
+    };
+
+    for (statuses, 0..) |status, index| {
+        switch (status) {
+            .ok => {
+                // A published point is finite in every output, and the
+                // principal branch of this formula never turns downwards.
+                try std.testing.expect(std.math.isFinite(values[index].re));
+                try std.testing.expect(std.math.isFinite(values[index].im));
+                try std.testing.expect(values[index].im >= 0);
+                try std.testing.expect(std.math.isFinite(gradients[index].re));
+                try std.testing.expect(std.math.isFinite(hessians[index].re));
+            },
+            // Publication is point-atomic: a failed point wrote nothing at all.
+            .non_finite, .nonconvergent, .singular_derivative => {
+                try std.testing.expectEqual(sentinel, values[index]);
+                try std.testing.expectEqual(sentinel, gradients[index]);
+                try std.testing.expectEqual(sentinel, hessians[index]);
+            },
+            else => return error.UnexpectedStatus,
+        }
+    }
+
+    // Each point evaluated alone reproduces its place in the batch bitwise.
+    for (0..point_count) |index| {
+        var single = [_]phaser.kernel.Complex64{sentinel};
+        var single_gradient = [_]phaser.kernel.Complex64{sentinel};
+        var single_hessian = [_]phaser.kernel.Complex64{sentinel};
+        var single_status: [1]phaser.kernel.Status = undefined;
+        try phaser.kernel.evaluateComplex(
+            &program,
+            .{
+                .parameters = inputs.parameters,
+                .scales = inputs.scales,
+                .backgrounds = backgrounds[index .. index + 1],
+            },
+            1,
+            workspace,
+            .{
+                .values = &single,
+                .gradients = &single_gradient,
+                .hessians = &single_hessian,
+                .statuses = &single_status,
+            },
+        );
+        try std.testing.expectEqual(statuses[index], single_status[0]);
+        try std.testing.expectEqual(values[index], single[0]);
+        try std.testing.expectEqual(gradients[index], single_gradient[0]);
+        try std.testing.expectEqual(hessians[index], single_hessian[0]);
+    }
+
+    // One byte below the queried size is rejected before any slot is written.
+    if (layout.bytes > 0) {
+        try std.testing.expectError(
+            error.WorkspaceTooSmall,
+            phaser.kernel.evaluateComplex(
+                &program,
+                inputs,
+                point_count,
+                workspace[0 .. layout.bytes - 1],
+                buffers,
+            ),
+        );
+    }
+}
+
+/// Builds the order-one graph the pipeline target lowers.
+///
+/// Separate from the target so that ownership transfers exactly once: the
+/// builder is released only when construction fails, and the finished graph
+/// owns everything afterwards.
+const BuiltOneLoop = struct {
+    graph: phaser.value.Graph,
+    value: phaser.value.ValueId,
+    gradient: phaser.value.ValueId,
+    hessian: phaser.value.ValueId,
+};
+
+fn buildOneLoopGraph(dimension: u32) !BuiltOneLoop {
+    const entry_count = phaser.value.upperTriangleCount(dimension);
+
+    var builder = try phaser.value.Builder.init(iteration_allocator, .{
+        .value_nodes = 1024,
+        .value_operands = 16,
+        .exponent_magnitude = 4,
+        .exact_integer_bits = 256,
+    });
+    errdefer builder.deinit();
+
+    const background = try builder.background(0, "b", 1);
+    const scale = try builder.renormalizationScale(0, "muR");
+
+    // Every entry has the same structure, so permuting the coefficients is
+    // exactly a permutation of the scalar basis.
+    var coefficients: [6]phaser.value.ValueId = undefined;
+    var entries: [6]phaser.value.ValueId = undefined;
+    var zeros: [6]phaser.value.ValueId = undefined;
+    for (0..entry_count) |index| {
+        var name: [2]u8 = .{ 'p', '0' };
+        name[1] = '0' + @as(u8, @intCast(index));
+        coefficients[index] = try builder.parameter(@intCast(index), &name, 1);
+        entries[index] = try builder.multiply(&.{ coefficients[index], background });
+        zeros[index] = try builder.zero(0);
+    }
+
+    const matrix = try builder.realSymmetricMatrix(
+        dimension,
+        entries[0..entry_count],
+        2,
+    );
+    const spectral = try builder.scalarOneLoopSpectralValue(matrix, scale);
+
+    // `dM/db` is the coefficient matrix and `d2M/db2` vanishes identically.
+    const first_derivative = try builder.realSymmetricMatrix(
+        dimension,
+        coefficients[0..entry_count],
+        1,
+    );
+    const second_derivative = try builder.realSymmetricMatrix(
+        dimension,
+        zeros[0..entry_count],
+        0,
+    );
+    const gradient = try builder.scalarOneLoopSpectralGradient(
+        spectral,
+        &.{0},
+        &.{first_derivative},
+    );
+    const hessian = try builder.scalarOneLoopSpectralHessian(
+        spectral,
+        &.{0},
+        &.{first_derivative},
+        &.{second_derivative},
+    );
+    const gradient_root = try builder.element(gradient, 0, 0);
+    const hessian_root = try builder.element(hessian, 0, 0);
+
+    return .{
+        .graph = try builder.finish(),
+        .value = spectral,
+        .gradient = gradient_root,
+        .hessian = hessian_root,
+    };
+}
+
+/// A generated `f64` biased towards the values that make a spectrum
+/// interesting: small integers, exact zero, and the non-finite boundary.
+fn generatedScalar(smith: *std.testing.Smith) phaser.kernel.Scalar {
+    return switch (smith.valueRangeLessThan(u8, 0, 8)) {
+        0 => 0,
+        1 => @floatFromInt(@as(i8, @bitCast(smith.value(u8)))),
+        2 => @as(phaser.kernel.Scalar, @floatFromInt(
+            @as(i8, @bitCast(smith.value(u8))),
+        )) / 4,
+        3 => std.math.inf(phaser.kernel.Scalar),
+        4 => -std.math.inf(phaser.kernel.Scalar),
+        5 => std.math.nan(phaser.kernel.Scalar),
+        6 => std.math.floatMax(phaser.kernel.Scalar),
+        7 => @bitCast(smith.value(u64)),
+        else => unreachable,
+    };
 }
 
 test "parameter_point_parser" {

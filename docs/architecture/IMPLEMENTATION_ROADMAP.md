@@ -302,6 +302,8 @@ Not defects, but measured behavior a later milestone should know about.
 
 ## 7. Milestone 3: zero-temperature one-loop scalar potential
 
+Status: implemented
+
 ### Prerequisites: discharged
 
 Milestone 3 implementation may begin only after agreement, the independent
@@ -375,6 +377,70 @@ results rather than unsupported-domain failures.
 
 Provide a deterministic parameter scan and sampled tree-plus-one-loop potential
 data. The Milestone 4 notebook will render and plot this calculation.
+
+The delivered data is `examples/phi4/request_one_loop.json` with
+`equations_one_loop.txt`, `equations_one_loop.tex`, and three scans over one
+shared background grid: `scan_tree.tsv`, `scan_one_loop.tsv`, and
+`scan_total.tsv`. They differ only in `phaser evaluate --selection`, so the
+curves add point by point, and the interval crosses the sign change of the
+field-dependent mass-squared, so the sampled imaginary component is nonzero
+below it and exactly zero above.
+
+### Gate accounting
+
+Each exit criterion and the evidence that closes it:
+
+| Criterion | Evidence |
+|---|---|
+| \(\phi^4\) and multi-scalar results agree with independent derivations | `test/conformance/scalar_one_loop.zig` runs every recorded fixture case model → artifact → kernel against the known-spectrum evaluator, and separately checks the derivation's mass-matrix entries against the fixture's transcribed identities and the fixture spectra against their characteristic polynomials; `test/reference/scalar_one_loop.zig` keeps the evaluator independent and executes decision 0007's seeded defects as negative controls |
+| Degenerate and near-degenerate cases follow the declared policies | The exact-spectrum catalog of all three fixtures, each case naming its policy from [Numerical Comparison](NUMERICAL_COMPARISON.md): `spectral_value_known_spectrum` for the exact multisets including the repeated positive and repeated negative ones, `spectral_value_near_degenerate` for the measured close pairs, `spectral_value_zero_mode` for the exact zeros; derivatives in `test/conformance/one_loop_derivatives.zig` under the matching gradient and Hessian policies |
+| Scale dependence has the expected finite-order behavior | `test/conformance/scalar_one_loop.zig` compares the two-scale difference against \(-\operatorname{Tr}[(\mathcal M^2)^2]\log(\mu_2/\mu_1)/32\pi^2\), computed from the fixture's transcribed matrix entries rather than from anything the kernel reports, for the one-by-one and every dense three-by-three case |
+| Direct Typed Value IR and kernel evaluation agree | `test/conformance/scalar_one_loop.zig` evaluates the derived graph directly — recursively, sharing no lowering, scheduling, or slot machinery, and taking the spectral node's spectrum from the fixture rather than from an eigensolver — and compares it against kernel output at all three fluctuation dimensions; `test/conformance/potential_kernel.zig` does the same for the real tree subset |
+| Symbolic exports preserve spectral structure and loop-order separation | `test/integration/symbolic_export.zig` and the committed `examples/phi4/equations_one_loop.txt`, whose one-loop line keeps `scalar_one_loop([[m2 + 1/2 * lambda * phi^2]]; muR)` symbolic and whose total is labelled `V^(<=1)` alongside the per-order `V^(0)` and `V^(1)` contributions |
+
+Common-gate items: the specifications this milestone implements were reviewed
+in the preceding decision and specification changes; supported and unsupported
+cases are stated in each; `zig build bench` provides the representative
+measurements, now including one-by-one and dense three-by-three one-loop value
+and fused-derivative workloads whose outputs are verified against the closed
+form before anything is timed; Debug, ReleaseSafe, and ReleaseFast all run in
+continuous integration.
+
+### Requirements satisfied only trivially
+
+Implemented but not currently exercisable, recorded here rather than counted as
+verified.
+
+- **Scheme mismatch at binding.** Unchanged from Milestone 2: rejecting a
+  parameter point whose scheme differs from the artifact's cannot fire while
+  `MSbar` is the only supported scheme.
+- **`nonconvergent`.** Decision 0008 bounds the cyclic Jacobi sweeps well above
+  what any admissible input needs, and no matrix has been found that exhausts
+  them. The status is reached only through the test-only Tripwire checkpoint in
+  `src/numerics/symmetric_eigensolver.zig`, which is what keeps its handling
+  from decaying untested.
+- **Cross-platform numerical agreement.** The one-loop logarithm is the first
+  operation whose result could differ between the two supported platforms, and
+  the continuous-integration matrix is now the measurement that would show it.
+  Nothing in this repository can produce that evidence from one host.
+
+### Known characteristics
+
+Not defects, but measured behavior a later milestone should know about.
+Measured on Apple M4, Zig 0.16.0, ReleaseSafe, seven samples of at least 50 ms
+each; see `zig build bench` for the full table and its variance.
+
+- A one-by-one one-loop value costs roughly 73 ns per point at a single point
+  and 64 ns in a large batch, against 46 ns and 33 ns for the same model's tree
+  value. The one-loop term is therefore about twice the tree cost at this size,
+  most of it the logarithm.
+- A dense three-by-three one-loop value costs roughly 430 ns per point, about
+  six times the one-by-one case for three times the eigenvalues: the cyclic
+  Jacobi sweeps, not the spectral sum, dominate as soon as the direct small-size
+  paths stop applying.
+- Fusing the gradient and Hessian onto the value costs about 2.6x at one-by-one
+  and about 1.6x at three-by-three. The eigensystem is computed once and reused,
+  so the marginal cost of the derivatives falls as the diagonalization grows.
 
 ## 8. Milestone 4: experimental public client surfaces
 
