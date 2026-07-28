@@ -257,6 +257,12 @@ test "the artifact summary is bounded and reports its counts" {
     );
 
     const text = output.written();
+    // A tree-only artifact (loop order 0, as this one is) is exactly the
+    // classical scalar potential, named as such rather than as the general
+    // calculation.
+    try std.testing.expect(
+        std.mem.indexOf(u8, text, "calculation classical_scalar_potential\n") != null,
+    );
     try std.testing.expect(std.mem.indexOf(u8, text, "contributions 5") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "structural_absences 0") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "loop_orders 0 through 0") != null);

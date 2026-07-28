@@ -320,6 +320,14 @@ pub const Artifact = struct {
         if (!self.auditDerivatives(self.gradient, self.hessian)) return false;
         for (self.loop_totals, 0..) |item, index| {
             if (item.loop_order != index) return false;
+            // Unreachable in isolation given the two checks around it: this
+            // one requires every entry's `loop_order` to equal its index, and
+            // the length check below requires indices to run exactly
+            // `0..self.loop_order`, so an entry's `loop_order` can never
+            // exceed `self.loop_order` without one of those two already
+            // having caught it first. Kept because a caller-supplied
+            // `loop_totals` (rather than one `derive` built) could violate
+            // this without violating the other two.
             if (item.loop_order > self.loop_order) return false;
             if (self.graph.massDimension(item.selection.value) !=
                 potential_mass_dimension) return false;
@@ -457,6 +465,13 @@ fn derive(
     // At order one the formula version is defined in one scheme, and the
     // request parser only accepts that one. A missing declaration here would be
     // an internal inconsistency rather than user input.
+    //
+    // `Scheme` currently has exactly one member, `.msbar`, and
+    // `request.zig`'s own parser rejects any other declared scheme string
+    // before a `Request` exists at all, and requires a scheme be declared
+    // whenever `loop_order >= 1`. No successfully parsed request can reach
+    // this function with `loop_order >= 1` and `scheme != .msbar`; this stays
+    // as the check that would catch a change to either guarantee.
     if (request.loop_order >= 1 and request.scheme != .msbar) {
         return .{ .diagnostics = try codeDiagnostic(context, .unsupported_scheme) };
     }
@@ -1207,6 +1222,52 @@ test "every role belongs to exactly one loop order and result type" {
     }
 }
 
+test "selecting one loop order filters and reports overflow without corrupting the buffer" {
+    var source_model = try loadTestModel(phi4_model_source);
+    defer source_model.deinit();
+    var request = try parseTestRequest(one_loop_request_source);
+    defer request.deinit();
+
+    var artifact = switch (try deriveEffectivePotential(
+        testContext(),
+        &source_model,
+        &request,
+        .{ .audit = true },
+    )) {
+        .artifact => |derived| derived,
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer artifact.deinit();
+
+    var one_loop: [8]Contribution = undefined;
+    const one_loop_count = artifact.selectLoopOrder(1, &one_loop);
+    try std.testing.expectEqual(@as(usize, 1), one_loop_count);
+    try std.testing.expectEqual(Role.scalar_one_loop, one_loop[0].role);
+
+    // Phi4 has more than one tree-level contribution, so a full buffer both
+    // confirms the filter (no loop-1 item leaks in) and sets up the boundary
+    // case below.
+    var tree_full: [8]Contribution = undefined;
+    const tree_count = artifact.selectLoopOrder(0, &tree_full);
+    try std.testing.expect(tree_count > 1);
+    for (tree_full[0..tree_count]) |item| {
+        try std.testing.expectEqual(@as(u32, 0), item.loop_order);
+    }
+
+    // A buffer smaller than the match count still reports the true count
+    // rather than the truncated one, which is what lets a caller detect that
+    // it needs a bigger buffer instead of silently seeing only part of the
+    // answer.
+    var tree_short: [1]Contribution = undefined;
+    const short_count = artifact.selectLoopOrder(0, &tree_short);
+    try std.testing.expectEqual(tree_count, short_count);
+    try std.testing.expectEqual(tree_full[0].role, tree_short[0].role);
+}
+
 // -- derivation ------------------------------------------------------------
 
 const testing_context_limits = foundation.Limits{
@@ -1249,6 +1310,13 @@ const one_loop_request_source =
     \\"environment":{"kind":"vacuum"},
     \\"renormalization":{"scheme":"MSbar"},
     \\"orders":{"loop":{"through":1}}}
+;
+
+const tree_only_request_source =
+    \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+    \\"background":{"mode":"full_scalar_space"},
+    \\"environment":{"kind":"vacuum"},
+    \\"orders":{"loop":{"through":0}}}
 ;
 
 fn loadTestModel(source: []const u8) !model_module.Model {
@@ -1369,6 +1437,357 @@ test "the derived one-loop gradient agrees with differentiating the total" {
     );
 }
 
+test "audit defaults off" {
+    // `derive`'s `options.audit and !artifact.audit() -> @panic` sits directly
+    // beside an unconditional `std.debug.assert(artifact.audit())`, so this
+    // default is unobservable through crash-or-not behavior in Debug, where
+    // the assert already covers it regardless of the option. `options.audit`
+    // exists for ReleaseFast, which strips the assert; this is the one
+    // reachable way to confirm what a caller who never mentions it gets.
+    try std.testing.expect(!(DeriveOptions{}).audit);
+}
+
+/// A fresh, genuinely valid artifact for the corruption tests below.
+///
+/// `derive` never publishes an artifact that fails its own audit, so
+/// `Artifact.audit`'s "return false" branches are never exercised by any
+/// derivation this suite runs elsewhere. Each of the following tests takes one
+/// field of an otherwise-valid artifact out of the specific invariant it
+/// alone guards, and confirms `audit` catches exactly that.
+///
+/// A fresh artifact per test, rather than one shared and restored between
+/// cases, so a mistake in one case's cleanup cannot leak into the next.
+fn freshAuditableArtifact() !Artifact {
+    var source_model = try loadTestModel(phi4_model_source);
+    defer source_model.deinit();
+    var request = try parseTestRequest(one_loop_request_source);
+    defer request.deinit();
+    return switch (try deriveEffectivePotential(
+        testContext(),
+        &source_model,
+        &request,
+        .{ .audit = true },
+    )) {
+        .artifact => |derived| derived,
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+    };
+}
+
+test "a baseline artifact passes its own audit" {
+    // Establishes that `freshAuditableArtifact` is actually valid, so a
+    // corruption test below failing to detect a defect cannot be mistaken for
+    // starting from an already-invalid artifact.
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    try std.testing.expect(artifact.audit());
+}
+
+test "audit catches a total whose mass dimension does not match the potential" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    // `gradient[0]` is a real value in the same graph, one mass dimension
+    // short of the potential's -- the same domain as `total` (both complex64
+    // here), so this leaves the result-type check satisfied and isolates the
+    // mass-dimension check alone.
+    artifact.total = artifact.gradient[0];
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a total whose result type disagrees with its graph domain" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    // The tree total is a real value; splicing it in as the (complex64)
+    // overall total disagrees with `self.result_type`, which stays
+    // complex64 -- the check this isolates does not look at mass dimension at
+    // all, only at domain.
+    artifact.total = artifact.loopTotal(0).?.value;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a contribution above the requested loop truncation" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const contributions = @constCast(artifact.contributions);
+    contributions[0].loop_order = artifact.loop_order + 1;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a contribution whose loop order disagrees with its role" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const contributions = @constCast(artifact.contributions);
+    // Every tree role has loop order 0; recording one at order 1 (still
+    // within the truncation, so the check above does not also fire) is a
+    // role/order mismatch specifically.
+    contributions[0].loop_order = 1;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a contribution whose result type disagrees with its role" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const contributions = @constCast(artifact.contributions);
+    // A tree role's own `resultType()` is real64; declaring one complex64
+    // (without touching its value or loop order) isolates this check from the
+    // mass-dimension and domain checks that read the value itself.
+    contributions[0].result_type = .complex64;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a contribution whose value has the wrong mass dimension" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const contributions = @constCast(artifact.contributions);
+    // Every contribution's value is independently required to sit at the
+    // potential's own mass dimension, so contributions are not
+    // interchangeable with each other here -- the tree total's gradient is
+    // real domain (matching a tree contribution's declared result type) but
+    // one mass dimension short, which isolates this check from the
+    // domain/result-type check above.
+    if (artifact.loopTotal(0).?.gradient.len == 0) return error.TestUnexpectedResult;
+    contributions[0].value = artifact.loopTotal(0).?.gradient[0];
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a contribution whose value's domain disagrees with its declared result type" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const contributions = @constCast(artifact.contributions);
+    // The one-loop contribution's value is complex; splicing it into a tree
+    // (real64-declared) contribution disagrees in domain without touching
+    // `result_type`, `role`, or `loop_order` -- distinct from the mass
+    // dimension and role/result-type checks above, which do not depend on
+    // where the value comes from.
+    const one_loop = artifact.contribution(.scalar_one_loop).?.value;
+    contributions[0].value = one_loop;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches contributions out of canonical role order" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const contributions = @constCast(artifact.contributions);
+    // Two contributions naming the same role is the least-ordered case: it
+    // violates strict ascending order at the boundary (equal, not merely
+    // out of order), which is exactly what distinguishes this check from one
+    // that only rejects a decrease.
+    contributions[1].role = contributions[0].role;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a contribution's gradient failing the derivative shape check" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const contributions = @constCast(artifact.contributions);
+    const target = @constCast(contributions[0].gradient);
+    if (target.len == 0) return error.TestUnexpectedResult;
+    // `total` is one mass dimension too deep to be any contribution's
+    // gradient root.
+    target[0] = artifact.total;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a role that is requested but neither derived nor recorded absent" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    var contributions = std.ArrayList(Contribution).empty;
+    defer contributions.deinit(std.testing.allocator);
+    // Drop the first contribution entirely: still within the truncation
+    // (`roleIsRequested` is unaffected by this array), so this is neither
+    // derived nor recorded absent -- the silently-missing case, distinct from
+    // deriving-and-absent-at-once below.
+    for (artifact.contributions[1..]) |item| {
+        try contributions.append(std.testing.allocator, item);
+    }
+    const owned = try artifact.arena.allocator().dupe(
+        Contribution,
+        contributions.items,
+    );
+    artifact.contributions = owned;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a role above the truncation recorded as absent anyway" {
+    // A tree-only truncation, so `scalar_one_loop` sits above it -- neither
+    // derived nor absent is the only valid state for a role the request never
+    // reached.
+    var source_model = try loadTestModel(phi4_model_source);
+    defer source_model.deinit();
+    var request = try parseTestRequest(tree_only_request_source);
+    defer request.deinit();
+    var artifact = switch (try deriveEffectivePotential(
+        testContext(),
+        &source_model,
+        &request,
+        .{ .audit = true },
+    )) {
+        .artifact => |derived| derived,
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer artifact.deinit();
+    try std.testing.expect(!artifact.roleIsRequested(.scalar_one_loop));
+
+    var absences = std.ArrayList(StructuralAbsence).empty;
+    defer absences.deinit(std.testing.allocator);
+    for (artifact.absences) |item| try absences.append(std.testing.allocator, item);
+    try absences.append(std.testing.allocator, .{
+        .role = .scalar_one_loop,
+        .reason = .tensor_absent,
+    });
+    const owned = try artifact.arena.allocator().dupe(
+        StructuralAbsence,
+        absences.items,
+    );
+    artifact.absences = owned;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a role recorded as both derived and absent" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    var absences = std.ArrayList(StructuralAbsence).empty;
+    defer absences.deinit(std.testing.allocator);
+    for (artifact.absences) |item| try absences.append(std.testing.allocator, item);
+    // The first contribution's role is already derived; also recording it
+    // absent is the both-at-once case the check above's sibling forbids.
+    try absences.append(std.testing.allocator, .{
+        .role = artifact.contributions[0].role,
+        .reason = .tensor_absent,
+    });
+    const owned = try artifact.arena.allocator().dupe(
+        StructuralAbsence,
+        absences.items,
+    );
+    artifact.absences = owned;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches the total's gradient failing the derivative shape check" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const gradient = @constCast(artifact.gradient);
+    if (gradient.len == 0) return error.TestUnexpectedResult;
+    // `total` itself is a mass dimension too deep to be its own gradient
+    // root.
+    gradient[0] = artifact.total;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches the total's hessian failing the derivative shape check" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const hessian = @constCast(artifact.hessian);
+    if (hessian.len == 0) return error.TestUnexpectedResult;
+    // `total` is two mass dimensions too deep to be its own Hessian root,
+    // distinct from the gradient case above, which is only one dimension off.
+    hessian[0] = artifact.total;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a loop total recorded under the wrong index" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const loop_totals = @constCast(artifact.loop_totals);
+    if (loop_totals.len < 2) return error.TestUnexpectedResult;
+    loop_totals[1].loop_order = 0;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a loop total whose selection has the wrong mass dimension" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const loop_totals = @constCast(artifact.loop_totals);
+    if (loop_totals.len == 0) return error.TestUnexpectedResult;
+    loop_totals[0].selection.value = artifact.gradient[0];
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a loop total's derivatives failing the derivative shape check" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const loop_totals = @constCast(artifact.loop_totals);
+    const target = for (loop_totals) |*item| {
+        if (item.selection.gradient.len != 0) break item;
+    } else return error.TestUnexpectedResult;
+    const gradient = @constCast(target.selection.gradient);
+    gradient[0] = artifact.total;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a loop totals array shorter than the truncation promises" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    artifact.loop_totals = artifact.loop_totals[0 .. artifact.loop_totals.len - 1];
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a missing scale input when a contribution depends on it" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    // The one-loop contribution here does depend on the renormalization
+    // scale, so the baseline artifact's `scale` is already populated;
+    // dropping it is what disagrees with `depends_on_scale`, the other
+    // direction of the same check from the presence side.
+    try std.testing.expect(artifact.scale != null);
+    artifact.scale = null;
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches a scale input present without a scale-dependent contribution" {
+    var artifact = try freshAuditableArtifact();
+    defer artifact.deinit();
+    const contributions = @constCast(artifact.contributions);
+    // Declare every contribution scale-independent while `scale` stays
+    // populated: the presence direction of the same check, isolated from
+    // whether `scale` itself is null.
+    for (contributions) |*item| item.depends_on_scale = false;
+    try std.testing.expect(artifact.scale != null);
+    try std.testing.expect(!artifact.audit());
+}
+
+test "audit catches an asymmetric hessian failing the symmetry check" {
+    // A one-coordinate model's Hessian is 1x1, where symmetry holds trivially;
+    // this needs a genuine off-diagonal pair to break, hence the two-scalar
+    // model.
+    var source_model = try loadTestModel(two_scalar_model_source);
+    defer source_model.deinit();
+    var request = try parseTestRequest(tree_only_request_source);
+    defer request.deinit();
+    var artifact = switch (try deriveEffectivePotential(
+        testContext(),
+        &source_model,
+        &request,
+        .{ .audit = true },
+    )) {
+        .artifact => |derived| derived,
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer artifact.deinit();
+    try std.testing.expectEqual(@as(usize, 2), artifact.coordinateCount());
+    const hessian = @constCast(artifact.hessian);
+    try std.testing.expectEqual(@as(usize, 4), hessian.len);
+    // Row-major over 2 coordinates: index 1 is (row 0, column 1), index 2 is
+    // (row 1, column 0) -- the mixed partial this model's construction
+    // already makes equal. Overwriting one with index 3's value keeps a valid
+    // Hessian-shaped mass dimension (so the shape check above still passes)
+    // while breaking exactly this equality.
+    try std.testing.expectEqual(hessian[1], hessian[2]);
+    hessian[2] = hessian[3];
+    try std.testing.expect(!artifact.audit());
+}
+
 test "tripwires exercise every derivation rollback boundary" {
     var source_model = try loadTestModel(phi4_model_source);
     defer source_model.deinit();
@@ -1439,6 +1858,81 @@ test "a contribution ceiling is reported rather than silently truncating" {
                 foundation.Code.capacity_exceeded,
                 owned.items[0].code,
             );
+        },
+    }
+
+    // A ceiling exactly at the actual count succeeds: the check above already
+    // sits at the tightest over-limit case (count is exactly limit + 1), so an
+    // off-by-one there would report the same error either way. Only a ceiling
+    // that matches the count exactly can tell `>` from `>=` apart.
+    switch (try deriveEffectivePotential(testContext(), &source_model, &request, .{
+        .limits = .{ .contributions = 3 },
+    })) {
+        .artifact => |derived| {
+            var owned = derived;
+            owned.deinit();
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+    }
+}
+
+const two_scalar_model_source =
+    \\{"schema":"phaser.qft-model/0.1","spacetime_dimension":4,
+    \\"conventions":{"metric":"mostly_plus","scalar_representation":"real_components",
+    \\"fermions":"two_component_weyl"},
+    \\"parameters":{"m2":{"domain":"real","mass_dimension":2}},
+    \\"fields":{"real_scalars":[{"id":"phi"},{"id":"chi"}],"weyl_fermions":[],
+    \\"gauge_vectors":[]},
+    \\"tensors":{"scalar_mass_squared":{"components":[
+    \\{"indices":["phi","phi"],"value":"m2"},
+    \\{"indices":["chi","chi"],"value":"m2"}]}}}
+;
+
+test "a background coordinate ceiling is reported rather than silently truncating" {
+    var source_model = try loadTestModel(two_scalar_model_source);
+    defer source_model.deinit();
+    var request = try parseTestRequest(one_loop_request_source);
+    defer request.deinit();
+
+    // Two real scalars, so the full scalar space is exactly two background
+    // coordinates; a ceiling of one is exceeded.
+    switch (try deriveEffectivePotential(testContext(), &source_model, &request, .{
+        .limits = .{ .background_coordinates = 1 },
+    })) {
+        .artifact => |derived| {
+            var owned = derived;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            defer owned.deinit();
+            try std.testing.expectEqual(
+                foundation.Code.capacity_exceeded,
+                owned.items[0].code,
+            );
+        },
+    }
+
+    // A ceiling exactly at the actual count succeeds, which is what
+    // distinguishes this check from an off-by-one: the case above is already
+    // the tightest over-limit input (count is exactly limit + 1) and cannot
+    // by itself tell `>` from `>=`.
+    switch (try deriveEffectivePotential(testContext(), &source_model, &request, .{
+        .limits = .{ .background_coordinates = 2 },
+    })) {
+        .artifact => |derived| {
+            var owned = derived;
+            owned.deinit();
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            owned.deinit();
+            return error.TestUnexpectedResult;
         },
     }
 }

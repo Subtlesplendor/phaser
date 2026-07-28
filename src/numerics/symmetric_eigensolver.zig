@@ -452,6 +452,28 @@ fn overlaps(left: []const u8, right: []const u8) bool {
 
 // -- tests -----------------------------------------------------------------
 
+test "overlaps detects touching and disjoint byte ranges by address" {
+    var buffer: [16]u8 = undefined;
+
+    // Adjacent, sharing no byte: touching exactly at the boundary is what
+    // distinguishes this from a genuine one-byte overlap below, in both
+    // relative orders.
+    try std.testing.expect(!overlaps(buffer[0..8], buffer[8..16]));
+    try std.testing.expect(!overlaps(buffer[8..16], buffer[0..8]));
+
+    // Overlapping by exactly one byte, again in both relative orders.
+    try std.testing.expect(overlaps(buffer[0..8], buffer[7..15]));
+    try std.testing.expect(overlaps(buffer[7..15], buffer[0..8]));
+
+    // The same range against itself: the `left_start <= right_start` branch
+    // taken when the two starts are equal, not merely close.
+    try std.testing.expect(overlaps(buffer[0..8], buffer[0..8]));
+
+    // An empty range shares no byte with anything, regardless of address.
+    try std.testing.expect(!overlaps(buffer[0..0], buffer[0..8]));
+    try std.testing.expect(!overlaps(buffer[0..8], buffer[0..0]));
+}
+
 fn expectSpectrum(
     n: usize,
     packed_upper: []const Scalar,

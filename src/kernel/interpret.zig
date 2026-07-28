@@ -124,6 +124,12 @@ const Frame = struct {
     /// declares: canonical coordinate order for a vector, dense row-major for a
     /// matrix.
     fn components(self: Frame, slot: u32) []Complex64 {
+        // Every caller's slot is one `Program.validate` has already required to
+        // be `.complex_vector` or `.complex_matrix`, so this assert cannot fail
+        // against a validated program: it guards against a mismatch between
+        // `validateInstruction`'s type requirements and this interpreter's own
+        // switch, which only a change to one side without the other would
+        // create.
         std.debug.assert(switch (self.temporaries[slot].kind) {
             .complex_vector, .complex_matrix => true,
             else => false,
@@ -659,6 +665,11 @@ pub fn scalarOneLoopTerm(eigenvalue: Scalar, scale: Scalar) Complex64 {
         .re = square * (logarithm - 1.5) / normalization,
         // A negative eigenvalue contributes the principal branch's imaginary
         // part. It is a successful result, never a clipped or projected one.
+        //
+        // `< 0` and `<= 0` are equivalent here, not merely by convention: the
+        // exact-zero return above already excludes eigenvalue 0 (IEEE 754
+        // equates +0 and -0, so that check catches both) from everything
+        // below it, so this can never observe zero either way.
         .im = if (eigenvalue < 0) square / (64.0 * std.math.pi) else 0,
     };
 }
@@ -784,6 +795,29 @@ fn overlaps(left: []const u8, right: []const u8) bool {
 }
 
 // -- tests -----------------------------------------------------------------
+
+test "overlaps detects touching and disjoint byte ranges by address" {
+    var buffer: [16]u8 = undefined;
+
+    // Adjacent, sharing no byte: touching exactly at the boundary is what
+    // distinguishes this from a genuine one-byte overlap below, in both
+    // relative orders (`overlaps` is not documented as symmetric, so both
+    // directions of the same layout are checked independently).
+    try std.testing.expect(!overlaps(buffer[0..8], buffer[8..16]));
+    try std.testing.expect(!overlaps(buffer[8..16], buffer[0..8]));
+
+    // Overlapping by exactly one byte, again in both relative orders.
+    try std.testing.expect(overlaps(buffer[0..8], buffer[7..15]));
+    try std.testing.expect(overlaps(buffer[7..15], buffer[0..8]));
+
+    // The same range against itself: the `left_start <= right_start` branch
+    // taken when the two starts are equal, not merely close.
+    try std.testing.expect(overlaps(buffer[0..8], buffer[0..8]));
+
+    // An empty range shares no byte with anything, regardless of address.
+    try std.testing.expect(!overlaps(buffer[0..0], buffer[0..8]));
+    try std.testing.expect(!overlaps(buffer[0..8], buffer[0..0]));
+}
 
 test "integer powers follow the normative sequence" {
     try std.testing.expectEqual(@as(Scalar, 1), integerPower(7, 0));
