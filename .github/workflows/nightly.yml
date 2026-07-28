@@ -247,8 +247,18 @@ jobs:
           # whole cycle is visited exactly once in GROUP_COUNT nights.
           index=$(( $(date -u +%s) / 86400 % GROUP_COUNT ))
           echo "MUTATION_GROUP_INDEX=$index" >> "$GITHUB_ENV"
+          # tools/ci/mutation_rotation.sh reads the mutant listing on standard
+          # input (its own usage comment says so). Each workflow step is its
+          # own shell process, so the previous step's `mutants.txt` is not
+          # connected to this one unless it is redirected in explicitly; every
+          # run before this fix invoked the script against a closed stdin, so
+          # the awk script saw zero records and every group -- for any
+          # GROUP_COUNT, on any night -- reported "holds no cells". Decisions
+          # 0005 and 0012 sized and retuned GROUP_COUNT against a rotation that
+          # had never actually scheduled a mutant.
           tools/ci/mutation_rotation.sh \
             zentinel.toml "$GROUP_COUNT" "$index" .zentinel-rotation \
+            < "$RUNNER_TEMP/mutants.txt" \
             > "$RUNNER_TEMP/plan.txt"
           echo "--- plan ---"
           cat "$RUNNER_TEMP/plan.txt"
