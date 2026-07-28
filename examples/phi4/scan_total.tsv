@@ -1,0 +1,25 @@
+# phaser evaluate effective_potential
+# model_fingerprint 7da4db3f31600b5a61b31b4e1408d41cdb9b3f42936cf4f0a5f894ba444e0eb5
+# request_fingerprint d337f278e419f1dba5a6e08c31645fca887e3d2589d3afda6339fc70da90bc5f
+# scheme msbar reference_scale 125
+# loop_orders 0 through 1 contributions 4
+# selection total
+# result_type complex64
+# contribution vacuum_energy formula none branch none precision binary64 resummation none
+# contribution scalar_mass_squared formula none branch none precision binary64 resummation none
+# contribution scalar_quartic formula none branch none precision binary64 resummation none
+# contribution scalar_one_loop formula scalar-vacuum-msbar/1 branch arg(-pi,pi] precision binary64 resummation none
+phi	value.re	value.im	dV/dphi.re	dV/dphi.im	status
+0	-211918.13300723032	303563.96311167785	0	0	ok
+50	-9896341.162335955	278832.7770327888	-384673.4126116478	-968.2340170754601	ok
+100	-38138646.794075504	210943.24662015217	-736911.3402507182	-1684.3069211896986	ok
+150	-82506927.65154345	118807.45534585963	-1024320.0443162308	-1896.057599381494	ok
+200	-138952200.27029008	33945.54233006387	-1214633.8599218011	-1351.3249386896239	ok
+250	-201823753.3862968	0	-1276357.5844305751	0	ok
+300	-263881671.1645473	0	-1176045.6945086024	0	ok
+350	-316172496.57481736	0	-880327.9386746647	0	ok
+400	-348116593.21951604	0	-356734.068203446	0	ok
+450	-347503090.3458864	0	427429.88948490773	0	ok
+500	-300485129.36472785	0	1504903.1252268043	0	ok
+550	-191578236.35138857	0	2908449.448389671	0	ok
+600	-3659273.216714233	0	4670850.957476852	0	ok

@@ -417,6 +417,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phaser", .module = bench_phaser_module },
             .{ .name = "example_data", .module = bench_example_data_module },
             .{ .name = "numerical_comparison", .module = numerical_comparison_module },
+            // The dense three-by-three one-loop workload needs a model with
+            // three real scalars. The conformance fixture already carries one
+            // whose spectrum is exact, so the benchmark reads it rather than
+            // keeping a second copy that could drift from it.
+            .{
+                .name = "scalar_oracle_fixture",
+                .module = scalar_oracle_fixture_module,
+            },
         },
     });
     const bench = b.addExecutable(.{
@@ -537,5 +545,27 @@ pub fn build(b: *std.Build) void {
         run_evaluate.addArg("--outputs=gradient");
         run_evaluate.addArg("--scan=0:0:600:13");
         examples_step.dependOn(&run_evaluate.step);
+    }
+
+    // The order-one phi4 workflow the Milestone 4 plotting client consumes:
+    // one export plus the three separately selected scans over the same grid.
+    const one_loop_export = b.addRunArtifact(cli);
+    one_loop_export.addArg("export");
+    one_loop_export.addFileArg(b.path("examples/phi4/model.json"));
+    one_loop_export.addFileArg(b.path("examples/phi4/request_one_loop.json"));
+    one_loop_export.addArg("--target=latex");
+    examples_step.dependOn(&one_loop_export.step);
+
+    for ([_][]const u8{ "loop:0", "loop:1", "total" }) |selection| {
+        const run_scan = b.addRunArtifact(cli);
+        run_scan.addArg("evaluate");
+        run_scan.addFileArg(b.path("examples/phi4/model.json"));
+        run_scan.addFileArg(b.path("examples/phi4/request_one_loop.json"));
+        run_scan.addFileArg(b.path("examples/phi4/point.json"));
+        run_scan.addArg("--outputs=gradient");
+        run_scan.addArg("--format=tsv");
+        run_scan.addArg(b.fmt("--selection={s}", .{selection}));
+        run_scan.addArg("--scan=0:0:600:13");
+        examples_step.dependOn(&run_scan.step);
     }
 }

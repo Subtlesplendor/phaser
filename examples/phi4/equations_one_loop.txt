@@ -1,0 +1,10 @@
+background full_scalar_space
+  0 phi -> scalar 0
+V^(0)[vacuum_energy](phi) = omega
+V^(0)[scalar_tadpole](phi) = 0  [structurally absent: tensor_absent]
+V^(0)[scalar_mass_squared](phi) = 1/2 * m2 * phi^2
+V^(0)[scalar_cubic](phi) = 0  [structurally absent: tensor_absent]
+V^(0)[scalar_quartic](phi) = 1/24 * lambda * phi^4
+V^(1)[scalar_one_loop](phi; muR) = scalar_one_loop([[m2 + 1/2 * lambda * phi^2]]; muR)
+V^(<=1)(phi; muR) = omega + 1/2 * m2 * phi^2 + 1/24 * lambda * phi^4 + scalar_one_loop([[m2 + 1/2 * lambda * phi^2]]; muR)
+dV/dphi = m2 * phi + 1/6 * lambda * phi^3 + d[scalar_one_loop([[m2 + 1/2 * lambda * phi^2]]; muR)]/dphi

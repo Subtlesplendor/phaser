@@ -30,6 +30,7 @@ const usage =
     \\Evaluate options:
     \\  --outputs=value|gradient|hessian   Requested outputs (default: value)
     \\  --format=table|tsv                 Output format (default: table)
+    \\  --selection=total|loop:N|role:NAME Contributions to evaluate (default: total)
     \\  --point=A[,B...]                   One background point; repeatable
     \\  --scan=INDEX:FROM:TO:COUNT         Vary one coordinate, others at zero
     \\
@@ -131,6 +132,7 @@ fn run(
 
         var outputs = commands.Outputs.value;
         var format = commands.EvaluateFormat.table;
+        var selection: phaser.kernel.Selection = .total;
         var explicit: std.ArrayList(Scalar) = .empty;
         defer explicit.deinit(gpa);
         var explicit_points: usize = 0;
@@ -144,6 +146,9 @@ fn run(
             } else if (std.mem.startsWith(u8, argument, "--format=")) {
                 const name = argument["--format=".len..];
                 format = std.meta.stringToEnum(commands.EvaluateFormat, name) orelse
+                    return error.Usage;
+            } else if (std.mem.startsWith(u8, argument, "--selection=")) {
+                selection = commands.parseSelection(argument["--selection=".len..]) catch
                     return error.Usage;
             } else if (std.mem.startsWith(u8, argument, "--point=")) {
                 var values = std.mem.splitScalar(u8, argument["--point=".len..], ',');
@@ -205,6 +210,7 @@ fn run(
             .{
                 .outputs = outputs,
                 .format = format,
+                .selection = selection,
                 .points = points,
                 .point_count = point_count,
             },

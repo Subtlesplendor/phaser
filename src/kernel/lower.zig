@@ -26,7 +26,8 @@ pub const LowerError = error{
     /// An exact constant has no faithful `f64` representation under the
     /// conversion policy.
     ConstantNotRepresentable,
-    /// The value graph uses a node kind this backend does not implement.
+    /// The value graph uses a node kind this backend does not implement, or a
+    /// requested root has a shape no output buffer can carry.
     UnsupportedOperation,
     CapacityExceeded,
     /// A structured shape or workspace requirement is not representable.
@@ -183,16 +184,27 @@ const Builder = struct {
     }
 
     fn collectRoots(self: *Builder, request: Request) LowerError!void {
-        try self.roots.append(self.allocator, request.value_root);
-        for (request.gradient_roots) |root| {
-            try self.roots.append(self.allocator, root);
-        }
-        for (request.hessian_roots) |root| {
-            try self.roots.append(self.allocator, root);
-        }
+        try self.appendRoot(request.value_root);
+        for (request.gradient_roots) |root| try self.appendRoot(root);
+        for (request.hessian_roots) |root| try self.appendRoot(root);
         var highest: usize = 0;
         for (self.roots.items) |root| highest = @max(highest, root.toUsize());
         self.frontier = highest + 1;
+    }
+
+    /// Records one requested root, rejecting a shape no output buffer carries.
+    ///
+    /// An output is one number per point: a matrix or vector root has no
+    /// publishable form, and a program that declared one would fail validation
+    /// rather than run. Refusing it here keeps the failure a checked error at
+    /// the call rather than a rejected program the caller cannot act on. A
+    /// derived artifact never produces such a root; a caller building the Typed
+    /// Value IR directly can.
+    fn appendRoot(self: *Builder, root: value.ValueId) LowerError!void {
+        if (!self.graph.valueType(root).isScalar()) {
+            return error.UnsupportedOperation;
+        }
+        try self.roots.append(self.allocator, root);
     }
 
     /// Marks every node any output depends on. Operands refer to strictly
@@ -1024,6 +1036,69 @@ test "invariant derivatives reuse the eigensystem the value computed" {
     try std.testing.expect(program.scratch_bytes >= try (program_module.SlotType{
         .real_eigensystem = 1,
     }).byteSize());
+}
+
+test "a structured root is refused at the call rather than lowered" {
+    // Regression, found by the `kernel_lowering` fuzz target once its generated
+    // scripts could build structured nodes. A matrix or vector has no
+    // per-point output form, so lowering one produced a program that could not
+    // validate: a failure the caller sees only after lowering has already
+    // succeeded, and which reads as an internal inconsistency rather than as a
+    // rejected request.
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const entry = try builder.parameter(0, "g", value.mass_squared_dimension);
+    const matrix = try builder.realSymmetricMatrix(
+        1,
+        &.{entry},
+        value.mass_squared_dimension,
+    );
+    const scale = try builder.renormalizationScale(0, "muR");
+    const spectral_root = try builder.scalarOneLoopSpectralValue(matrix, scale);
+    const background = value.Background{ .order = &.{0}, .mass_dimension = 1 };
+    var gradient_roots: [1]ValueId = undefined;
+    try value.gradient(&builder, spectral_root, background, &gradient_roots);
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    // The matrix itself as a value root.
+    try std.testing.expectError(error.UnsupportedOperation, lower(
+        std.testing.allocator,
+        .{
+            .graph = &graph,
+            .capability = .value,
+            .value_root = matrix,
+            .gradient_roots = &.{},
+            .hessian_roots = &.{},
+            .parameter_count = 1,
+            .background_count = 1,
+            .coordinate_count = 1,
+        },
+        .{},
+    ));
+
+    // A scalar value root with a structured gradient root is refused for the
+    // same reason, so the check covers every declared output rather than the
+    // first one.
+    const vector = graph.value(gradient_roots[0]);
+    try std.testing.expect(vector.value_type.isScalar());
+    const derivative = switch (graph.value(gradient_roots[0]).node) {
+        .element => |selection| selection.source,
+        else => return error.UnexpectedGradientShape,
+    };
+    try std.testing.expectError(error.UnsupportedOperation, lower(
+        std.testing.allocator,
+        .{
+            .graph = &graph,
+            .capability = .value_gradient,
+            .value_root = spectral_root,
+            .gradient_roots = &.{derivative},
+            .hessian_roots = &.{},
+            .parameter_count = 1,
+            .background_count = 1,
+            .coordinate_count = 1,
+        },
+        .{},
+    ));
 }
 
 test "an eigensystem stays live exactly as long as an operation still reads it" {

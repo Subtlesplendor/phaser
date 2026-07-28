@@ -1,0 +1,24 @@
+# phaser evaluate effective_potential
+# model_fingerprint 7da4db3f31600b5a61b31b4e1408d41cdb9b3f42936cf4f0a5f894ba444e0eb5
+# request_fingerprint d337f278e419f1dba5a6e08c31645fca887e3d2589d3afda6339fc70da90bc5f
+# scheme msbar reference_scale 125
+# loop_orders 0 through 1 contributions 4
+# selection loop:0
+# result_type real64
+# contribution vacuum_energy formula none branch none precision binary64 resummation none
+# contribution scalar_mass_squared formula none branch none precision binary64 resummation none
+# contribution scalar_quartic formula none branch none precision binary64 resummation none
+phi	value	dV/dphi	status
+0	0	0	ok
+50	-9697916.666666666	-385208.3333333333	ok
+100	-37979166.666666664	-737916.6666666666	ok
+150	-82406250	-1025625	ok
+200	-138916666.66666666	-1215833.3333333333	ok
+250	-201822916.66666666	-1276041.6666666665	ok
+300	-263812500	-1173750	ok
+350	-315947916.6666666	-876458.3333333333	ok
+400	-347666666.6666667	-351666.6666666665	ok
+450	-346781250	433125	ok
+500	-299479166.6666666	1510416.666666667	ok
+550	-190322916.66666663	2912708.333333334	ok
+600	-2250000	4672500	ok

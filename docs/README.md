@@ -22,21 +22,21 @@ one-line summary alone.
 
 | Document | Subsystem | Status |
 |---|---|---|
-| [FOUNDATION.md](architecture/FOUNDATION.md) | Typed IDs, spans, checked arithmetic, budgets, diagnostics | Implemented (`src/foundation/`); referenced as a shared contract by active Milestone 3 docs, so it stays in full. |
-| [MEMORY_ARCHITECTURE.md](architecture/MEMORY_ARCHITECTURE.md) | Ownership, allocation phases, workspace contract | Implemented for Milestones 1–2; the workspace/concurrency sections are the active shared contract for Milestone 3 kernel work. |
-| [CONTENT_IDENTITY_AND_CACHING.md](architecture/CONTENT_IDENTITY_AND_CACHING.md) | Content fingerprints, deferred caching | Implemented for what exists today; referenced by the still-open kernel/caching sections of Milestone 3 docs. |
+| [FOUNDATION.md](architecture/FOUNDATION.md) | Typed IDs, spans, checked arithmetic, budgets, diagnostics | Implemented (`src/foundation/`); referenced as a shared contract throughout, so it stays in full. |
+| [MEMORY_ARCHITECTURE.md](architecture/MEMORY_ARCHITECTURE.md) | Ownership, allocation phases, workspace contract | Implemented through Milestone 3, including the typed workspace frame the spectral kernel uses; the concurrency sections remain future work. |
+| [CONTENT_IDENTITY_AND_CACHING.md](architecture/CONTENT_IDENTITY_AND_CACHING.md) | Content fingerprints, deferred caching | Implemented for what exists today; the caching sections it specifies remain deferred. |
 | [PARALLELISM.md](architecture/PARALLELISM.md) | Reentrancy and future concurrency | Not yet exercised; core is still serial. |
 | [STRUCTURAL_COMPILATION.md](architecture/STRUCTURAL_COMPILATION.md) | Structural/dynamic compiler | Future (Milestone 6+). |
 | [COMPTIME_AND_AOT.md](architecture/COMPTIME_AND_AOT.md) | Compile-time specialization boundary | Mostly future; no AOT specialization machinery yet. |
 | [LANGUAGE_AND_INTEROPERABILITY.md](architecture/LANGUAGE_AND_INTEROPERABILITY.md) | C/C++/Python bindings | Future (Milestone 4–5); no client bindings exist yet. |
-| [VERIFICATION_AND_TESTING.md](architecture/VERIFICATION_AND_TESTING.md) | Testing policy, oracle strategy | Active — Milestone 1/2 policies are settled; the Milestone 3 oracle policy is still being applied. |
-| [NUMERICAL_COMPARISON.md](architecture/NUMERICAL_COMPARISON.md) | Numerical agreement policy | Active — Milestone 3's spectral/near-degenerate comparison policy is unfinished, driving `MILESTONE_3_PREP_PLAN.md`. |
-| [CONFORMANCE_MODELS.md](architecture/CONFORMANCE_MODELS.md) | Fixture models used as test oracles | Active — Milestone 3 fixtures current; the Wess–Zumino supertrace oracle (§6.4) is deferred to Milestone 6. |
-| [KERNEL_INSTRUCTION_SET.md](architecture/KERNEL_INSTRUCTION_SET.md) | Kernel opcode set | Active — Milestone 2 opcodes are lowered; the Milestone 3 spectral/complex opcodes are specified but `src/kernel/lower.zig` still rejects them (`error.UnsupportedOperation`). |
-| [INTERNAL_REPRESENTATIONS.md](architecture/INTERNAL_REPRESENTATIONS.md) | Value IR, expression IR | Active — Milestone 1/2 representations are settled; §5.4 (matrices/spectral) is Milestone 3 work still being wired. |
-| [POTENTIAL_KERNEL.md](architecture/POTENTIAL_KERNEL.md) | Numerical evaluation kernel | Active — the Milestone 3 complex/spectral kernel it specifies is not yet lowered. |
-| [EVALUATION_LIFECYCLE.md](architecture/EVALUATION_LIFECYCLE.md) | Evaluation call lifecycle and status codes | Active — Milestone 2 lifecycle is settled; Milestone 3 complex-result/status semantics aren't reachable yet. |
-| [SYMBOLIC_EXPORT.md](architecture/SYMBOLIC_EXPORT.md) | Symbolic graph export/presentation | Active — Milestone 2 export is settled; one-loop/spectral export has explicit "deferred" sections. |
+| [VERIFICATION_AND_TESTING.md](architecture/VERIFICATION_AND_TESTING.md) | Testing policy, oracle strategy | Active — Milestone 1–3 policies are settled and applied; later milestones add tiers rather than change them. |
+| [NUMERICAL_COMPARISON.md](architecture/NUMERICAL_COMPARISON.md) | Numerical agreement policy | Active — the spectral, near-degenerate, and zero-mode policies are measured and named by the Milestone 3 tests; cross-platform evidence is still a continuous-integration measurement. |
+| [CONFORMANCE_MODELS.md](architecture/CONFORMANCE_MODELS.md) | Fixture models used as test oracles | Active — every Milestone 3 fixture case now runs model → artifact → kernel; the Wess–Zumino supertrace oracle (§6.4) is deferred to Milestone 6. |
+| [KERNEL_INSTRUCTION_SET.md](architecture/KERNEL_INSTRUCTION_SET.md) | Kernel opcode set | Implemented through Milestone 3 — the spectral and complex opcodes are lowered and executed; later milestones add opcodes rather than change these. |
+| [INTERNAL_REPRESENTATIONS.md](architecture/INTERNAL_REPRESENTATIONS.md) | Value IR, expression IR | Implemented through Milestone 3, including §5.4 (matrices and spectral operations). |
+| [POTENTIAL_KERNEL.md](architecture/POTENTIAL_KERNEL.md) | Numerical evaluation kernel | Implemented through Milestone 3 — the complex/spectral kernel, its statuses, and its workspace contract are all exercised. |
+| [EVALUATION_LIFECYCLE.md](architecture/EVALUATION_LIFECYCLE.md) | Evaluation call lifecycle and status codes | Implemented through Milestone 3 — complex results and the added statuses are reachable, except `nonconvergent`, which only a test-only checkpoint reaches. |
+| [SYMBOLIC_EXPORT.md](architecture/SYMBOLIC_EXPORT.md) | Symbolic graph export/presentation | Implemented through Milestone 3 — loop-order headings and compact matrix/spectral notation are exported; later sectors remain explicitly deferred. |
 | [IMPLEMENTATION_ROADMAP.md](architecture/IMPLEMENTATION_ROADMAP.md) | Milestone scope and sequencing | The authoritative source for milestone boundaries; read this first when unsure which milestone a subsystem belongs to. |
 
 ## docs/calculations — physics content of specific calculations
@@ -44,8 +44,8 @@ one-line summary alone.
 | Document | Milestone | Status |
 |---|---|---|
 | [CLASSICAL_SCALAR_POTENTIAL.md](calculations/CLASSICAL_SCALAR_POTENTIAL.md) | Milestone 2 | Implemented (`src/calculation/potential.zig`); keep its one Milestone 3 cross-reference in mind if you touch it. |
-| [EFFECTIVE_POTENTIAL.md](calculations/EFFECTIVE_POTENTIAL.md) | Milestone 3 | Active — symbolic derivation exists (`src/value/graph.zig`, `src/calculation/potential.zig`), numerical kernel evaluation does not yet. |
-| [SCALAR_ONE_LOOP_EFFECTIVE_POTENTIAL.md](calculations/SCALAR_ONE_LOOP_EFFECTIVE_POTENTIAL.md) | Milestone 3 | Active — physics conventions for the calculation whose kernel execution path is still being built. |
+| [EFFECTIVE_POTENTIAL.md](calculations/EFFECTIVE_POTENTIAL.md) | Milestone 3 | Implemented — symbolic derivation and numerical value, gradient, and Hessian evaluation. |
+| [SCALAR_ONE_LOOP_EFFECTIVE_POTENTIAL.md](calculations/SCALAR_ONE_LOOP_EFFECTIVE_POTENTIAL.md) | Milestone 3 | Implemented — the physics conventions this milestone's kernel executes. |
 
 ## docs/formats — model and request source-schema specifications
 
