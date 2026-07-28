@@ -28,7 +28,7 @@ one-line summary alone.
 | [PARALLELISM.md](architecture/PARALLELISM.md) | Reentrancy and future concurrency | Not yet exercised; core is still serial. |
 | [STRUCTURAL_COMPILATION.md](architecture/STRUCTURAL_COMPILATION.md) | Structural/dynamic compiler | Future (Milestone 6+). |
 | [COMPTIME_AND_AOT.md](architecture/COMPTIME_AND_AOT.md) | Compile-time specialization boundary | Mostly future; no AOT specialization machinery yet. |
-| [LANGUAGE_AND_INTEROPERABILITY.md](architecture/LANGUAGE_AND_INTEROPERABILITY.md) | C/C++/Python bindings | Future (Milestone 4–5); no client bindings exist yet. |
+| [LANGUAGE_AND_INTEROPERABILITY.md](architecture/LANGUAGE_AND_INTEROPERABILITY.md) | C/C++/Python bindings | Active — §5 is the Milestone 4 C ABI contract and §5.11 fixes its operation set; no client bindings are implemented yet. The C++ sections remain Milestone 5. |
 | [VERIFICATION_AND_TESTING.md](architecture/VERIFICATION_AND_TESTING.md) | Testing policy, oracle strategy | Active — Milestone 1–3 policies are settled and applied; later milestones add tiers rather than change them. |
 | [NUMERICAL_COMPARISON.md](architecture/NUMERICAL_COMPARISON.md) | Numerical agreement policy | Active — the spectral, near-degenerate, and zero-mode policies are measured and named by the Milestone 3 tests; cross-platform evidence is still a continuous-integration measurement. |
 | [CONFORMANCE_MODELS.md](architecture/CONFORMANCE_MODELS.md) | Fixture models used as test oracles | Active — every Milestone 3 fixture case now runs model → artifact → kernel; the Wess–Zumino supertrace oracle (§6.4) is deferred to Milestone 6. |
@@ -86,4 +86,7 @@ subsystem you're touching rather than the whole set.
 [0008](decisions/0008-symmetric-eigensolver.md) deterministic real-symmetric eigensolver ·
 [0009](decisions/0009-scalar-spectral-derivatives.md) scalar spectral derivatives ·
 [0010](decisions/0010-fuzz-search-budget.md) fuzz tier allocator/search budget ·
-[0011](decisions/0011-test-allocation-traces.md) allocation traces in test tiers
+[0011](decisions/0011-test-allocation-traces.md) allocation traces in test tiers ·
+[0012](decisions/0012-mutation-rotation-retune.md) mutation rotation retune ·
+[0013](decisions/0013-c-abi-v0-surface.md) C ABI version 0 surface ·
+[0014](decisions/0014-public-header-and-toolchain-baseline.md) public header and toolchain baseline

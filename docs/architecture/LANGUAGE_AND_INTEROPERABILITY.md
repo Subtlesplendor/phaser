@@ -1,11 +1,11 @@
 # Language and Interoperability
 
-Status: initial specification
+Status: active — the Milestone 4 contract
 
 This document specifies Phaser's implementation language and its supported
 language boundaries. It defines the intended architecture, ownership rules, and
-compatibility responsibilities. Exact function signatures, package names, and
-the initial platform support matrix remain to be designed.
+compatibility responsibilities. Sections 5 and 8 are the contract Milestone 4
+implements; exact parameter lists and package names remain to be designed.
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as
 requirements on Phaser implementations.
@@ -125,8 +125,8 @@ It SHOULD cover:
 - scalar, fused-output, and batch evaluation; and
 - version and capability queries.
 
-Exact function signatures are deferred until the corresponding core lifecycles
-have executable prototypes.
+Milestone 3 produced those executable lifecycles, so the deferral of exact
+signatures has expired. The version 0 operation set is specified in §5.11.
 
 ### 5.2 Header compatibility
 
@@ -141,29 +141,45 @@ The public header MUST:
 - use a common export/import macro for symbol visibility; and
 - expose the ABI version and library version separately.
 
-The initial minimum C and C++ language versions remain to be selected.
+The minimum is C11 for `phaser.h` as a C header and C++17 for the same header
+included from C++, selected in
+[Decision 0014](../decisions/0014-public-header-and-toolchain-baseline.md). That
+decision also makes the header authoritative and hand-written rather than
+generated, and records the supported linkage and platform matrix: static and
+shared linkage on Linux x86-64 and macOS ARM64. Windows is not claimed by
+Milestone 4.
 
 ### 5.3 Opaque objects
 
 Long-lived core objects MUST cross the ABI as opaque handle types, conceptually:
 
 ```c
-typedef struct phaser_context phaser_context;
-typedef struct phaser_model phaser_model;
-typedef struct phaser_plan phaser_plan;
-typedef struct phaser_artifact phaser_artifact;
-typedef struct phaser_kernel phaser_kernel;
-typedef struct phaser_binding phaser_binding;
+typedef struct phaser_context     phaser_context;
+typedef struct phaser_model       phaser_model;
+typedef struct phaser_request     phaser_request;
+typedef struct phaser_artifact    phaser_artifact;
+typedef struct phaser_kernel      phaser_kernel;
+typedef struct phaser_point       phaser_point;
+typedef struct phaser_binding     phaser_binding;
 typedef struct phaser_diagnostics phaser_diagnostics;
 ```
+
+[Decision 0013](../decisions/0013-c-abi-v0-surface.md) fixed this set against
+the lifecycle Milestone 3 actually built. It drops the `phaser_plan` this
+document sketched before the core existed — no such object was implemented, and
+its role is split between the parsed `phaser_request` and the derived
+`phaser_artifact` — and adds `phaser_point` for the parsed parameter point.
 
 Their representations are private. A client MUST NOT allocate, copy, inspect, or
 free an opaque object except through its documented Phaser operations.
 
-Every handle type MUST have an explicit ownership model. If handles can share
-ownership, retain and release behavior MUST be explicit. Otherwise ownership
-transfer and destruction MUST be explicit. Nullability MUST be documented for
-every handle argument.
+Every handle type MUST have an explicit ownership model. Ownership in version 0
+is unique and non-shared: every handle has exactly one owner and exactly one
+destructor, and no handle is retained or released. A handle derived from another
+does not extend its parent's lifetime; each specified operation states the
+required outlives-relationship. Nullability MUST be documented for every handle
+argument, and passing null where a handle is required MUST report
+`PHASER_STATUS_INVALID_ARGUMENT` rather than trap.
 
 ### 5.4 C-compatible values
 
@@ -249,6 +265,20 @@ must distinguish at least:
 - non-finite results where prohibited; and
 - internal invariant failure containment, where recovery is possible.
 
+[Decision 0013](../decisions/0013-c-abi-v0-surface.md) realizes this as two
+status types that are never converted into one another: a control-plane
+`phaser_status` returned by structurally fallible operations, and a per-point
+`phaser_point_status` written one entry per point, mirroring the kernel's
+internal `Status` value for value. An evaluation whose points all report a
+numerical outcome is a successful call; the per-point array is where that
+outcome is read. A control-plane failure publishes no point statuses at all.
+
+This separation is a requirement, not an implementation convenience. The
+distinction between a successful complex result at a negative eigenvalue, an
+exact zero mode, a `nonconvergent` solve, and a `singular_derivative` is the
+scientific content of Milestone 3, and MUST NOT be collapsed into a call-level
+error code at the boundary.
+
 The process policy for a genuine internal invariant violation remains governed
 by [Phaser Engineering Style](../../ENGINEERING_STYLE.md); the ABI must never
 disguise such a violation as a valid scientific result.
@@ -294,6 +324,57 @@ ABI version `1` SHOULD be declared only after:
 
 ABI compatibility applies only within a documented major ABI version and support
 matrix.
+
+### 5.11 Version 0 operation set
+
+Version 0 wraps the lifecycle Milestone 3 delivered and adds nothing to it:
+
+```text
+context -> model -> request -> artifact -> kernel
+                                  point ------+
+                                              v
+                                           binding -> workspace query
+                                                   -> evaluate
+```
+
+The operations below are the required surface. Names are normative; exact
+parameter lists are fixed by the header, which
+[Decision 0014](../decisions/0014-public-header-and-toolchain-baseline.md) makes
+authoritative. Every operation marked fallible returns `phaser_status`.
+
+| Group | Operations | Notes |
+|---|---|---|
+| Version | `phaser_abi_version`, `phaser_library_version`, `phaser_capabilities` | Infallible. ABI and library versions are separate, per §5.2. |
+| Context | `phaser_context_create`, `phaser_context_destroy` | Carries limits and allocation policy. No global default context. |
+| Model | `phaser_model_load`, `phaser_model_destroy`, `phaser_model_fingerprint`, `phaser_model_metadata` | Load takes source bytes and length and may produce diagnostics. |
+| Request | `phaser_request_parse`, `phaser_request_destroy` | The parsed calculation request, reusable across derivations. |
+| Artifact | `phaser_artifact_derive`, `phaser_artifact_destroy`, `phaser_artifact_metadata`, `phaser_artifact_export` | Export renders Phaser notation or LaTeX per [Symbolic Export](SYMBOLIC_EXPORT.md). |
+| Kernel | `phaser_kernel_compile`, `phaser_kernel_destroy`, `phaser_kernel_result_type`, `phaser_kernel_capability`, `phaser_kernel_coordinate_count`, `phaser_kernel_parameter_count` | Typed queries, so no client parses JSON to size a buffer. |
+| Point | `phaser_point_parse`, `phaser_point_destroy` | A parsed parameter point, bindable more than once. |
+| Binding | `phaser_binding_create`, `phaser_binding_destroy`, `phaser_binding_workspace` | Workspace returns exact bytes and alignment for a point count. |
+| Evaluation | `phaser_evaluate`, `phaser_evaluate_complex` | Allocation-free. Separate entry points by result type; no mode flag. |
+| Diagnostics | `phaser_diagnostics_destroy`, `phaser_diagnostics_count`, `phaser_diagnostics_at`, `phaser_diagnostics_render` | Typed access is primary; rendering is a convenience over it. |
+
+Requirements on this surface:
+
+- Every `*_destroy` MUST accept null as a no-op and MUST be safe exactly once
+  per handle. Repeated destruction of the same handle is a client error that
+  conformance tests exercise.
+- Every operation that can produce diagnostics MUST take a
+  `phaser_diagnostics **` out parameter and MUST write null to it on any status
+  other than `PHASER_STATUS_INVALID_SOURCE`.
+- `phaser_evaluate` MUST report `PHASER_STATUS_INVALID_ARGUMENT` when called on
+  a kernel whose result type is complex. It MUST NOT project a real part.
+- Evaluation MUST require the per-point status array's length to equal the point
+  count, so an unwritten entry is never mistaken for success.
+- Complex values cross as an explicit struct of two `double` fields, not as C99
+  `_Complex`.
+- Workspace sizes cross unchanged from the core's exact layout query; the ABI
+  MUST NOT round them up.
+
+The CLI is not reimplemented over this surface. It continues to call the Zig
+core directly, as §9 permits, and Milestone 4's agreement criterion compares
+their results rather than their implementations.
 
 ## 6. C clients
 
@@ -420,12 +501,14 @@ equivalence between direct C calls and `phaser.hpp`.
 
 ## 12. Deferred decisions
 
-This specification deliberately leaves open:
+Decisions [0013](../decisions/0013-c-abi-v0-surface.md) and
+[0014](../decisions/0014-public-header-and-toolchain-baseline.md) closed the
+exact operation set, the language baseline, and the linkage and platform matrix.
+This specification still leaves open:
 
-- exact C function names and signatures;
-- the minimum C and C++ language versions;
-- supported compilers, targets, and package repositories;
-- the static/shared linkage support matrix;
+- exact parameter lists, which the authoritative header fixes;
+- package repositories and distribution channels;
+- Windows support, deliberately not claimed by Milestone 4;
 - symbol versioning mechanisms;
 - custom allocator hooks;
 - the exact C++ result and exception APIs;
