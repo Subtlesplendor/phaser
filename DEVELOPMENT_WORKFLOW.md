@@ -261,8 +261,11 @@ and what the untraced mode gives up.
 `GROUP_COUNT` in the nightly workflow is not evidence of a stable cost: the
 mutant count changes as the library grows, and decision
 [0012](docs/decisions/0012-mutation-rotation-retune.md) records that it moved by
-92% in the two days after decision 0011 landed. Treat the current value as
-provisional until a scheduled campaign's own observed duration confirms it.
+92% in the two days after decision 0011 landed. Decision
+[0016](docs/decisions/0016-mutation-rotation-measured-retune.md) retunes it
+again from this tier's first real measured campaign, with per-operator costs
+that vary by a factor of two. Treat the current value as a snapshot to revisit
+as the mutant count keeps moving, not a settled constant.
 
 A surviving mutant is a standing property of the test suite, not a regression in
 the commit that happened to be current. Treat it as a gap to close deliberately,

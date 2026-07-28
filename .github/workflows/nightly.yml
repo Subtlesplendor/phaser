@@ -173,12 +173,12 @@ jobs:
       # Nights needed for one full pass over every mutant. Raise it if a night
       # runs long; the rotation rebalances itself from the mutant listing.
       #
-      # 6 as of decision 0012, which retuned this after decision 0011 cut the
-      # oracle's per-mutant cost by about an order of magnitude. That number is
-      # an estimate extrapolated from a local end-to-end measurement, not yet
-      # confirmed against a real nightly duration on this runner -- see the
-      # decision for the margin it was chosen to keep and what would revise it.
-      GROUP_COUNT: 6
+      # 7 as of decision 0016 -- one full pass per calendar week -- set from
+      # this tier's first real measured campaign. Decision 0012's number was an
+      # estimate against a rotation that (PR #51) had never actually scheduled
+      # a mutant until now. See the decision for the per-operator costs behind
+      # this number and what would revise it.
+      GROUP_COUNT: 7
 
     steps:
       - name: Check out repository
