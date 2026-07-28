@@ -62,9 +62,11 @@ if (-not (Test-Path -LiteralPath $vswhere)) {
     throw "vswhere.exe not found at $vswhere"
 }
 
-$installation = & $vswhere -latest -products * `
-    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-    -property installationPath
+# -latest should yield one path, but take the first line explicitly: an array
+# here would fail later inside Join-Path rather than here, with a worse message.
+$installation = @(& $vswhere -latest -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath) | Select-Object -First 1
 if ([string]::IsNullOrWhiteSpace($installation)) {
     throw 'no Visual Studio installation with the C++ toolset was found'
 }
@@ -208,15 +210,22 @@ try {
             $exported += $Matches[1]
         }
     }
-    $exported = $exported | Sort-Object -Unique
+    # Every pipeline result below is wrapped in @(). A PowerShell pipeline that
+    # matches nothing yields $null and one that matches once yields a scalar,
+    # and under Set-StrictMode reading .Count on either is an error rather than
+    # zero or one. Without the wrapping this check throws exactly when it has
+    # nothing to report, which is the case it is supposed to pass.
+    $exported = @($exported | Sort-Object -Unique)
 
-    $allowed = Get-Content -LiteralPath $allowList |
-        Where-Object { $_ -notmatch '^\s*#' -and $_ -notmatch '^\s*$' } |
-        ForEach-Object { $_.Trim() } |
-        Sort-Object -Unique
+    $allowed = @(
+        Get-Content -LiteralPath $allowList |
+            Where-Object { $_ -notmatch '^\s*#' -and $_ -notmatch '^\s*$' } |
+            ForEach-Object { $_.Trim() } |
+            Sort-Object -Unique
+    )
 
-    $missing = $allowed | Where-Object { $exported -notcontains $_ }
-    $extra = $exported | Where-Object { $allowed -notcontains $_ }
+    $missing = @($allowed | Where-Object { $exported -notcontains $_ })
+    $extra = @($exported | Where-Object { $allowed -notcontains $_ })
 
     if ($missing.Count -gt 0 -or $extra.Count -gt 0) {
         Write-Host "exported symbols do not match $allowList"
