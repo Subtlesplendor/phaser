@@ -12,6 +12,18 @@ pub const symbolic = @import("export/root.zig");
 pub const kernel = @import("kernel/root.zig");
 const numerics = @import("numerics/root.zig");
 
+/// The C ABI. Not part of the supported Zig API -- a Zig caller uses the core
+/// directly; this exists for C and the language adapters built on it.
+pub const abi = @import("abi/root.zig");
+
+comptime {
+    // Zig analyzes lazily, and an `export fn` is emitted only if its containing
+    // file is analyzed. Declaring `abi` above is not enough: nothing in the
+    // library references it, so without this the artifacts would link cleanly
+    // and export nothing at all.
+    _ = abi.exports;
+}
+
 pub const Context = foundation.Context;
 pub const Limits = foundation.Limits;
 pub const TypedId = foundation.TypedId;
@@ -77,4 +89,5 @@ test {
     _ = symbolic;
     _ = kernel;
     _ = numerics;
+    _ = abi;
 }

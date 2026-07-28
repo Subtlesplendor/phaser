@@ -41,6 +41,21 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(library);
 
+    // Both linkage modes are supported and both are tested, per decision 0014:
+    // the same header and behavioral contract apply to each, and an untested
+    // linkage mode is an unsupported one.
+    const shared_library = b.addLibrary(.{
+        .name = "phaser",
+        .root_module = phaser_module,
+        .linkage = .dynamic,
+    });
+    b.installArtifact(shared_library);
+
+    // The authoritative public header. It is hand-written and reviewed as
+    // source rather than generated; installing it is a copy, not a build step
+    // that could disagree with the reviewed file.
+    b.installFile("include/phaser.h", "include/phaser.h");
+
     const unit_tests = b.addTest(.{
         .root_module = phaser_module,
     });
