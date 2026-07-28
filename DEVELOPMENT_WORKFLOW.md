@@ -60,18 +60,17 @@ change repository protection without explicit permission.
 
 The rules above are enforced server-side by a repository ruleset on the default
 branch, which requires a pull request, requires the bounded per-change checks
-`Repository checks`, `Build and test (Linux x86-64)` and
-`Build and test (macOS ARM64)` to pass against an up-to-date branch, and refuses
-deletion and non-fast-forward pushes. The ruleset lists no bypass actors, so it
-binds the repository owner as well; relaxing it is a deliberate, auditable edit
-to the ruleset rather than an ambient administrative privilege.
+`Repository checks`, `Build and test (Linux x86-64)`,
+`Build and test (macOS ARM64)`, and `Build and test (Windows x86-64)` to pass
+against an up-to-date branch, and refuses deletion and non-fast-forward pushes.
+The ruleset lists no bypass actors, so it binds the repository owner as well;
+relaxing it is a deliberate, auditable edit to the ruleset rather than an
+ambient administrative privilege.
 
-Milestone 4 adds `Build and test (Windows x86-64)` to the per-change suite under
-[Decision 0014](docs/decisions/0014-public-header-and-toolchain-baseline.md).
-Adding it to the *required* set is a ruleset edit, which only the repository
-owner can make; until that edit lands the check runs but does not block, so the
-protection this section describes is weaker for Windows than for the other two
-platforms.
+The Windows check joined the required set when Milestone 4 claimed that platform
+under
+[Decision 0014](docs/decisions/0014-public-header-and-toolchain-baseline.md). All
+three native platforms are now protected on the same terms.
 
 Local hooks in `.githooks/` refuse a commit or push on `main`. They are now a
 fast local pre-check rather than the only protection: enable them per clone with

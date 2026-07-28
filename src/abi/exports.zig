@@ -20,6 +20,9 @@ const builtin = @import("builtin");
 
 const foundation = @import("../foundation/root.zig");
 const model_module = @import("../model/root.zig");
+const calculation_module = @import("../calculation/root.zig");
+const kernel_module = @import("../kernel/root.zig");
+const symbolic_module = @import("../export/root.zig");
 const handle = @import("handle.zig");
 const status_module = @import("status.zig");
 
@@ -76,6 +79,24 @@ const Diagnostics = struct {
     value: foundation.Diagnostics,
 };
 
+const Request = struct {
+    tag: u32,
+    owner: *Context,
+    value: calculation_module.Request,
+};
+
+const Artifact = struct {
+    tag: u32,
+    owner: *Context,
+    value: calculation_module.Artifact,
+};
+
+const Kernel = struct {
+    tag: u32,
+    owner: *Context,
+    value: kernel_module.Kernel,
+};
+
 // ---------------------------------------------------------------------------
 // Argument validation
 // ---------------------------------------------------------------------------
@@ -96,6 +117,65 @@ fn checkedDiagnostics(pointer: ?*const Diagnostics) ?*const Diagnostics {
     const diagnostics = pointer orelse return null;
     if (!handle.matches(diagnostics.tag, handle.diagnostics)) return null;
     return diagnostics;
+}
+
+fn checkedRequest(pointer: ?*const Request) ?*const Request {
+    const request = pointer orelse return null;
+    if (!handle.matches(request.tag, handle.request)) return null;
+    return request;
+}
+
+fn checkedArtifact(pointer: ?*const Artifact) ?*const Artifact {
+    const artifact = pointer orelse return null;
+    if (!handle.matches(artifact.tag, handle.artifact)) return null;
+    return artifact;
+}
+
+fn checkedKernel(pointer: ?*const Kernel) ?*const Kernel {
+    const kernel = pointer orelse return null;
+    if (!handle.matches(kernel.tag, handle.kernel)) return null;
+    return kernel;
+}
+
+/// Maps a parse or derivation error to a status.
+///
+/// Running out of room to describe a failure is a limit the caller configured,
+/// so it is reported as one rather than as a source failure with no diagnostics
+/// to show for itself.
+fn diagnosticError(err: anyerror) Status {
+    return switch (err) {
+        error.OutOfMemory => .out_of_memory,
+        error.DiagnosticCapacityExceeded,
+        error.RelatedLocationCapacityExceeded,
+        => .limit_exceeded,
+        else => .internal,
+    };
+}
+
+/// Renders through a measure-then-fill pass shared by every text export.
+///
+/// The sizing call passes a null buffer and reads the length, so the rendering
+/// has to be counted without being stored. Capacity failures are reported
+/// before anything is written.
+fn renderInto(
+    buffer: ?[*]u8,
+    capacity: usize,
+    out_length: ?*usize,
+    context: anytype,
+    comptime write: fn (@TypeOf(context), *std.Io.Writer) anyerror!void,
+) Status {
+    var counting = std.Io.Writer.Discarding.init(&.{});
+    write(context, &counting.writer) catch return .internal;
+    const required = counting.count + counting.writer.end;
+
+    if (out_length) |out| out.* = required;
+
+    const destination = buffer orelse return .insufficient_space;
+    if (capacity < required) return .insufficient_space;
+
+    var fixed = std.Io.Writer.fixed(destination[0..capacity]);
+    write(context, &fixed) catch return .internal;
+    return .ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +424,353 @@ export fn phaser_model_scalar_field_count(
 }
 
 // ---------------------------------------------------------------------------
+// Request
+// ---------------------------------------------------------------------------
+
+export fn phaser_request_parse(
+    context_pointer: ?*Context,
+    source: ?*const anyopaque,
+    source_length: usize,
+    out_request: ?*?*Request,
+    out_diagnostics: ?*?*Diagnostics,
+) callconv(.c) Status {
+    if (out_request) |out| out.* = null;
+    if (out_diagnostics) |out| out.* = null;
+
+    const context = checkedContext(context_pointer) orelse return .invalid_argument;
+    const out = out_request orelse return .invalid_argument;
+    if (source == null and source_length != 0) return .invalid_argument;
+
+    const bytes: []const u8 = if (source_length == 0)
+        &.{}
+    else
+        @as([*]const u8, @ptrCast(source.?))[0..source_length];
+
+    const source_id = foundation.SourceId.fromUsize(0) catch return .internal;
+
+    const result = calculation_module.parseRequest(
+        context.core(),
+        .{ .source_id = source_id, .bytes = bytes },
+        .{},
+    ) catch |err| return diagnosticError(err);
+
+    switch (result) {
+        .request => |parsed| {
+            const wrapper = context.backing.allocator().create(Request) catch {
+                var owned = parsed;
+                owned.deinit();
+                return .out_of_memory;
+            };
+            wrapper.* = .{ .tag = handle.request, .owner = context, .value = parsed };
+            out.* = wrapper;
+            return .ok;
+        },
+        .diagnostics => |produced| {
+            var owned = produced;
+            const slot = out_diagnostics orelse {
+                owned.deinit();
+                return .invalid_source;
+            };
+            const wrapper = context.backing.allocator().create(Diagnostics) catch {
+                owned.deinit();
+                return .out_of_memory;
+            };
+            wrapper.* = .{ .tag = handle.diagnostics, .owner = context, .value = owned };
+            slot.* = wrapper;
+            return .invalid_source;
+        },
+    }
+}
+
+export fn phaser_request_destroy(request_pointer: ?*Request) callconv(.c) void {
+    const request = request_pointer orelse return;
+    if (!handle.matches(request.tag, handle.request)) return;
+    request.tag = handle.destroyed;
+    request.value.deinit();
+    request.owner.backing.allocator().destroy(request);
+}
+
+export fn phaser_request_loop_order(
+    request_pointer: ?*const Request,
+    out_loop_order: ?*u32,
+) callconv(.c) Status {
+    const request = checkedRequest(request_pointer) orelse return .invalid_argument;
+    const out = out_loop_order orelse return .invalid_argument;
+    out.* = request.value.loop_order;
+    return .ok;
+}
+
+export fn phaser_request_coordinate_count(
+    request_pointer: ?*const Request,
+    out_count: ?*usize,
+) callconv(.c) Status {
+    const request = checkedRequest(request_pointer) orelse return .invalid_argument;
+    const out = out_count orelse return .invalid_argument;
+    out.* = request.value.coordinates.len;
+    return .ok;
+}
+
+// ---------------------------------------------------------------------------
+// Artifact
+// ---------------------------------------------------------------------------
+
+export fn phaser_artifact_derive(
+    context_pointer: ?*Context,
+    model_pointer: ?*const Model,
+    request_pointer: ?*const Request,
+    out_artifact: ?*?*Artifact,
+    out_diagnostics: ?*?*Diagnostics,
+) callconv(.c) Status {
+    if (out_artifact) |out| out.* = null;
+    if (out_diagnostics) |out| out.* = null;
+
+    const context = checkedContext(context_pointer) orelse return .invalid_argument;
+    const model = checkedModel(model_pointer) orelse return .invalid_argument;
+    const request = checkedRequest(request_pointer) orelse return .invalid_argument;
+    const out = out_artifact orelse return .invalid_argument;
+
+    const result = calculation_module.deriveEffectivePotential(
+        context.core(),
+        &model.value,
+        &request.value,
+        .{},
+    ) catch |err| return diagnosticError(err);
+
+    switch (result) {
+        .artifact => |derived| {
+            const wrapper = context.backing.allocator().create(Artifact) catch {
+                var owned = derived;
+                owned.deinit();
+                return .out_of_memory;
+            };
+            wrapper.* = .{ .tag = handle.artifact, .owner = context, .value = derived };
+            out.* = wrapper;
+            return .ok;
+        },
+        .diagnostics => |produced| {
+            var owned = produced;
+            const slot = out_diagnostics orelse {
+                owned.deinit();
+                return .invalid_source;
+            };
+            const wrapper = context.backing.allocator().create(Diagnostics) catch {
+                owned.deinit();
+                return .out_of_memory;
+            };
+            wrapper.* = .{ .tag = handle.diagnostics, .owner = context, .value = owned };
+            slot.* = wrapper;
+            return .invalid_source;
+        },
+    }
+}
+
+export fn phaser_artifact_destroy(artifact_pointer: ?*Artifact) callconv(.c) void {
+    const artifact = artifact_pointer orelse return;
+    if (!handle.matches(artifact.tag, handle.artifact)) return;
+    artifact.tag = handle.destroyed;
+    artifact.value.deinit();
+    artifact.owner.backing.allocator().destroy(artifact);
+}
+
+export fn phaser_artifact_loop_order(
+    artifact_pointer: ?*const Artifact,
+    out_loop_order: ?*u32,
+) callconv(.c) Status {
+    const artifact = checkedArtifact(artifact_pointer) orelse return .invalid_argument;
+    const out = out_loop_order orelse return .invalid_argument;
+    out.* = artifact.value.loop_order;
+    return .ok;
+}
+
+export fn phaser_artifact_coordinate_count(
+    artifact_pointer: ?*const Artifact,
+    out_count: ?*usize,
+) callconv(.c) Status {
+    const artifact = checkedArtifact(artifact_pointer) orelse return .invalid_argument;
+    const out = out_count orelse return .invalid_argument;
+    out.* = artifact.value.coordinates.len;
+    return .ok;
+}
+
+export fn phaser_artifact_contribution_count(
+    artifact_pointer: ?*const Artifact,
+    out_count: ?*usize,
+) callconv(.c) Status {
+    const artifact = checkedArtifact(artifact_pointer) orelse return .invalid_argument;
+    const out = out_count orelse return .invalid_argument;
+    out.* = artifact.value.contributions.len;
+    return .ok;
+}
+
+export fn phaser_artifact_result_type(
+    artifact_pointer: ?*const Artifact,
+    out_result_type: ?*i32,
+) callconv(.c) Status {
+    const artifact = checkedArtifact(artifact_pointer) orelse return .invalid_argument;
+    const out = out_result_type orelse return .invalid_argument;
+    out.* = @intFromEnum(
+        status_module.fromArtifactResultType(artifact.value.result_type),
+    );
+    return .ok;
+}
+
+const ExportContext = struct {
+    artifact: *const calculation_module.Artifact,
+    allocator: std.mem.Allocator,
+    target: symbolic_module.Target,
+};
+
+fn writeExport(context: ExportContext, writer: *std.Io.Writer) anyerror!void {
+    try symbolic_module.writePotential(
+        context.artifact,
+        context.allocator,
+        .{ .target = context.target },
+        writer,
+    );
+}
+
+export fn phaser_artifact_export(
+    artifact_pointer: ?*const Artifact,
+    target: i32,
+    buffer: ?[*]u8,
+    capacity: usize,
+    out_length: ?*usize,
+) callconv(.c) Status {
+    const artifact = checkedArtifact(artifact_pointer) orelse return .invalid_argument;
+    const resolved: symbolic_module.Target = switch (target) {
+        0 => .phaser,
+        1 => .latex,
+        // An unrecognized target is a caller mistake, not a reason to pick one.
+        else => return .invalid_argument,
+    };
+
+    return renderInto(
+        buffer,
+        capacity,
+        out_length,
+        ExportContext{
+            .artifact = &artifact.value,
+            .allocator = artifact.owner.backing.allocator(),
+            .target = resolved,
+        },
+        writeExport,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Kernel
+// ---------------------------------------------------------------------------
+
+const KernelOptions = extern struct {
+    struct_size: u32,
+    abi_version: u32,
+    capability: i32,
+    reserved: u32,
+};
+
+export fn phaser_kernel_compile(
+    context_pointer: ?*Context,
+    artifact_pointer: ?*const Artifact,
+    options: ?*const KernelOptions,
+    out_kernel: ?*?*Kernel,
+) callconv(.c) Status {
+    if (out_kernel) |out| out.* = null;
+
+    const context = checkedContext(context_pointer) orelse return .invalid_argument;
+    const artifact = checkedArtifact(artifact_pointer) orelse return .invalid_argument;
+    const out = out_kernel orelse return .invalid_argument;
+
+    var capability: kernel_module.Capability = .value_gradient_hessian;
+    if (options) |supplied| {
+        if (!prologueValid(supplied.struct_size, @sizeOf(KernelOptions))) {
+            return .invalid_argument;
+        }
+        if (supplied.abi_version != abi_version) return .invalid_argument;
+        if (supplied.struct_size >= @offsetOf(KernelOptions, "capability") +
+            @sizeOf(i32))
+        {
+            capability = switch (supplied.capability) {
+                0 => .value,
+                1 => .value_gradient,
+                2 => .value_gradient_hessian,
+                else => return .invalid_argument,
+            };
+        }
+    }
+
+    const compiled = kernel_module.compile(
+        context.backing.allocator(),
+        &artifact.value,
+        .{ .capability = capability },
+    ) catch |err| return switch (err) {
+        error.OutOfMemory => .out_of_memory,
+        // The request was well formed; the artifact simply does not carry what
+        // it asked for. That is a domain answer, not a bad argument.
+        error.SelectionNotDerived,
+        error.CapabilityNotDerived,
+        => .unsupported,
+        else => .internal,
+    };
+
+    const wrapper = context.backing.allocator().create(Kernel) catch {
+        var owned = compiled;
+        owned.deinit();
+        return .out_of_memory;
+    };
+    wrapper.* = .{ .tag = handle.kernel, .owner = context, .value = compiled };
+    out.* = wrapper;
+    return .ok;
+}
+
+export fn phaser_kernel_destroy(kernel_pointer: ?*Kernel) callconv(.c) void {
+    const kernel = kernel_pointer orelse return;
+    if (!handle.matches(kernel.tag, handle.kernel)) return;
+    kernel.tag = handle.destroyed;
+    kernel.value.deinit();
+    kernel.owner.backing.allocator().destroy(kernel);
+}
+
+export fn phaser_kernel_result_type(
+    kernel_pointer: ?*const Kernel,
+    out_result_type: ?*i32,
+) callconv(.c) Status {
+    const kernel = checkedKernel(kernel_pointer) orelse return .invalid_argument;
+    const out = out_result_type orelse return .invalid_argument;
+    out.* = @intFromEnum(status_module.fromResultType(kernel.value.resultType()));
+    return .ok;
+}
+
+export fn phaser_kernel_capability(
+    kernel_pointer: ?*const Kernel,
+    out_capability: ?*i32,
+) callconv(.c) Status {
+    const kernel = checkedKernel(kernel_pointer) orelse return .invalid_argument;
+    const out = out_capability orelse return .invalid_argument;
+    out.* = @intFromEnum(status_module.fromCapability(kernel.value.capability()));
+    return .ok;
+}
+
+export fn phaser_kernel_coordinate_count(
+    kernel_pointer: ?*const Kernel,
+    out_count: ?*usize,
+) callconv(.c) Status {
+    const kernel = checkedKernel(kernel_pointer) orelse return .invalid_argument;
+    const out = out_count orelse return .invalid_argument;
+    out.* = kernel.value.coordinateCount();
+    return .ok;
+}
+
+export fn phaser_kernel_parameter_count(
+    kernel_pointer: ?*const Kernel,
+    out_count: ?*usize,
+) callconv(.c) Status {
+    const kernel = checkedKernel(kernel_pointer) orelse return .invalid_argument;
+    const out = out_count orelse return .invalid_argument;
+    out.* = kernel.value.parameterCount();
+    return .ok;
+}
+
+// ---------------------------------------------------------------------------
 // Diagnostics
 // ---------------------------------------------------------------------------
 
@@ -420,21 +847,11 @@ export fn phaser_diagnostics_render(
     if (index >= diagnostics.value.items.len) return .invalid_argument;
 
     const item = diagnostics.value.items[index];
+    return renderInto(buffer, capacity, out_length, item, writeDiagnostic);
+}
 
-    // Measure first. A sizing call passes a null buffer and reads out_length,
-    // so the rendering must be counted without being stored anywhere.
-    var counting = std.Io.Writer.Discarding.init(&.{});
-    item.render(&counting.writer) catch return .internal;
-    const required = counting.count + counting.writer.end;
-
-    if (out_length) |out| out.* = required;
-
-    const destination = buffer orelse return .insufficient_space;
-    if (capacity < required) return .insufficient_space;
-
-    var fixed = std.Io.Writer.fixed(destination[0..capacity]);
-    item.render(&fixed) catch return .internal;
-    return .ok;
+fn writeDiagnostic(item: foundation.Diagnostic, writer: *std.Io.Writer) anyerror!void {
+    try item.render(writer);
 }
 
 test {

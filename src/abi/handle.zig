@@ -17,6 +17,9 @@
 pub const context: u32 = 0x5048_4301;
 pub const model: u32 = 0x5048_4302;
 pub const diagnostics: u32 = 0x5048_4303;
+pub const request: u32 = 0x5048_4304;
+pub const artifact: u32 = 0x5048_4305;
+pub const kernel: u32 = 0x5048_4306;
 
 /// Written over a tag immediately before the handle's memory is freed.
 pub const destroyed: u32 = 0x5048_44ED;
@@ -28,7 +31,15 @@ pub fn matches(tag: u32, expected: u32) bool {
 
 test "tags are distinct" {
     const std = @import("std");
-    const tags = [_]u32{ context, model, diagnostics, destroyed };
+    const tags = [_]u32{
+        context,
+        model,
+        diagnostics,
+        request,
+        artifact,
+        kernel,
+        destroyed,
+    };
     for (tags, 0..) |left, i| {
         for (tags[i + 1 ..]) |right| {
             try std.testing.expect(left != right);

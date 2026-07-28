@@ -410,8 +410,8 @@ authoritative. Every operation marked fallible returns `phaser_status`.
 | Version | `phaser_abi_version`, `phaser_library_version`, `phaser_capabilities` | Infallible. ABI and library versions are separate, per §5.2. |
 | Context | `phaser_context_create`, `phaser_context_destroy` | Carries limits and allocation policy. No global default context. |
 | Model | `phaser_model_load`, `phaser_model_destroy`, `phaser_model_fingerprint`, `phaser_model_metadata` | Load takes source bytes and length and may produce diagnostics. |
-| Request | `phaser_request_parse`, `phaser_request_destroy` | The parsed calculation request, reusable across derivations. |
-| Artifact | `phaser_artifact_derive`, `phaser_artifact_destroy`, `phaser_artifact_metadata`, `phaser_artifact_export` | Export renders Phaser notation or LaTeX per [Symbolic Export](SYMBOLIC_EXPORT.md). |
+| Request | `phaser_request_parse`, `phaser_request_destroy`, `phaser_request_loop_order`, `phaser_request_coordinate_count` | The parsed calculation request, reusable across derivations. |
+| Artifact | `phaser_artifact_derive`, `phaser_artifact_destroy`, `phaser_artifact_loop_order`, `phaser_artifact_coordinate_count`, `phaser_artifact_contribution_count`, `phaser_artifact_result_type`, `phaser_artifact_export` | Export renders Phaser notation or LaTeX per [Symbolic Export](SYMBOLIC_EXPORT.md). |
 | Kernel | `phaser_kernel_compile`, `phaser_kernel_destroy`, `phaser_kernel_result_type`, `phaser_kernel_capability`, `phaser_kernel_coordinate_count`, `phaser_kernel_parameter_count` | Typed queries, so no client parses JSON to size a buffer. |
 | Point | `phaser_point_parse`, `phaser_point_destroy` | A parsed parameter point, bindable more than once. |
 | Binding | `phaser_binding_create`, `phaser_binding_destroy`, `phaser_binding_workspace` | Workspace returns exact bytes and alignment for a point count. |
@@ -434,6 +434,14 @@ Requirements on this surface:
   `_Complex`.
 - Workspace sizes cross unchanged from the core's exact layout query; the ABI
   MUST NOT round them up.
+- Every text-producing operation uses one sizing convention: a null buffer
+  reports the required length and `PHASER_STATUS_INSUFFICIENT_SPACE`, a large
+  enough buffer is filled exactly, and no null terminator is written. A short
+  buffer is a reported failure, never a truncation.
+- An unrecognized enumerator in a caller-supplied field — an export target, a
+  derivative capability — MUST be rejected rather than resolved to a default.
+  Choosing one silently would answer a different question than the caller
+  asked.
 
 The CLI is not reimplemented over this surface. It continues to call the Zig
 core directly, as §9 permits, and Milestone 4's agreement criterion compares

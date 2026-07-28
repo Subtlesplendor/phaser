@@ -13,6 +13,7 @@
 const std = @import("std");
 const foundation = @import("../foundation/root.zig");
 const kernel = @import("../kernel/root.zig");
+const calculation = @import("../calculation/root.zig");
 
 /// Control-plane status. Values are ABI and must not be renumbered while the
 /// ABI version is unchanged.
@@ -54,6 +55,46 @@ pub const Category = enum(i32) {
     model = 6,
     calculation = 7,
 };
+
+/// Result type of an artifact or kernel, mirroring `kernel.ResultType`.
+pub const ResultType = enum(i32) {
+    real64 = 0,
+    complex64 = 1,
+};
+
+/// Derivative capability, mirroring `kernel.Capability`.
+pub const Capability = enum(i32) {
+    value = 0,
+    value_gradient = 1,
+    value_gradient_hessian = 2,
+};
+
+pub fn fromResultType(result_type: kernel.ResultType) ResultType {
+    return switch (result_type) {
+        .real64 => .real64,
+        .complex64 => .complex64,
+    };
+}
+
+/// The artifact and the kernel carry separate result-type enums of the same
+/// shape, one per subsystem. The ABI publishes a single type, so both are
+/// mapped here and both are checked against it below: a client asking an
+/// artifact and its compiled kernel for a result type must not get different
+/// numbers for the same answer.
+pub fn fromArtifactResultType(result_type: calculation.ResultType) ResultType {
+    return switch (result_type) {
+        .real64 => .real64,
+        .complex64 => .complex64,
+    };
+}
+
+pub fn fromCapability(capability: kernel.Capability) Capability {
+    return switch (capability) {
+        .value => .value,
+        .value_gradient => .value_gradient,
+        .value_gradient_hessian => .value_gradient_hessian,
+    };
+}
 
 pub fn fromKernelStatus(status: kernel.Status) PointStatus {
     return switch (status) {
@@ -126,6 +167,9 @@ comptime {
     assertMirrors(kernel.Status, PointStatus);
     assertMirrors(foundation.Severity, Severity);
     assertMirrors(foundation.Category, Category);
+    assertMirrors(kernel.ResultType, ResultType);
+    assertMirrors(kernel.Capability, Capability);
+    assertMirrors(calculation.ResultType, ResultType);
 }
 
 test "point statuses mirror the kernel statuses they report" {

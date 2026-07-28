@@ -11,6 +11,9 @@ const std = @import("std");
 const PhaserContext = opaque {};
 const PhaserModel = opaque {};
 const PhaserDiagnostics = opaque {};
+const PhaserRequest = opaque {};
+const PhaserArtifact = opaque {};
+const PhaserKernel = opaque {};
 
 const Status = enum(c_int) {
     ok = 0,
@@ -72,6 +75,86 @@ extern fn phaser_model_scalar_field_count(
     out_count: ?*usize,
 ) callconv(.c) Status;
 
+const KernelOptions = extern struct {
+    struct_size: u32,
+    abi_version: u32,
+    capability: i32,
+    reserved: u32,
+};
+
+extern fn phaser_request_parse(
+    context: ?*PhaserContext,
+    source: ?*const anyopaque,
+    source_length: usize,
+    out_request: ?*?*PhaserRequest,
+    out_diagnostics: ?*?*PhaserDiagnostics,
+) callconv(.c) Status;
+extern fn phaser_request_destroy(request: ?*PhaserRequest) callconv(.c) void;
+extern fn phaser_request_loop_order(
+    request: ?*const PhaserRequest,
+    out_loop_order: ?*u32,
+) callconv(.c) Status;
+extern fn phaser_request_coordinate_count(
+    request: ?*const PhaserRequest,
+    out_count: ?*usize,
+) callconv(.c) Status;
+
+extern fn phaser_artifact_derive(
+    context: ?*PhaserContext,
+    model: ?*const PhaserModel,
+    request: ?*const PhaserRequest,
+    out_artifact: ?*?*PhaserArtifact,
+    out_diagnostics: ?*?*PhaserDiagnostics,
+) callconv(.c) Status;
+extern fn phaser_artifact_destroy(artifact: ?*PhaserArtifact) callconv(.c) void;
+extern fn phaser_artifact_loop_order(
+    artifact: ?*const PhaserArtifact,
+    out_loop_order: ?*u32,
+) callconv(.c) Status;
+extern fn phaser_artifact_coordinate_count(
+    artifact: ?*const PhaserArtifact,
+    out_count: ?*usize,
+) callconv(.c) Status;
+extern fn phaser_artifact_contribution_count(
+    artifact: ?*const PhaserArtifact,
+    out_count: ?*usize,
+) callconv(.c) Status;
+extern fn phaser_artifact_result_type(
+    artifact: ?*const PhaserArtifact,
+    out_result_type: ?*i32,
+) callconv(.c) Status;
+extern fn phaser_artifact_export(
+    artifact: ?*const PhaserArtifact,
+    target: i32,
+    buffer: ?[*]u8,
+    capacity: usize,
+    out_length: ?*usize,
+) callconv(.c) Status;
+
+extern fn phaser_kernel_compile(
+    context: ?*PhaserContext,
+    artifact: ?*const PhaserArtifact,
+    options: ?*const KernelOptions,
+    out_kernel: ?*?*PhaserKernel,
+) callconv(.c) Status;
+extern fn phaser_kernel_destroy(kernel: ?*PhaserKernel) callconv(.c) void;
+extern fn phaser_kernel_result_type(
+    kernel: ?*const PhaserKernel,
+    out_result_type: ?*i32,
+) callconv(.c) Status;
+extern fn phaser_kernel_capability(
+    kernel: ?*const PhaserKernel,
+    out_capability: ?*i32,
+) callconv(.c) Status;
+extern fn phaser_kernel_coordinate_count(
+    kernel: ?*const PhaserKernel,
+    out_count: ?*usize,
+) callconv(.c) Status;
+extern fn phaser_kernel_parameter_count(
+    kernel: ?*const PhaserKernel,
+    out_count: ?*usize,
+) callconv(.c) Status;
+
 extern fn phaser_diagnostics_destroy(
     diagnostics: ?*PhaserDiagnostics,
 ) callconv(.c) void;
@@ -122,6 +205,30 @@ const valid_model =
     \\      "components": [{"indices": ["phi", "phi", "phi", "phi"], "value": "lambda"}]
     \\    }
     \\  }
+    \\}
+;
+
+/// A one-loop request over the full scalar background space.
+const one_loop_request =
+    \\{
+    \\  "schema": "phaser.calculation/0.1",
+    \\  "kind": "effective_potential",
+    \\  "background": { "mode": "full_scalar_space" },
+    \\  "environment": { "kind": "vacuum" },
+    \\  "renormalization": { "scheme": "MSbar" },
+    \\  "orders": { "loop": { "through": 1 } }
+    \\}
+;
+
+/// The same calculation truncated at tree level, which is real rather than
+/// complex and carries one contribution instead of two.
+const tree_request =
+    \\{
+    \\  "schema": "phaser.calculation/0.1",
+    \\  "kind": "effective_potential",
+    \\  "background": { "mode": "full_scalar_space" },
+    \\  "environment": { "kind": "vacuum" },
+    \\  "orders": { "loop": { "through": 0 } }
     \\}
 ;
 
@@ -575,4 +682,413 @@ test "handles of the wrong type are rejected rather than dereferenced" {
         Status.invalid_argument,
         phaser_diagnostics_count(misused_diagnostics, &count),
     );
+}
+
+// ---------------------------------------------------------------------------
+// The calculation lifecycle: request, artifact, kernel.
+// ---------------------------------------------------------------------------
+
+const Chain = struct {
+    context: *PhaserContext,
+    model: ?*PhaserModel = null,
+    request: ?*PhaserRequest = null,
+    artifact: ?*PhaserArtifact = null,
+
+    fn deinit(self: *Chain) void {
+        // Destroyed in reverse construction order, which is the ordering the
+        // handles' outlives-relationships require.
+        phaser_artifact_destroy(self.artifact);
+        phaser_request_destroy(self.request);
+        phaser_model_destroy(self.model);
+        phaser_context_destroy(self.context);
+    }
+};
+
+/// Builds model -> request -> artifact for `request_source`.
+fn derive(request_source: []const u8) !Chain {
+    var chain = Chain{ .context = try createContext() };
+    errdefer chain.deinit();
+
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_model_load(
+            chain.context,
+            valid_model.ptr,
+            valid_model.len,
+            &chain.model,
+            null,
+        ),
+    );
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_request_parse(
+            chain.context,
+            request_source.ptr,
+            request_source.len,
+            &chain.request,
+            null,
+        ),
+    );
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_artifact_derive(
+            chain.context,
+            chain.model,
+            chain.request,
+            &chain.artifact,
+            null,
+        ),
+    );
+    return chain;
+}
+
+test "a request parses and reports its truncation" {
+    const context = try createContext();
+    defer phaser_context_destroy(context);
+
+    var request: ?*PhaserRequest = null;
+    var diagnostics: ?*PhaserDiagnostics = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_request_parse(
+            context,
+            one_loop_request.ptr,
+            one_loop_request.len,
+            &request,
+            &diagnostics,
+        ),
+    );
+    try std.testing.expectEqual(@as(?*PhaserDiagnostics, null), diagnostics);
+    defer phaser_request_destroy(request);
+
+    var loop_order: u32 = 99;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_request_loop_order(request, &loop_order),
+    );
+    try std.testing.expectEqual(@as(u32, 1), loop_order);
+}
+
+test "an invalid request reports diagnostics and no handle" {
+    const context = try createContext();
+    defer phaser_context_destroy(context);
+
+    var request: ?*PhaserRequest = null;
+    var diagnostics: ?*PhaserDiagnostics = null;
+    try std.testing.expectEqual(
+        Status.invalid_source,
+        phaser_request_parse(context, "{}", 2, &request, &diagnostics),
+    );
+    try std.testing.expectEqual(@as(?*PhaserRequest, null), request);
+    try std.testing.expect(diagnostics != null);
+    defer phaser_diagnostics_destroy(diagnostics);
+
+    var count: usize = 0;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_diagnostics_count(diagnostics, &count),
+    );
+    try std.testing.expect(count > 0);
+}
+
+test "a one-loop artifact is complex and carries both contributions" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    var loop_order: u32 = 99;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_artifact_loop_order(chain.artifact, &loop_order),
+    );
+    try std.testing.expectEqual(@as(u32, 1), loop_order);
+
+    // Raising the truncation by one loop order adds exactly one contribution.
+    // The absolute count depends on how the tree potential is decomposed, which
+    // is the derivation's business and not something this boundary should pin;
+    // the difference is the fact the loop order is responsible for.
+    var one_loop_contributions: usize = 0;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_artifact_contribution_count(chain.artifact, &one_loop_contributions),
+    );
+
+    var tree = try derive(tree_request);
+    defer tree.deinit();
+    var tree_contributions: usize = 0;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_artifact_contribution_count(tree.artifact, &tree_contributions),
+    );
+    try std.testing.expect(tree_contributions >= 1);
+    try std.testing.expectEqual(tree_contributions + 1, one_loop_contributions);
+
+    // The one-loop potential is complex where a scalar mass-squared eigenvalue
+    // is negative, so the artifact's result type must say so rather than
+    // quietly promising a real answer.
+    var result_type: i32 = -1;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_artifact_result_type(chain.artifact, &result_type),
+    );
+    try std.testing.expectEqual(@as(i32, 1), result_type); // complex64
+
+    // One background coordinate, matching the model's single scalar field.
+    var coordinates: usize = 0;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_artifact_coordinate_count(chain.artifact, &coordinates),
+    );
+    try std.testing.expectEqual(@as(usize, 1), coordinates);
+}
+
+test "a tree artifact is real where the one-loop one is complex" {
+    // The contrast with the one-loop case is the point: the result type is a
+    // property of the derived calculation, not a constant. A boundary that
+    // hard-coded either answer would pass every other check here.
+    var chain = try derive(tree_request);
+    defer chain.deinit();
+
+    var result_type: i32 = -1;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_artifact_result_type(chain.artifact, &result_type),
+    );
+    try std.testing.expectEqual(@as(i32, 0), result_type); // real64
+
+    var loop_order: u32 = 99;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_artifact_loop_order(chain.artifact, &loop_order),
+    );
+    try std.testing.expectEqual(@as(u32, 0), loop_order);
+}
+
+test "artifact export sizes with a null buffer and renders both targets" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    for ([_]i32{ 0, 1 }) |target| { // phaser, latex
+        var required: usize = 0;
+        try std.testing.expectEqual(
+            Status.insufficient_space,
+            phaser_artifact_export(chain.artifact, target, null, 0, &required),
+        );
+        try std.testing.expect(required > 0);
+
+        const buffer = try std.testing.allocator.alloc(u8, required);
+        defer std.testing.allocator.free(buffer);
+
+        var written: usize = 0;
+        try std.testing.expectEqual(
+            Status.ok,
+            phaser_artifact_export(
+                chain.artifact,
+                target,
+                buffer.ptr,
+                buffer.len,
+                &written,
+            ),
+        );
+        try std.testing.expectEqual(required, written);
+
+        // One byte short is a reported capacity failure, never a truncation.
+        try std.testing.expectEqual(
+            Status.insufficient_space,
+            phaser_artifact_export(
+                chain.artifact,
+                target,
+                buffer.ptr,
+                buffer.len - 1,
+                &written,
+            ),
+        );
+    }
+}
+
+test "the two export targets render differently" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    var lengths: [2]usize = .{ 0, 0 };
+    var rendered: [2][]u8 = undefined;
+    for ([_]i32{ 0, 1 }, 0..) |target, index| {
+        _ = phaser_artifact_export(chain.artifact, target, null, 0, &lengths[index]);
+        rendered[index] = try std.testing.allocator.alloc(u8, lengths[index]);
+        var written: usize = 0;
+        try std.testing.expectEqual(
+            Status.ok,
+            phaser_artifact_export(
+                chain.artifact,
+                target,
+                rendered[index].ptr,
+                rendered[index].len,
+                &written,
+            ),
+        );
+    }
+    defer std.testing.allocator.free(rendered[0]);
+    defer std.testing.allocator.free(rendered[1]);
+
+    // Not a golden comparison -- the exporter has its own tests for that. This
+    // asserts only that the target argument reaches the exporter, which a
+    // hard-coded target would pass every other check without doing.
+    try std.testing.expect(!std.mem.eql(u8, rendered[0], rendered[1]));
+}
+
+test "an unrecognized export target is rejected rather than defaulted" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    var length: usize = 0;
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_artifact_export(chain.artifact, 7, null, 0, &length),
+    );
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_artifact_export(chain.artifact, -1, null, 0, &length),
+    );
+}
+
+test "a kernel compiles and agrees with its artifact about the result type" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    var kernel: ?*PhaserKernel = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_compile(chain.context, chain.artifact, null, &kernel),
+    );
+    try std.testing.expect(kernel != null);
+    defer phaser_kernel_destroy(kernel);
+
+    // The artifact and the kernel carry separate internal result-type enums.
+    // A client asking each for the same fact must get the same number.
+    var artifact_type: i32 = -1;
+    var kernel_type: i32 = -2;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_artifact_result_type(chain.artifact, &artifact_type),
+    );
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_result_type(kernel, &kernel_type),
+    );
+    try std.testing.expectEqual(artifact_type, kernel_type);
+
+    var capability: i32 = -1;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_capability(kernel, &capability),
+    );
+    try std.testing.expectEqual(@as(i32, 2), capability); // value_gradient_hessian
+
+    var coordinates: usize = 0;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_coordinate_count(kernel, &coordinates),
+    );
+    try std.testing.expectEqual(@as(usize, 1), coordinates);
+
+    var parameters: usize = 0;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_parameter_count(kernel, &parameters),
+    );
+    try std.testing.expect(parameters > 0);
+}
+
+test "a narrower kernel capability is honored" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    var options = KernelOptions{
+        .struct_size = @sizeOf(KernelOptions),
+        .abi_version = 0,
+        .capability = 0, // value only
+        .reserved = 0,
+    };
+    var kernel: ?*PhaserKernel = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_compile(chain.context, chain.artifact, &options, &kernel),
+    );
+    defer phaser_kernel_destroy(kernel);
+
+    var capability: i32 = -1;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_capability(kernel, &capability),
+    );
+    try std.testing.expectEqual(@as(i32, 0), capability);
+}
+
+test "an unrecognized kernel capability is rejected" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    var options = KernelOptions{
+        .struct_size = @sizeOf(KernelOptions),
+        .abi_version = 0,
+        .capability = 9,
+        .reserved = 0,
+    };
+    var kernel: ?*PhaserKernel = null;
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_kernel_compile(chain.context, chain.artifact, &options, &kernel),
+    );
+    try std.testing.expectEqual(@as(?*PhaserKernel, null), kernel);
+}
+
+test "the calculation handles reject nulls and wrong types" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    var count: usize = 0;
+    var order: u32 = 0;
+    var kind: i32 = 0;
+
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_request_loop_order(null, &order),
+    );
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_artifact_loop_order(chain.artifact, null),
+    );
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_artifact_contribution_count(null, &count),
+    );
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_kernel_result_type(null, &kind),
+    );
+
+    // A model where a request is expected, and an artifact where a kernel is.
+    const model_as_request: *const PhaserRequest = @ptrCast(chain.model);
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_request_loop_order(model_as_request, &order),
+    );
+    const artifact_as_kernel: *const PhaserKernel = @ptrCast(chain.artifact);
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_kernel_capability(artifact_as_kernel, &kind),
+    );
+
+    // Derivation with a mismatched handle pair.
+    var artifact: ?*PhaserArtifact = null;
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_artifact_derive(
+            chain.context,
+            @ptrCast(chain.request),
+            @ptrCast(chain.model),
+            &artifact,
+            null,
+        ),
+    );
+    try std.testing.expectEqual(@as(?*PhaserArtifact, null), artifact);
 }
