@@ -118,10 +118,20 @@ The static library MUST also carry the compiler-support routines the
 implementation language would otherwise contribute at its own link step, because
 a distributed archive is linked by the consumer's toolchain rather than ours.
 
-### 4.1 Known limitation: MSVC and static linkage
+### 4.1 Linking statically on Windows
 
-`link.exe` cannot consume the static library as of ABI version 0. Both available
-configurations fail:
+Two things a Windows consumer must know, neither of which applies to Linux or
+macOS.
+
+**Link `ntdll.lib`.** The static library reaches the NT native API directly for
+files, memory sections, and timing, so a static link needs `ntdll.lib` in
+addition to the C runtime. Nothing in the archive carries a `/DEFAULTLIB`
+directive for it. Omitting it produces around twenty undefined `Ldr*`, `Nt*`,
+and `Rtl*` symbols. The shared library is unaffected: it resolves them
+internally, and a consumer of the DLL links only its import library.
+
+**`link.exe` cannot consume the static library** as of ABI version 0. Both
+available configurations fail:
 
 - with the Zig compiler-support object bundled, `link.exe` rejects it with
   `LNK1143: invalid or corrupt file: no symbol for COMDAT section`; and

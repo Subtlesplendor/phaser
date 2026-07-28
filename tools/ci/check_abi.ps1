@@ -139,7 +139,13 @@ try {
     #
     # The object cl.exe emits carries its own /DEFAULTLIB directives, so
     # lld-link resolves the C runtime from the environment vcvars64 set up
-    # without being told which libraries to use.
+    # without being told which libraries to use. ntdll.lib is named explicitly
+    # because nothing carries a directive for it: the Zig standard library
+    # calls the NT native API directly for files, memory sections, and timing,
+    # and those twenty-odd Ldr/Nt/Rtl symbols live only in ntdll. Zig adds this
+    # itself when it performs the link; a consumer's toolchain does not, which
+    # is why Language and Interoperability section 4.1 tells Windows callers to
+    # link it.
     # -----------------------------------------------------------------------
 
     Write-Section 'C client links and runs against the static library'
@@ -161,7 +167,7 @@ try {
         if ($LASTEXITCODE -ne 0) {
             Add-Failure 'C client did not compile for the static link'
         } else {
-            & $lldLink /nologo "/OUT:$staticClient" $staticObject $staticLibrary
+            & $lldLink /nologo "/OUT:$staticClient" $staticObject $staticLibrary ntdll.lib
             if ($LASTEXITCODE -ne 0) {
                 Add-Failure 'C client did not link against the static library'
             } else {
