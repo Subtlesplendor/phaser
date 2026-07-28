@@ -162,19 +162,23 @@ jobs:
   mutation:
     name: Mutation campaign (rotation group)
     runs-on: ubuntu-24.04
-    # A mutant costs a full cold-cache rebuild of the oracle, so this tier is
-    # sized by the rotation in tools/ci/mutation_rotation.sh rather than by the
-    # clock. Groups are deliberately uneven, because the rotation buys coverage
-    # with balance; the heaviest currently holds about 105 mutants against an
-    # average of 49. The ceiling is set for that heavy end and then some: the
-    # first scheduled runs are themselves the measurement that sets GROUP_COUNT,
-    # and a campaign cut off mid-run reports nothing useful. See decision 0005.
+    # A mutant costs a rebuild of the oracle, so this tier is sized by the
+    # rotation in tools/ci/mutation_rotation.sh rather than by the clock. Groups
+    # are deliberately uneven, because the rotation buys coverage with balance.
+    # The ceiling is set for the heavy end and then some: a campaign cut off
+    # mid-run reports nothing useful. See decision 0005.
     timeout-minutes: 150
 
     env:
       # Nights needed for one full pass over every mutant. Raise it if a night
       # runs long; the rotation rebalances itself from the mutant listing.
-      GROUP_COUNT: 14
+      #
+      # 6 as of decision 0012, which retuned this after decision 0011 cut the
+      # oracle's per-mutant cost by about an order of magnitude. That number is
+      # an estimate extrapolated from a local end-to-end measurement, not yet
+      # confirmed against a real nightly duration on this runner -- see the
+      # decision for the margin it was chosen to keep and what would revise it.
+      GROUP_COUNT: 6
 
     steps:
       - name: Check out repository
