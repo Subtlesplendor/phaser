@@ -63,6 +63,19 @@ var shared_setup: ?Setup = null;
 var shared_left: ?Setup = null;
 var shared_right: ?Setup = null;
 
+/// The Milestone 2 truncation, which every real-valued property uses.
+const tree_request = example_data.phi4_request;
+
+/// The order-one truncation. Its selected total is `Complex64`, so a property
+/// over it exercises the mixed real/complex path rather than the real one.
+const one_loop_request =
+    \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+    \\"background":{"mode":"full_scalar_space"},
+    \\"environment":{"kind":"vacuum"},
+    \\"renormalization":{"scheme":"MSbar"},
+    \\"orders":{"loop":{"through":1}}}
+;
+
 pub fn runAll(allocator: std.mem.Allocator, budget: harness.Budget) !void {
     property_allocator = allocator;
 
@@ -83,6 +96,7 @@ pub fn runAll(allocator: std.mem.Allocator, budget: harness.Budget) !void {
     shared_setup = try Setup.init(
         allocator,
         example_data.multi_scalar_model,
+        tree_request,
         example_data.multi_scalar_point,
         .value_gradient_hessian,
         32,
@@ -115,6 +129,7 @@ pub fn runAll(allocator: std.mem.Allocator, budget: harness.Budget) !void {
     shared_left = try Setup.init(
         allocator,
         example_data.multi_scalar_model,
+        tree_request,
         example_data.multi_scalar_point,
         .value,
         1,
@@ -122,6 +137,7 @@ pub fn runAll(allocator: std.mem.Allocator, budget: harness.Budget) !void {
     shared_right = try Setup.init(
         allocator,
         relabelled_model,
+        tree_request,
         relabelled_point,
         .value,
         1,
@@ -139,6 +155,7 @@ pub fn runAll(allocator: std.mem.Allocator, budget: harness.Budget) !void {
     shared_left = try Setup.init(
         allocator,
         example_data.multi_scalar_model,
+        tree_request,
         zeroed_point,
         .value_gradient,
         1,
@@ -146,6 +163,7 @@ pub fn runAll(allocator: std.mem.Allocator, budget: harness.Budget) !void {
     shared_right = try Setup.init(
         allocator,
         reduced_model,
+        tree_request,
         reduced_point,
         .value_gradient,
         1,
@@ -161,9 +179,129 @@ pub fn runAll(allocator: std.mem.Allocator, budget: harness.Budget) !void {
     shared_right.?.deinit(allocator);
     shared_left = null;
     shared_right = null;
+
+    // -- order-one properties ---------------------------------------------
+    //
+    // The same shapes as above, over the complex path. They are separate
+    // properties rather than a parameterization because the buffers, the
+    // result type, and the failure modes differ: a one-loop point can be
+    // `singular_derivative` where the tree point at the same background is
+    // ordinary.
     shared_setup = try Setup.init(
         allocator,
         example_data.multi_scalar_model,
+        one_loop_request,
+        example_data.multi_scalar_point,
+        .value_gradient_hessian,
+        32,
+    );
+    try harness.check(
+        allocator,
+        "evaluation.complex_scalar_matches_batch",
+        gen.list(f64, gen.floatRange(f64, -600, 600), 1, 16),
+        complexScalarMatchesBatch,
+        budget,
+    );
+    try harness.check(
+        allocator,
+        "evaluation.complex_batch_partitions_agree",
+        gen.list(f64, gen.floatRange(f64, -600, 600), 1, 24),
+        complexBatchPartitionsAgree,
+        budget,
+    );
+    try harness.check(
+        allocator,
+        "evaluation.complex_staged_matches_unstaged",
+        gen.list(f64, gen.floatRange(f64, -600, 600), 1, 16),
+        complexStagedMatchesUnstaged,
+        budget,
+    );
+    try harness.check(
+        allocator,
+        "evaluation.complex_hessian_is_symmetric",
+        gen.array(f64, 2, gen.floatRange(f64, -600, 600)),
+        complexHessianIsSymmetric,
+        budget,
+    );
+    shared_setup.?.deinit(allocator);
+    shared_setup = null;
+
+    shared_left = try Setup.init(
+        allocator,
+        example_data.multi_scalar_model,
+        one_loop_request,
+        example_data.multi_scalar_point,
+        .value,
+        1,
+    );
+    shared_right = try Setup.init(
+        allocator,
+        relabelled_model,
+        one_loop_request,
+        relabelled_point,
+        .value,
+        1,
+    );
+    try harness.check(
+        allocator,
+        "metamorphic.one_loop_relabelling_preserves_results",
+        gen.array(f64, 2, gen.floatRange(f64, -400, 400)),
+        oneLoopRelabellingPreservesResults,
+        budget,
+    );
+    shared_left.?.deinit(allocator);
+    shared_right.?.deinit(allocator);
+
+    shared_left = try Setup.init(
+        allocator,
+        example_data.multi_scalar_model,
+        one_loop_request,
+        zeroed_point,
+        .value,
+        1,
+    );
+    shared_right = try Setup.init(
+        allocator,
+        reduced_model,
+        one_loop_request,
+        reduced_point,
+        .value,
+        1,
+    );
+    try harness.check(
+        allocator,
+        "metamorphic.one_loop_zero_coupling_matches_reduced_model",
+        gen.array(f64, 2, gen.floatRange(f64, -400, 400)),
+        oneLoopZeroCouplingMatchesReducedModel,
+        budget,
+    );
+    shared_left.?.deinit(allocator);
+    shared_right.?.deinit(allocator);
+    shared_left = null;
+    shared_right = null;
+
+    shared_setup = try Setup.init(
+        allocator,
+        example_data.multi_scalar_model,
+        one_loop_request,
+        symmetric_point,
+        .value,
+        1,
+    );
+    try harness.check(
+        allocator,
+        "metamorphic.scalar_basis_covariance",
+        gen.array(f64, 3, gen.floatRange(f64, -30, 30)),
+        scalarBasisCovariance,
+        budget,
+    );
+    shared_setup.?.deinit(allocator);
+    shared_setup = null;
+
+    shared_setup = try Setup.init(
+        allocator,
+        example_data.multi_scalar_model,
+        tree_request,
         example_data.multi_scalar_point,
         .value,
         8,
@@ -243,6 +381,95 @@ fn unsignedValueScale(terms: []const Monomial, point: [2]Scalar) Scalar {
 }
 
 /// The same scale for one gradient component, term by differentiated term.
+fn integerPower(base: Scalar, exponent: u8) Scalar {
+    var total: Scalar = 1;
+    for (0..exponent) |_| total *= base;
+    return total;
+}
+
+/// The field-dependent mass matrix of the written-out potential.
+///
+/// Like `multiScalarTerms`, this supplies a comparison scale rather than an
+/// oracle: nothing asserts its entries, and a wrong coefficient here would move
+/// a tolerance rather than admit a wrong result.
+const MassMatrix = struct {
+    hh: Scalar,
+    hs: Scalar,
+    ss: Scalar,
+    /// Unsigned sum over every term of every entry. It bounds the size of the
+    /// matrix whose entries the two compared sides round differently.
+    unsigned: Scalar,
+};
+
+fn multiScalarMassMatrix(terms: []const Monomial, point: [2]Scalar) MassMatrix {
+    var result = MassMatrix{ .hh = 0, .hs = 0, .ss = 0, .unsigned = 0 };
+    for (terms) |term| {
+        const p: Scalar = @floatFromInt(term.h_power);
+        const q: Scalar = @floatFromInt(term.s_power);
+        if (term.h_power >= 2) {
+            const entry = term.coefficient * p * (p - 1) *
+                integerPower(point[0], term.h_power - 2) *
+                integerPower(point[1], term.s_power);
+            result.hh += entry;
+            result.unsigned += @abs(entry);
+        }
+        if (term.h_power >= 1 and term.s_power >= 1) {
+            const entry = term.coefficient * p * q *
+                integerPower(point[0], term.h_power - 1) *
+                integerPower(point[1], term.s_power - 1);
+            result.hs += entry;
+            // The mirrored entry denotes the same value and is perturbed with
+            // it, so it counts twice.
+            result.unsigned += 2 * @abs(entry);
+        }
+        if (term.s_power >= 2) {
+            const entry = term.coefficient * q * (q - 1) *
+                integerPower(point[0], term.h_power) *
+                integerPower(point[1], term.s_power - 2);
+            result.ss += entry;
+            result.unsigned += @abs(entry);
+        }
+    }
+    return result;
+}
+
+/// Conditioning of a complex spectral value under a rounding-level change to
+/// the mass-matrix entries.
+///
+/// Field relabelling and dropping a coupling bound to zero both reorder the sum
+/// that builds each entry, so the two compared sides diagonalize matrices whose
+/// last bits differ. The result's sensitivity to that is `|Phi'(x_a)|` summed
+/// over the spectrum, times the size of the matrix. The unsigned sum of the
+/// spectral terms alone is not enough: where the entries cancel, an eigenvalue
+/// is far smaller than the matrix that produced it, and the spectral sum
+/// inherits the entries' absolute error rather than its own relative one.
+fn spectralConditioning(
+    matrix: MassMatrix,
+    renormalization_scale: Scalar,
+) struct { re: Scalar, im: Scalar } {
+    const center = (matrix.hh + matrix.ss) / 2;
+    const half_difference = (matrix.hh - matrix.ss) / 2;
+    const radius = @sqrt(half_difference * half_difference + matrix.hs * matrix.hs);
+    const eigenvalues = [_]Scalar{ center + radius, center - radius };
+
+    var sensitivity_re: Scalar = 0;
+    var sensitivity_im: Scalar = 0;
+    for (eigenvalues) |eigenvalue| {
+        if (eigenvalue == 0) continue;
+        const logarithm = @log(@abs(eigenvalue) /
+            (renormalization_scale * renormalization_scale));
+        sensitivity_re += 2 * @abs(eigenvalue) * (@abs(logarithm) + 1) /
+            (64 * std.math.pi * std.math.pi);
+        if (eigenvalue < 0) {
+            sensitivity_im += @abs(eigenvalue) / (32 * std.math.pi);
+        }
+    }
+    return .{
+        .re = sensitivity_re * matrix.unsigned,
+        .im = sensitivity_im * matrix.unsigned,
+    };
+}
+
 fn unsignedGradientScale(
     terms: []const Monomial,
     point: [2]Scalar,
@@ -325,7 +552,7 @@ fn deriveArtifact(
     model: *const phaser.Model,
     request: *const calculation.Request,
 ) !calculation.Artifact {
-    return switch (try phaser.deriveClassicalPotential(
+    return switch (try phaser.deriveEffectivePotential(
         context(allocator),
         model,
         request,
@@ -353,13 +580,14 @@ const Setup = struct {
     fn init(
         allocator: std.mem.Allocator,
         model_source: []const u8,
+        request_source: []const u8,
         point_source: []const u8,
         capability: kernel_module.Capability,
         max_points: usize,
     ) !Setup {
         var model = try loadModel(allocator, model_source);
         errdefer model.deinit();
-        var request = try loadRequest(allocator, example_data.phi4_request);
+        var request = try loadRequest(allocator, request_source);
         errdefer request.deinit();
         var artifact = try deriveArtifact(allocator, &model, &request);
         errdefer artifact.deinit();
@@ -757,6 +985,342 @@ fn zeroCouplingMatchesReducedModel(point: [2]f64) !void {
     }
 }
 
+// -- order-one evaluation properties ---------------------------------------
+
+const Complex64 = kernel_module.Complex64;
+
+/// Complex scalar evaluation agrees bitwise with complex batch evaluation.
+fn complexScalarMatchesBatch(coordinates_flat: []const f64) !void {
+    const allocator = property_allocator;
+    const setup = &shared_setup.?;
+
+    const n = setup.coordinates;
+    const point_count = coordinates_flat.len / n;
+    if (point_count == 0) return;
+    const backgrounds = coordinates_flat[0 .. point_count * n];
+
+    const batch = try allocator.alloc(Complex64, point_count);
+    defer allocator.free(batch);
+    const statuses = try allocator.alloc(kernel_module.Status, point_count);
+    defer allocator.free(statuses);
+    try setup.binding.evaluateComplex(backgrounds, point_count, setup.workspace, .{
+        .values = batch,
+        .statuses = statuses,
+    });
+
+    for (0..point_count) |index| {
+        var single: [1]Complex64 = undefined;
+        var single_status: [1]kernel_module.Status = undefined;
+        try setup.binding.evaluateComplex(
+            backgrounds[index * n ..][0..n],
+            1,
+            setup.workspace,
+            .{ .values = &single, .statuses = &single_status },
+        );
+        try std.testing.expectEqual(statuses[index], single_status[0]);
+        if (statuses[index] != .ok) continue;
+        // Same kernel, same inputs, same order: both components are bitwise
+        // identical, not merely close.
+        try same_kernel.expectEqual(batch[index].re, single[0].re);
+        try same_kernel.expectEqual(batch[index].im, single[0].im);
+    }
+}
+
+/// Every partition and permutation of a complex batch agrees with the whole.
+///
+/// Points in a batch are independent, so splitting the batch anywhere and
+/// evaluating the halves in either order has to reproduce each point's own
+/// result. A temporary that leaked across points would break this even where
+/// the scalar-versus-batch property still held.
+fn complexBatchPartitionsAgree(coordinates_flat: []const f64) !void {
+    const allocator = property_allocator;
+    const setup = &shared_setup.?;
+
+    const n = setup.coordinates;
+    const point_count = coordinates_flat.len / n;
+    if (point_count < 2) return;
+    const backgrounds = coordinates_flat[0 .. point_count * n];
+
+    const whole = try allocator.alloc(Complex64, point_count);
+    defer allocator.free(whole);
+    const whole_statuses = try allocator.alloc(kernel_module.Status, point_count);
+    defer allocator.free(whole_statuses);
+    try setup.binding.evaluateComplex(backgrounds, point_count, setup.workspace, .{
+        .values = whole,
+        .statuses = whole_statuses,
+    });
+
+    // The split index is derived from the generated data rather than fixed, so
+    // shrinking reports the boundary that actually failed.
+    const split = 1 + (@as(usize, @intFromFloat(@abs(coordinates_flat[0]))) %
+        (point_count - 1));
+
+    const parts = try allocator.alloc(Complex64, point_count);
+    defer allocator.free(parts);
+    const part_statuses = try allocator.alloc(kernel_module.Status, point_count);
+    defer allocator.free(part_statuses);
+
+    // The tail runs first, so the halves are evaluated in the opposite order
+    // from the whole batch as well as separately.
+    const tail = point_count - split;
+    try setup.binding.evaluateComplex(
+        backgrounds[split * n ..],
+        tail,
+        setup.workspace,
+        .{ .values = parts[split..], .statuses = part_statuses[split..] },
+    );
+    try setup.binding.evaluateComplex(
+        backgrounds[0 .. split * n],
+        split,
+        setup.workspace,
+        .{ .values = parts[0..split], .statuses = part_statuses[0..split] },
+    );
+
+    try std.testing.expectEqualSlices(
+        kernel_module.Status,
+        whole_statuses,
+        part_statuses,
+    );
+    for (whole, parts, whole_statuses) |expected, actual, status| {
+        if (status != .ok) continue;
+        try same_kernel.expectEqual(expected.re, actual.re);
+        try same_kernel.expectEqual(expected.im, actual.im);
+    }
+}
+
+/// Staged complex evaluation agrees bitwise with the unstaged path.
+fn complexStagedMatchesUnstaged(coordinates_flat: []const f64) !void {
+    const allocator = property_allocator;
+    const setup = &shared_setup.?;
+
+    const n = setup.coordinates;
+    const point_count = coordinates_flat.len / n;
+    if (point_count == 0) return;
+    const backgrounds = coordinates_flat[0 .. point_count * n];
+
+    const staged_values = try allocator.alloc(Complex64, point_count);
+    defer allocator.free(staged_values);
+    const staged_gradients = try allocator.alloc(Complex64, point_count * n);
+    defer allocator.free(staged_gradients);
+    const staged_statuses = try allocator.alloc(kernel_module.Status, point_count);
+    defer allocator.free(staged_statuses);
+    try setup.binding.evaluateComplex(backgrounds, point_count, setup.workspace, .{
+        .values = staged_values,
+        .gradients = staged_gradients,
+        .statuses = staged_statuses,
+    });
+
+    const direct_values = try allocator.alloc(Complex64, point_count);
+    defer allocator.free(direct_values);
+    const direct_gradients = try allocator.alloc(Complex64, point_count * n);
+    defer allocator.free(direct_gradients);
+    const direct_statuses = try allocator.alloc(kernel_module.Status, point_count);
+    defer allocator.free(direct_statuses);
+    // The scale reaches the unstaged call through its own input channel; the
+    // binding supplies the same value from the parameter point.
+    const scales = try allocator.alloc(Scalar, 1);
+    defer allocator.free(scales);
+    scales[0] = setup.binding.reference_scale;
+    try setup.kernel.evaluateComplex(
+        .{
+            .parameters = setup.binding.parameters,
+            .scales = scales,
+            .backgrounds = backgrounds,
+        },
+        point_count,
+        setup.workspace,
+        .{
+            .values = direct_values,
+            .gradients = direct_gradients,
+            .statuses = direct_statuses,
+        },
+    );
+
+    try std.testing.expectEqualSlices(
+        kernel_module.Status,
+        direct_statuses,
+        staged_statuses,
+    );
+    for (direct_values, staged_values, direct_statuses) |expected, actual, status| {
+        if (status != .ok) continue;
+        try same_kernel.expectEqual(expected.re, actual.re);
+        try same_kernel.expectEqual(expected.im, actual.im);
+    }
+    for (direct_gradients, staged_gradients) |expected, actual| {
+        if (!std.math.isFinite(expected.re)) continue;
+        try same_kernel.expectEqual(expected.re, actual.re);
+        try same_kernel.expectEqual(expected.im, actual.im);
+    }
+}
+
+/// Mixed partials of the complex Hessian agree at every generated point.
+///
+/// Every entry is computed from the formula rather than copied from one
+/// triangle, so symmetry is a property to check and not a construction.
+fn complexHessianIsSymmetric(point: [2]f64) !void {
+    const setup = &shared_setup.?;
+
+    var values: [1]Complex64 = undefined;
+    var gradients: [2]Complex64 = undefined;
+    var hessians: [4]Complex64 = undefined;
+    var statuses: [1]kernel_module.Status = undefined;
+    try setup.binding.evaluateComplex(&point, 1, setup.workspace, .{
+        .values = &values,
+        .gradients = &gradients,
+        .hessians = &hessians,
+        .statuses = &statuses,
+    });
+    if (statuses[0] != .ok) return;
+    try same_kernel.expectEqual(hessians[1].re, hessians[2].re);
+    try same_kernel.expectEqual(hessians[1].im, hessians[2].im);
+}
+
+// -- order-one metamorphic properties --------------------------------------
+
+/// Relabelling scalar fields preserves the complex order-one value.
+///
+/// The relabelled model's mass matrix is the original one conjugated by a
+/// permutation, so its spectrum, and therefore the spectral sum, is unchanged.
+fn oneLoopRelabellingPreservesResults(point: [2]f64) !void {
+    const original = &shared_left.?;
+    const relabelled = &shared_right.?;
+
+    var original_value: [1]Complex64 = undefined;
+    var original_status: [1]kernel_module.Status = undefined;
+    try original.binding.evaluateComplex(&point, 1, original.workspace, .{
+        .values = &original_value,
+        .statuses = &original_status,
+    });
+
+    const swapped = [_]Scalar{ point[1], point[0] };
+    var relabelled_value: [1]Complex64 = undefined;
+    var relabelled_status: [1]kernel_module.Status = undefined;
+    try relabelled.binding.evaluateComplex(&swapped, 1, relabelled.workspace, .{
+        .values = &relabelled_value,
+        .statuses = &relabelled_status,
+    });
+
+    try std.testing.expectEqual(original_status[0], relabelled_status[0]);
+    if (original_status[0] != .ok) return;
+
+    const terms = multiScalarTerms(-0.02);
+    const matrix = multiScalarMassMatrix(&terms, point);
+    const conditioning = spectralConditioning(
+        matrix,
+        original.binding.reference_scale,
+    );
+    try reordered.expectCloseAt(original_value[0].re, relabelled_value[0].re, .{
+        .magnitude = unsignedValueScale(&terms, point) + conditioning.re,
+    });
+    try reordered.expectCloseAt(original_value[0].im, relabelled_value[0].im, .{
+        .magnitude = conditioning.im,
+    });
+}
+
+/// A coupling bound to zero agrees with the model that omits its component,
+/// through the order-one path as well as the tree one.
+fn oneLoopZeroCouplingMatchesReducedModel(point: [2]f64) !void {
+    const full = &shared_left.?;
+    const reduced = &shared_right.?;
+
+    var full_value: [1]Complex64 = undefined;
+    var full_status: [1]kernel_module.Status = undefined;
+    try full.binding.evaluateComplex(&point, 1, full.workspace, .{
+        .values = &full_value,
+        .statuses = &full_status,
+    });
+
+    var reduced_value: [1]Complex64 = undefined;
+    var reduced_status: [1]kernel_module.Status = undefined;
+    try reduced.binding.evaluateComplex(&point, 1, reduced.workspace, .{
+        .values = &reduced_value,
+        .statuses = &reduced_status,
+    });
+
+    try std.testing.expectEqual(full_status[0], reduced_status[0]);
+    if (full_status[0] != .ok) return;
+
+    const terms = multiScalarTerms(0);
+    const matrix = multiScalarMassMatrix(&terms, point);
+    const conditioning = spectralConditioning(matrix, full.binding.reference_scale);
+    try reordered.expectCloseAt(full_value[0].re, reduced_value[0].re, .{
+        .magnitude = unsignedValueScale(&terms, point) + conditioning.re,
+    });
+    try reordered.expectCloseAt(full_value[0].im, reduced_value[0].im, .{
+        .magnitude = conditioning.im,
+    });
+}
+
+/// A rotation of the scalar basis leaves the order-one value unchanged.
+///
+/// `symmetric_point` binds the two-scalar model to an O(2)-symmetric potential
+/// `V = m^2 rho^2 / 2 + lambda rho^4 / 24` with `rho^2 = h^2 + s^2`. Rotating
+/// the background by any angle is then a real orthogonal change of scalar
+/// basis: the mass matrix is conjugated by the rotation, its spectrum is
+/// untouched, and the spectral sum has to agree. The rotated matrix is dense
+/// at a generic angle even though the original is not, so this exercises
+/// assembly, the eigensolver, and the sum together rather than a diagonal
+/// shortcut.
+fn scalarBasisCovariance(generated: [3]f64) !void {
+    const setup = &shared_setup.?;
+
+    const point = [_]Scalar{ generated[0], generated[1] };
+    const angle = generated[2];
+    const cosine = @cos(angle);
+    const sine = @sin(angle);
+    const rotated = [_]Scalar{
+        cosine * point[0] - sine * point[1],
+        sine * point[0] + cosine * point[1],
+    };
+
+    var original_value: [1]Complex64 = undefined;
+    var original_status: [1]kernel_module.Status = undefined;
+    try setup.binding.evaluateComplex(&point, 1, setup.workspace, .{
+        .values = &original_value,
+        .statuses = &original_status,
+    });
+
+    var rotated_value: [1]Complex64 = undefined;
+    var rotated_status: [1]kernel_module.Status = undefined;
+    try setup.binding.evaluateComplex(&rotated, 1, setup.workspace, .{
+        .values = &rotated_value,
+        .statuses = &rotated_status,
+    });
+
+    try std.testing.expectEqual(original_status[0], rotated_status[0]);
+    if (original_status[0] != .ok) return;
+
+    // Conditioning: the unsigned sum of the terms that build the answer. The
+    // tree part is `|m^2| rho^2 / 2 + lambda rho^4 / 24` and the loop part is
+    // the unsigned sum over the two O(2) eigenvalues, both computed here from
+    // the invariant `rho^2` rather than from anything the kernel reported.
+    //
+    // Rotating a point is not exact in binary64, so the two sides agree to
+    // rounding rather than bitwise.
+    const radius_squared = point[0] * point[0] + point[1] * point[1];
+    const eigenvalues = [_]Scalar{
+        symmetric_mass_squared + symmetric_quartic * radius_squared / 2.0,
+        symmetric_mass_squared + symmetric_quartic * radius_squared / 6.0,
+    };
+    var magnitude = @abs(symmetric_mass_squared) * radius_squared / 2.0 +
+        symmetric_quartic * radius_squared * radius_squared / 24.0;
+    for (eigenvalues) |eigenvalue| {
+        const square = eigenvalue * eigenvalue;
+        if (square == 0) continue;
+        magnitude += square *
+            (@abs(@log(@abs(eigenvalue) /
+                (setup.binding.reference_scale * setup.binding.reference_scale))) + 1.5) /
+            (64.0 * std.math.pi * std.math.pi);
+    }
+
+    try reordered.expectCloseAt(original_value[0].re, rotated_value[0].re, .{
+        .magnitude = magnitude,
+    });
+    try reordered.expectCloseAt(original_value[0].im, rotated_value[0].im, .{
+        .magnitude = @abs(original_value[0].im) + @abs(rotated_value[0].im),
+    });
+}
+
 // -- lifecycle property ----------------------------------------------------
 
 /// A generated sequence of lifecycle operations agrees with a fixed reference.
@@ -992,6 +1556,25 @@ const reduced_model =
 ;
 
 /// The example point with `l3` set to zero.
+/// The O(2)-symmetric mass-squared and quartic couplings of `symmetric_point`.
+///
+/// `V = m^2 rho^2 / 2 + lambda rho^4 / 24` needs `lambda_hhhh = lambda_ssss =
+/// lambda` and `lambda_hhss = lambda / 3`, because the mixed component enters
+/// the quartic contraction six times and the pure ones once. Choosing
+/// `lambda = 3` makes every one of those couplings exactly representable, so
+/// the symmetry is a property of the numbers and not of a rounding.
+const symmetric_mass_squared: Scalar = -2;
+const symmetric_quartic: Scalar = 3;
+
+const symmetric_point =
+    \\{"schema":"phaser.parameter-point/0.1","units":{"mass":"GeV"},
+    \\"renormalization":{"scheme":"MSbar","reference_scale":4.0},
+    \\"values":{"a":0,"b":0,"c":0,"d":0,
+    \\"l1":0,"l2":1.0,"l3":0,"lh":3.0,"ls":3.0,
+    \\"m_h2":-2.0,"m_hs2":0,"m_s2":-2.0,
+    \\"omega":0,"t_h":0,"t_s":0}}
+;
+
 const zeroed_point =
     \\{"schema":"phaser.parameter-point/0.1","units":{"mass":"GeV"},
     \\"renormalization":{"scheme":"MSbar","reference_scale":125.0},

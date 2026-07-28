@@ -419,6 +419,16 @@ fn finiteStatus(
 }
 
 /// Executes a contiguous range of the instruction stream.
+///
+/// Execution stops at the first instruction that fails. A failing operation
+/// publishes no result -- the eigensolver leaves its eigenvalues and
+/// eigenvectors unwritten rather than emitting an unconverged spectrum -- so
+/// continuing would run the remaining instructions on whatever the frame
+/// happened to hold, which in a batch is the previous point's data. That would
+/// make a point's status depend on its neighbours, and would report the later
+/// instruction's failure in place of the real one. Both are forbidden: a batch
+/// retains independent status per point, and the statuses must not be
+/// collapsed into one another.
 fn run(
     program: *const Program,
     instructions: []const Instruction,
@@ -429,6 +439,7 @@ fn run(
 ) Status {
     var status: Status = .ok;
     for (instructions) |instruction| {
+        if (status != .ok) break;
         switch (instruction) {
             .load_constant => |payload| {
                 frame.real(payload.result).* = program.constants[payload.source];

@@ -15,6 +15,7 @@ pub const names = [_][]const u8{
     "calculation_request_parser",
     "symbolic_exporter",
     "kernel_lowering",
+    "one_loop_pipeline",
     "parameter_point_parser",
 };
 
