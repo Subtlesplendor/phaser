@@ -1,28 +1,35 @@
 # Decision 0015: Milestone 4 Phase B dependencies
 
-Status: **proposed** — each dependency below awaits the repository owner's
-explicit approval under [AGENTS.md](../../AGENTS.md). No Phase B work may begin
-against an unapproved item.
+Status: accepted for Milestone 4; all three dependencies approved by the
+repository owner under [AGENTS.md](../../AGENTS.md)
+
+Each was proposed and approved separately. The approval covers the exact
+sources, versions, and boundaries recorded below and nothing wider: changing a
+source, a version, an enabled feature, a transitive set, or a role requires
+renewed permission, per [AGENTS.md](../../AGENTS.md).
 
 ## Context
 
 [Implementation Roadmap §8](../architecture/IMPLEMENTATION_ROADMAP.md#8-milestone-4-experimental-public-client-surfaces)
-Phase B needs three things Phaser does not have: a way to build a CPython
+Phase B needs three things Phaser did not have: a way to build a CPython
 extension, a way to plot, and a way to execute a notebook in CI. Roadmap §17
-still defers the last two, while §3 requires a notebook that cannot exist
-without them. That tension is what this record resolves.
+deferred the plotting and notebook-execution choices, while §3 required a
+notebook that cannot exist without them. That tension is what this record
+resolves.
 
 Each proposal below carries the fields
-[Phaser Engineering Style](../../ENGINEERING_STYLE.md) requires. They are
-independent: approving one does not approve another, and rejecting the plotting
-dependency does not block the extension.
+[Phaser Engineering Style](../../ENGINEERING_STYLE.md) requires. They were kept
+independent so that approving one did not approve another; all three were
+approved, and the "Recommended" notes are retained as the reasoning that was
+put to the owner rather than rewritten after the fact.
 
-One point applies to all three. Nothing proposed here may be linked into,
-imported by, or required for the Phaser library, the Zig core, the CLI, or any
-test that asserts a numerical result. Every one of them is confined to the
-Python binding, the notebook, and the CI tier that executes them. A contributor
-who declines all three can still build, test, benchmark, and fuzz the whole of
-Phaser.
+One constraint applies to all three and is part of what was approved. None of
+them may be linked into, imported by, or required for the Phaser library, the
+Zig core, the CLI, or any test that asserts a numerical result. Each is confined
+to the Python binding, the notebook, and the CI tier that executes them. A
+contributor who installs none of them can still build, test, benchmark, and fuzz
+the whole of Phaser — that is the property these boundaries exist to preserve,
+and a change that breaks it is a dependency change requiring its own approval.
 
 ## Proposal 1: CPython Limited API headers
 
@@ -65,8 +72,10 @@ one.
 **Recommended with reservations**, stated below.
 
 - **Exact dependency and source.** `matplotlib`, from PyPI, pinned to an exact
-  version with hashes in a checked-in requirements file, in the manner
-  `tools/ci/install_zig.sh` already pins the toolchain by SHA-256.
+  version with hashes in `tools/ci/python-requirements.txt`, in the manner
+  `tools/ci/install_zig.sh` already pins the toolchain by SHA-256. That file is
+  the Python counterpart of `build.zig.zon`: every entry names the decision that
+  approved it, and an unpinned or unhashed entry is a defect.
 - **Purpose.** The notebook plots required by roadmap §3 and §8: tree,
   one-loop, and selected sum over a background interval.
 - **Internal alternative.** Two exist. Phaser could emit SVG directly from Zig,
@@ -99,7 +108,7 @@ one.
 **Recommended**, in the minimal form given here rather than the usual one.
 
 - **Exact dependency and source.** `nbclient` and `nbformat` from PyPI, pinned
-  to exact versions with hashes in the same requirements file, plus the
+  to exact versions with hashes in `tools/ci/python-requirements.txt`, plus the
   `ipykernel` they need to start a kernel.
 - **Purpose.** To execute the notebook in CI from a fresh kernel and fail the
   build if it errors, which is the only way to verify §8's exit criterion that
@@ -136,24 +145,39 @@ packages execute it, and it should be decided when there is a real notebook to
 look at. Executing in CI does not require committed outputs, and committing
 outputs does not require executing in CI.
 
-## Consequences if approved
+## Consequences
 
-Phaser acquires a Python dependency set for the first time, and with it a
-requirements file, a pinning discipline, and a CI tier that installs from PyPI.
-The supply-chain surface grows from one pinned Zig archive to that plus a
-hash-pinned Python environment. This is a real change in the project's posture
-and should be recorded as one.
+Phaser acquires a Python dependency set for the first time, and with it
+`tools/ci/python-requirements.txt`, a pinning discipline, and a CI tier that
+installs from PyPI. The supply-chain surface grows from one pinned Zig archive
+and two Zig packages to that plus a hash-pinned Python environment. This is a
+real change in the project's posture and is recorded as one rather than
+absorbed quietly.
+
+[Development Workflow §9](../../DEVELOPMENT_WORKFLOW.md#9-toolchain-ci-and-security)
+requires that "test execution is offline after explicitly approved and pinned
+tools have been obtained." The Python environment is obtained in an explicit
+install step and nothing after it reaches the network — notebook execution in
+particular must not, which §3 of the roadmap already requires of every notebook.
 
 The library itself remains dependency-free. That property is worth protecting
 explicitly, because it will be under continuous pressure once a Python
-environment exists and importing something from it becomes easy.
+environment exists and importing something from it becomes easy. The boundary
+statements in each proposal above are what enforce it, and the reviewer of any
+future change that crosses one should treat it as a dependency change.
 
-## Consequences if rejected
+Approving all three means Phase B is unblocked and Milestone 4's prerequisites
+are fully discharged. Nothing in Milestone 4 now waits on a decision.
 
-Phase B contracts to what needs no dependency. The `ctypes` client can still
-exercise the C ABI from Python, since it needs only the standard library. There
-is no extension, no notebook, and roadmap §3's notebook requirement and §8's
-notebook exit criteria must be amended rather than left unmet.
+## What rejection would have meant
+
+Recorded because it was a live option and bounds what is being bought.
+
+Phase B would have contracted to what needs no dependency. The `ctypes` client
+would still exercise the C ABI from Python, since it needs only the standard
+library. There would be no extension and no notebook, and roadmap §3's notebook
+requirement and §8's notebook exit criteria would have had to be amended rather
+than left unmet.
 
 ## Revisit when
 

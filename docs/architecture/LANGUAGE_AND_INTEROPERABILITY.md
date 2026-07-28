@@ -427,6 +427,9 @@ The production binding SHOULD be a thin CPython extension written in Zig against
 Python's Limited API. The initial planned minimum is CPython 3.11 because the
 complete `Py_buffer` structure and the relevant buffer operations are part of the
 Stable ABI from that version.
+[Decision 0015](../decisions/0015-phase-b-python-dependencies.md) approves that
+dependency at `Py_LIMITED_API` `0x030B0000`, together with the plotting and
+notebook-execution packages the first notebook needs.
 
 The extension SHOULD:
 

@@ -90,4 +90,4 @@ subsystem you're touching rather than the whole set.
 [0012](decisions/0012-mutation-rotation-retune.md) mutation rotation retune ·
 [0013](decisions/0013-c-abi-v0-surface.md) C ABI version 0 surface ·
 [0014](decisions/0014-public-header-and-toolchain-baseline.md) public header and toolchain baseline ·
-[0015](decisions/0015-phase-b-python-dependencies.md) Milestone 4 Phase B dependencies (proposed)
+[0015](decisions/0015-phase-b-python-dependencies.md) Milestone 4 Phase B dependencies

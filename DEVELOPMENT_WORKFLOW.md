@@ -430,6 +430,15 @@ Phaser's dependency policy. Before adding one, obtain explicit approval for its
 exact source and scope. Approved actions are pinned to immutable commit
 identifiers rather than floating tags.
 
+From Milestone 4 the approved tool set includes a Python environment for the
+binding and notebook tiers, recorded in
+[Decision 0015](docs/decisions/0015-phase-b-python-dependencies.md) and pinned
+with hashes in `tools/ci/python-requirements.txt`. It is obtained in an explicit
+install step, and the offline rule above applies from that point: notebook
+execution and every test tier run without network access. An unpinned or
+unhashed entry in that file is a defect, on the same standard as an unpinned
+action.
+
 Scheduled GitHub jobs operate on the default branch. They are continuing
 fault-discovery campaigns, not retroactive evidence that an earlier merge was
 incorrectly approved without its required bounded checks.

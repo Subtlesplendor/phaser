@@ -82,20 +82,23 @@ Every maintained notebook:
 - has a bounded representative runtime;
 - avoids timestamps and other nondeterministic output;
 - states which visual or numerical features the researcher should inspect; and
-- is executed in an appropriate CI or scheduled validation tier once approved
-  notebook tooling exists.
+- is executed in an appropriate CI or scheduled validation tier. The tooling
+  this waited on is approved in
+  [Decision 0015](../decisions/0015-phase-b-python-dependencies.md), so this is
+  now a requirement rather than a conditional one.
 
 Short canonical demonstration notebooks MAY retain reviewed outputs so equations
 and plots are visible when opened. The policy for committed outputs, deterministic
 execution, and rendered derivatives remains to be selected before notebooks are
 added.
 
-Neither a plotting package nor notebook-execution package is selected by this
-roadmap. Adding one is subject to the external-dependency proposal and explicit
-approval required by [Phaser Engineering Style](../../ENGINEERING_STYLE.md).
-[Decision 0015](../decisions/0015-phase-b-python-dependencies.md) carries those
-proposals for Milestone 4; until each is approved, no notebook depending on it
-may be added.
+This roadmap selects neither package itself; adding one is subject to the
+external-dependency proposal and explicit approval required by
+[Phaser Engineering Style](../../ENGINEERING_STYLE.md).
+[Decision 0015](../decisions/0015-phase-b-python-dependencies.md) carried those
+proposals for Milestone 4 and they are approved: matplotlib for plotting, and
+nbclient with nbformat for execution. A later milestone wanting a different
+package proposes it the same way.
 
 Before Milestone 4, examples SHOULD produce the same models, reference data, and
 LaTeX fragments that the first notebook will later consume. A Python notebook is
@@ -452,11 +455,11 @@ each; see `zig build bench` for the full table and its variance.
 Exercise a useful scientific calculation through the first public client
 boundaries while the ABI remains experimental.
 
-### Prerequisites: outstanding
+### Prerequisites: discharged
 
-Milestone 3 recorded its prerequisites once they were discharged. Milestone 4
-records them while some are still open, because the open ones gate when
-implementation may begin at all:
+These were recorded here while still open, unlike Milestone 3's, because the
+open ones gated when implementation could begin at all. All are now discharged
+and nothing in this milestone waits on a decision:
 
 - [Decision 0013](../decisions/0013-c-abi-v0-surface.md) fixes the ABI version 0
   handle set, ownership model, status space, and diagnostics lifetime. Accepted.
@@ -471,22 +474,22 @@ implementation may begin at all:
   carries the operation-level contract those decisions imply. Its exact
   signatures were deferred "until the corresponding core lifecycles have
   executable prototypes"; Milestone 3 produced them, so the deferral has expired.
-- The Phase B dependencies are now proposed in
-  [Decision 0015](../decisions/0015-phase-b-python-dependencies.md) — CPython
-  Limited API headers, a plotting package, and notebook-execution tooling —
-  and each awaits the repository owner's approval. Section 17 deferred the
-  last two while section 3 required a notebook impossible without them;
-  decision 0015 is where that is resolved. No Phase B work may begin against an
-  unapproved item, under
-  [Phaser Engineering Style](../../ENGINEERING_STYLE.md) and the repository
-  [agent instructions](../../AGENTS.md).
+- [Decision 0015](../decisions/0015-phase-b-python-dependencies.md) proposes the
+  three Phase B dependencies — CPython Limited API headers, matplotlib, and
+  nbclient with nbformat — and all three are approved. Section 17 deferred the
+  plotting and notebook-execution choices while section 3 required a notebook
+  impossible without them; decision 0015 is where that was resolved. The
+  approval covers the recorded sources, versions, and boundaries only.
 
 ### Phases
 
 The milestone splits at the dependency boundary. Phase A adds no dependency to
-the library itself and can proceed on the discharged prerequisites alone; Phase
-B cannot start until its dependencies are approved. The split is sequencing, not
-two milestones: the common gate closes once, over both phases.
+the library itself; Phase B adds the approved Python set of
+[Decision 0015](../decisions/0015-phase-b-python-dependencies.md). Both are now
+unblocked, and the split remains as sequencing rather than as a gate: Phase A
+establishes the C ABI that Phase B binds, so building them in this order avoids
+adapting a Python surface to a boundary still being designed. The common
+milestone gate closes once, over both phases.
 
 #### Phase A: the language-neutral boundary
 
