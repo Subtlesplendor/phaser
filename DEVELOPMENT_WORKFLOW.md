@@ -228,16 +228,16 @@ the per-target budget they set. A campaign that runs out of wall clock reports
 what it searched and passes; only a failure fails the job.
 
 The mutation campaign rotates under exactly that allowance, because a mutant
-costs a full rebuild of the oracle and the whole repository would take hours.
+costs a rebuild of the oracle and the whole repository would take hours.
 `tools/ci/mutation_rotation.sh` assigns every (source file, mutation operator)
 cell to a group by hashing the cell's name, and each night runs one group, so a
-full pass completes every two weeks. Assignment deliberately ignores how large a
-cell is, which leaves groups uneven: a cell's group must not depend on what else
-exists, or the schedule reshuffles faster than it advances and stops visiting
-every cell at all. New sources join the rotation without displacing anything.
-Mutation runs use `zig build test-mutation` as their oracle, which contains only
-deterministic tiers: it excludes fuzz replay and the randomized property
-campaign. Mutation runs do not fail on survivors. Decision
+full pass completes once every `GROUP_COUNT` nights. Assignment deliberately
+ignores how large a cell is, which leaves groups uneven: a cell's group must not
+depend on what else exists, or the schedule reshuffles faster than it advances
+and stops visiting every cell at all. New sources join the rotation without
+displacing anything. Mutation runs use `zig build test-mutation` as their
+oracle, which contains only deterministic tiers: it excludes fuzz replay and the
+randomized property campaign. Mutation runs do not fail on survivors. Decision
 [0005](docs/decisions/0005-mutation-testing-dependency.md) records why.
 
 The oracle runs that suite with `-Dtest-allocation-traces=false`, which keeps
@@ -248,6 +248,12 @@ nightly job, and every local `zig build test` keeps the traces and the runner's
 per-test leak attribution. Decision
 [0011](docs/decisions/0011-test-allocation-traces.md) records the measurements
 and what the untraced mode gives up.
+
+`GROUP_COUNT` in the nightly workflow is not evidence of a stable cost: the
+mutant count changes as the library grows, and decision
+[0012](docs/decisions/0012-mutation-rotation-retune.md) records that it moved by
+92% in the two days after decision 0011 landed. Treat the current value as
+provisional until a scheduled campaign's own observed duration confirms it.
 
 A surviving mutant is a standing property of the test suite, not a regression in
 the commit that happened to be current. Treat it as a gap to close deliberately,
