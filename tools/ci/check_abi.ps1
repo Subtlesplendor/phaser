@@ -224,6 +224,21 @@ try {
             Sort-Object -Unique
     )
 
+    # Symbols the PE toolchain contributes to every DLL, which are not part of
+    # any library's interface. Listed by exact name rather than matched by a
+    # pattern, for the same reason the Mach-O equivalents are in check_abi.sh:
+    # a wildcard here would be somewhere a real Phaser symbol could hide.
+    $platformSymbols = @(
+        '_DllMainCRTStartup' # CRT entry point for a DLL
+        '_tls_index' # thread-local storage support, supplied by the CRT
+        '_tls_start'
+        '_tls_end'
+        '_tls_used'
+        '__xl_a' # bounds of the TLS callback array
+        '__xl_z'
+    )
+    $exported = @($exported | Where-Object { $platformSymbols -notcontains $_ })
+
     $missing = @($allowed | Where-Object { $exported -notcontains $_ })
     $extra = @($exported | Where-Object { $allowed -notcontains $_ })
 
