@@ -65,6 +65,13 @@ pub fn build(b: *std.Build) void {
         .root_module = library_module,
         .linkage = .static,
     });
+    // A distributed static library is linked by the consumer's toolchain, not
+    // by Zig, so it has to carry the compiler-support routines Zig's own link
+    // step would otherwise supply. Without this the archive references symbols
+    // such as `__zig_probe_stack` and defines none of them, and a link with the
+    // platform linker fails on undefined references that mention Zig internals
+    // the consumer has never heard of.
+    library.bundle_compiler_rt = true;
     b.installArtifact(library);
 
     // Both linkage modes are supported and both are tested, per decision 0014:
