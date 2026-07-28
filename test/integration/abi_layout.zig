@@ -162,3 +162,51 @@ test "per-point status values mirror the kernel statuses the header names" {
         phaser.abi.status.fromKernelStatus(.ok),
     );
 }
+
+const KernelOptions = extern struct {
+    struct_size: u32,
+    abi_version: u32,
+    capability: i32,
+    reserved: u32,
+};
+
+test "kernel options have the layout the header publishes" {
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(KernelOptions, "struct_size"));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(KernelOptions, "abi_version"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(KernelOptions, "capability"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(KernelOptions, "reserved"));
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(KernelOptions));
+    try std.testing.expectEqual(@as(usize, 4), @alignOf(KernelOptions));
+}
+
+test "result type and capability values are the ones the header publishes" {
+    // Transcribed from phaser_result_type and phaser_capability in
+    // include/phaser.h. Both are mirrored against internal enums in
+    // src/abi/status.zig; this pins the published numbers, that pins the
+    // correspondence, and neither check alone would catch the pair drifting
+    // together.
+    const phaser = @import("phaser");
+    const ResultType = phaser.abi.status.ResultType;
+    const Capability = phaser.abi.status.Capability;
+
+    try std.testing.expectEqual(@as(i32, 0), @intFromEnum(ResultType.real64));
+    try std.testing.expectEqual(@as(i32, 1), @intFromEnum(ResultType.complex64));
+
+    try std.testing.expectEqual(@as(i32, 0), @intFromEnum(Capability.value));
+    try std.testing.expectEqual(@as(i32, 1), @intFromEnum(Capability.value_gradient));
+    try std.testing.expectEqual(
+        @as(i32, 2),
+        @intFromEnum(Capability.value_gradient_hessian),
+    );
+
+    // The artifact and the kernel carry separate internal result-type enums.
+    // Both must map onto the single type the header publishes.
+    try std.testing.expectEqual(
+        ResultType.complex64,
+        phaser.abi.status.fromResultType(.complex64),
+    );
+    try std.testing.expectEqual(
+        ResultType.complex64,
+        phaser.abi.status.fromArtifactResultType(.complex64),
+    );
+}

@@ -6,9 +6,9 @@
  * program, compiled by a compiler that is not Zig and linked against either
  * library product, can drive the boundary and observe what the header promises.
  *
- * It grows with the ABI. Today it covers the version, context, model, and
- * diagnostics operations; derive, compile, bind, and evaluate join it as those
- * handles are added.
+ * It grows with the ABI. Today it covers the version, context, model, request,
+ * artifact, and kernel operations; bind and evaluate join it as those handles
+ * are added.
  *
  * Exit status is 0 when every check held, 1 otherwise, and every failure prints
  * what it expected. Build it with:
@@ -17,6 +17,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "phaser.h"
@@ -172,6 +173,101 @@ static void check_invalid_model(phaser_context *context) {
     phaser_diagnostics_destroy(diagnostics);
 }
 
+/* A one-loop effective-potential request over the full scalar background. */
+static const char one_loop_request[] =
+    "{\n"
+    "  \"schema\": \"phaser.calculation/0.1\",\n"
+    "  \"kind\": \"effective_potential\",\n"
+    "  \"background\": { \"mode\": \"full_scalar_space\" },\n"
+    "  \"environment\": { \"kind\": \"vacuum\" },\n"
+    "  \"renormalization\": { \"scheme\": \"MSbar\" },\n"
+    "  \"orders\": { \"loop\": { \"through\": 1 } }\n"
+    "}\n";
+
+static void check_calculation(phaser_context *context) {
+    phaser_model *model = NULL;
+    phaser_request *request = NULL;
+    phaser_artifact *artifact = NULL;
+    phaser_kernel *kernel = NULL;
+    uint32_t loop_order = 99;
+    int32_t artifact_type = -1;
+    int32_t kernel_type = -2;
+    int32_t capability = -1;
+    size_t coordinates = 0;
+    size_t required = 0;
+    size_t written = 0;
+    char *rendered = NULL;
+
+    printf("calculation lifecycle\n");
+
+    if (phaser_model_load(context, valid_model, strlen(valid_model), &model,
+                          NULL) != PHASER_STATUS_OK) {
+        check(0, "model loaded for the calculation");
+        return;
+    }
+
+    check(phaser_request_parse(context, one_loop_request,
+                               strlen(one_loop_request), &request,
+                               NULL) == PHASER_STATUS_OK,
+          "a one-loop request parses");
+    check(phaser_request_loop_order(request, &loop_order) == PHASER_STATUS_OK &&
+              loop_order == 1,
+          "the request reports its truncation");
+
+    check(phaser_artifact_derive(context, model, request, &artifact, NULL) ==
+              PHASER_STATUS_OK,
+          "the effective potential derives");
+    if (artifact == NULL) {
+        phaser_request_destroy(request);
+        phaser_model_destroy(model);
+        return;
+    }
+
+    check(phaser_artifact_result_type(artifact, &artifact_type) ==
+              PHASER_STATUS_OK &&
+              artifact_type == PHASER_RESULT_COMPLEX64,
+          "the one-loop artifact is complex");
+    check(phaser_artifact_coordinate_count(artifact, &coordinates) ==
+              PHASER_STATUS_OK &&
+              coordinates == 1,
+          "the artifact reports one background coordinate");
+
+    /* The documented sizing call, then an exact fill. */
+    check(phaser_artifact_export(artifact, PHASER_EXPORT_PHASER, NULL, 0,
+                                 &required) ==
+              PHASER_STATUS_INSUFFICIENT_SPACE &&
+              required > 0,
+          "export reports the length it needs");
+    rendered = (char *)malloc(required);
+    if (rendered != NULL) {
+        check(phaser_artifact_export(artifact, PHASER_EXPORT_PHASER, rendered,
+                                     required, &written) == PHASER_STATUS_OK &&
+                  written == required,
+              "export fills an exactly sized buffer");
+        free(rendered);
+    }
+
+    check(phaser_artifact_export(artifact, 7, NULL, 0, &required) ==
+              PHASER_STATUS_INVALID_ARGUMENT,
+          "an unrecognized export target is rejected");
+
+    check(phaser_kernel_compile(context, artifact, NULL, &kernel) ==
+              PHASER_STATUS_OK,
+          "a kernel compiles from the artifact");
+    check(phaser_kernel_result_type(kernel, &kernel_type) == PHASER_STATUS_OK &&
+              kernel_type == artifact_type,
+          "the kernel and artifact agree about the result type");
+    check(phaser_kernel_capability(kernel, &capability) == PHASER_STATUS_OK &&
+              capability == PHASER_CAPABILITY_VALUE_GRADIENT_HESSIAN,
+          "the kernel reports its derivative capability");
+
+    /* Destroyed in reverse construction order. */
+    phaser_kernel_destroy(kernel);
+    phaser_artifact_destroy(artifact);
+    phaser_request_destroy(request);
+    phaser_model_destroy(model);
+}
+
 static void check_misuse(phaser_context *context) {
     size_t count = 0;
 
@@ -220,6 +316,7 @@ int main(void) {
 
     check_valid_model(context);
     check_invalid_model(context);
+    check_calculation(context);
     check_misuse(context);
 
     phaser_context_destroy(context);

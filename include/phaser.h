@@ -129,6 +129,33 @@ typedef enum phaser_point_status {
     PHASER_POINT_SINGULAR_DERIVATIVE = 4
 } phaser_point_status;
 
+/*
+ * Result type of a derived artifact or a compiled kernel.
+ *
+ * A complex result is not an error condition. The one-loop potential is a
+ * genuinely complex function where a scalar mass-squared eigenvalue is
+ * negative, and the principal-branch value is the scientific answer there.
+ */
+typedef enum phaser_result_type {
+    PHASER_RESULT_REAL64 = 0,
+    PHASER_RESULT_COMPLEX64 = 1
+} phaser_result_type;
+
+/* Which derivatives a kernel computes. */
+typedef enum phaser_capability {
+    PHASER_CAPABILITY_VALUE = 0,
+    PHASER_CAPABILITY_VALUE_GRADIENT = 1,
+    PHASER_CAPABILITY_VALUE_GRADIENT_HESSIAN = 2
+} phaser_capability;
+
+/* Rendering target for symbolic export. */
+typedef enum phaser_export_target {
+    /* Compact plain text for terminals and logs. */
+    PHASER_EXPORT_PHASER = 0,
+    /* Delimiter-free MathJax-compatible fragment: no $, no preamble. */
+    PHASER_EXPORT_LATEX = 1
+} phaser_export_target;
+
 /* Diagnostic severity. Mirrors the internal enum. */
 typedef enum phaser_severity {
     PHASER_SEVERITY_ERROR = 0,
@@ -277,6 +304,139 @@ PHASER_API phaser_status phaser_model_parameter_count(const phaser_model *model,
                                                       size_t *out_count);
 PHASER_API phaser_status phaser_model_scalar_field_count(
     const phaser_model *model,
+    size_t *out_count);
+
+/* ---------------------------------------------------------------------------
+ * Request
+ *
+ * A parsed calculation request. It is reusable: one request may be derived
+ * against several models, so it is a handle rather than a parameter.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Parses a calculation request from UTF-8 JSON. Diagnostics behave exactly as
+ * for phaser_model_load: produced only on PHASER_STATUS_INVALID_SOURCE, owned
+ * by the caller, and not borrowing from `source`.
+ *
+ * The request must not outlive its context.
+ */
+PHASER_API phaser_status phaser_request_parse(
+    phaser_context *context,
+    const void *source,
+    size_t source_length,
+    phaser_request **out_request,
+    phaser_diagnostics **out_diagnostics);
+
+/* Destroys a request. NULL is a no-op. */
+PHASER_API void phaser_request_destroy(phaser_request *request);
+
+/* Loop order the request truncates at. */
+PHASER_API phaser_status phaser_request_loop_order(const phaser_request *request,
+                                                   uint32_t *out_loop_order);
+
+/* Number of background coordinates the request varies. */
+PHASER_API phaser_status phaser_request_coordinate_count(
+    const phaser_request *request,
+    size_t *out_count);
+
+/* ---------------------------------------------------------------------------
+ * Artifact
+ *
+ * The symbolic effective-potential artifact derived from a model and a request.
+ * Derivation is where the physics happens; it is done once and reused.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Derives the effective potential. `model` and `request` must outlive the call
+ * but not the artifact, which does not borrow from them.
+ *
+ * Reports PHASER_STATUS_INVALID_SOURCE with diagnostics when the model and
+ * request are individually valid but cannot be combined -- an unknown
+ * background coordinate, for instance.
+ */
+PHASER_API phaser_status phaser_artifact_derive(
+    phaser_context *context,
+    const phaser_model *model,
+    const phaser_request *request,
+    phaser_artifact **out_artifact,
+    phaser_diagnostics **out_diagnostics);
+
+/* Destroys an artifact. NULL is a no-op. */
+PHASER_API void phaser_artifact_destroy(phaser_artifact *artifact);
+
+/* Typed metadata, so a consumer need not parse JSON to inspect an artifact. */
+PHASER_API phaser_status phaser_artifact_loop_order(
+    const phaser_artifact *artifact,
+    uint32_t *out_loop_order);
+PHASER_API phaser_status phaser_artifact_coordinate_count(
+    const phaser_artifact *artifact,
+    size_t *out_count);
+PHASER_API phaser_status phaser_artifact_contribution_count(
+    const phaser_artifact *artifact,
+    size_t *out_count);
+/* Writes one of phaser_result_type. */
+PHASER_API phaser_status phaser_artifact_result_type(
+    const phaser_artifact *artifact,
+    int32_t *out_result_type);
+
+/*
+ * Renders the artifact's equations as UTF-8 text for `target`.
+ *
+ * Sizing follows phaser_diagnostics_render exactly: pass a NULL buffer to learn
+ * the required length, which is written to `out_length` when it is not NULL. No
+ * null terminator is written.
+ */
+PHASER_API phaser_status phaser_artifact_export(const phaser_artifact *artifact,
+                                                int32_t target,
+                                                void *buffer,
+                                                size_t capacity,
+                                                size_t *out_length);
+
+/* ---------------------------------------------------------------------------
+ * Kernel
+ *
+ * A compiled numerical program for an artifact. Compilation lowers the symbolic
+ * graph once; evaluation then runs without allocating.
+ * ------------------------------------------------------------------------- */
+
+typedef struct phaser_kernel_options {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    /* One of phaser_capability. */
+    int32_t capability;
+    uint32_t reserved;
+} phaser_kernel_options;
+
+/*
+ * Compiles a kernel. `options` may be NULL for value, gradient, and Hessian.
+ * The artifact must outlive the kernel, which does not borrow from it.
+ *
+ * Reports PHASER_STATUS_UNSUPPORTED when the artifact does not carry the
+ * requested derivatives -- a distinct outcome from an invalid argument,
+ * because the request was well formed and the capability simply was not
+ * derived.
+ */
+PHASER_API phaser_status phaser_kernel_compile(
+    phaser_context *context,
+    const phaser_artifact *artifact,
+    const phaser_kernel_options *options,
+    phaser_kernel **out_kernel);
+
+/* Destroys a kernel. NULL is a no-op. */
+PHASER_API void phaser_kernel_destroy(phaser_kernel *kernel);
+
+/* Writes one of phaser_result_type. A caller uses this to choose between the
+   real and complex evaluation entry points. */
+PHASER_API phaser_status phaser_kernel_result_type(const phaser_kernel *kernel,
+                                                   int32_t *out_result_type);
+/* Writes one of phaser_capability. */
+PHASER_API phaser_status phaser_kernel_capability(const phaser_kernel *kernel,
+                                                  int32_t *out_capability);
+PHASER_API phaser_status phaser_kernel_coordinate_count(
+    const phaser_kernel *kernel,
+    size_t *out_count);
+PHASER_API phaser_status phaser_kernel_parameter_count(
+    const phaser_kernel *kernel,
     size_t *out_count);
 
 /* ---------------------------------------------------------------------------
