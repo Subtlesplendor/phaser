@@ -213,7 +213,27 @@ jobs:
           "$RUNNER_TEMP/zig/zig" build mutation -- check
           "$RUNNER_TEMP/zig/zig" build mutation -- list-mutants --format text \
             > "$RUNNER_TEMP/mutants.txt"
-          echo "total mutants: $(wc -l < "$RUNNER_TEMP/mutants.txt")"
+
+          # `list-mutants --format text` ends its own output with a
+          # `N mutants` summary line, which is not a mutant record; counting it
+          # with `wc -l` over-reports the total by one. Every real record
+          # starts with `m_`, which nothing else in the format does, so that
+          # prefix is what mutation_rotation.sh's own downstream parsing
+          # implicitly relies on too.
+          total=$(grep -c '^m_' "$RUNNER_TEMP/mutants.txt")
+          echo "total mutants: $total"
+
+          # A (operator, path) cell count and checksum, so a run that reports
+          # an empty rotation group (decision 0012's known open question) is
+          # checkable against a local run rather than only against itself: two
+          # runs that print the same checksum saw the same mutants, in the same
+          # cells, regardless of platform or listing order.
+          cells=$(awk '/^m_/ { split($3, loc, ":"); print $2 "\t" loc[1] }' \
+            "$RUNNER_TEMP/mutants.txt" | sort -u)
+          echo "distinct cells: $(printf '%s\n' "$cells" | grep -c .)"
+          echo "cell-set checksum: $(printf '%s\n' "$cells" | sha256sum | cut -d' ' -f1)"
+          echo "--- mutants per operator ---"
+          awk '/^m_/ { print $2 }' "$RUNNER_TEMP/mutants.txt" | sort | uniq -c
 
       - name: Plan tonight's rotation group
         shell: bash
