@@ -34,8 +34,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // On Windows the static library and the shared library's import library
+    // would both be `phaser.lib`, and the second one installed silently
+    // replaces the first -- leaving static linkage with no artifact at all. The
+    // static library therefore carries a distinct name there. ELF and Mach-O
+    // have no such collision (`libphaser.a` beside `libphaser.so`/`.dylib`), so
+    // they keep the plain name. Recorded in Language and Interoperability
+    // section 4.
+    const windows_target = target.result.os.tag == .windows;
+    const static_library_name = if (windows_target) "phaser_static" else "phaser";
+
     const library = b.addLibrary(.{
-        .name = "phaser",
+        .name = static_library_name,
         .root_module = phaser_module,
         .linkage = .static,
     });

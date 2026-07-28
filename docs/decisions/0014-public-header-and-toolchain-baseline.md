@@ -88,7 +88,7 @@ build clients on.
 
 Claiming it commits Milestone 4 to:
 
-- **A third native test tier.** `windows-latest`, running the same bounded
+- **A third native test tier.** `windows-2025`, running the same bounded
   suites the other two platforms run, per §10's rule that cross-compilation
   checks portability but does not replace native execution.
 - **A third compiler family.** MSVC (`cl.exe`) is the compiler Windows C clients
@@ -103,7 +103,11 @@ Claiming it commits Milestone 4 to:
   macro must distinguish building from consuming — a distinction the ELF-only
   form would not have needed.
 - **DLL packaging.** A shared build produces `phaser.dll` and its import
-  library; both are consumed by the conformance client.
+  library; both are consumed by the conformance client. The import library is
+  also `phaser.lib`, which collides with the static library's name, so the
+  static library is `phaser_static.lib` on Windows only. Without the rename the
+  second artifact installed silently replaces the first and static linkage has
+  nothing to link against. ELF and Mach-O have no such collision.
 - **A second symbol-allow-list mechanism.** PE exports are enumerated with
   `dumpbin /exports` rather than `nm`, so the allow-list check has two
   implementations that must agree on the same documented public set.
@@ -145,7 +149,7 @@ stated.**
 - **Exact dependency and source.** GCC and Clang as preinstalled on the
   `ubuntu-24.04` GitHub-hosted runner image, Apple Clang as preinstalled on
   `macos-15`, and MSVC (`cl.exe`) with `dumpbin` as preinstalled on
-  `windows-latest`. No package is installed, downloaded, pinned, or vendored;
+  `windows-2025`. No package is installed, downloaded, pinned, or vendored;
   the proposal is to *invoke* compilers the runner images already contain.
 - **Purpose.** To compile `include/phaser.h` and the C conformance client
   through a toolchain that shares no front end with the implementation, as

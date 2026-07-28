@@ -72,6 +72,13 @@ jobs:
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build -Doptimize=ReleaseSafe'
 
+      - name: Check the C ABI with independent compilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zig/zig" build -Doptimize=ReleaseSafe --prefix "$RUNNER_TEMP/prefix"
+          tools/ci/check_abi.sh "$RUNNER_TEMP/prefix"
+
       - name: Test deterministic core in Debug
         if: github.event_name == 'pull_request'
         shell: bash
@@ -114,6 +121,58 @@ jobs:
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build -Doptimize=ReleaseSafe'
 
+      - name: Check the C ABI with independent compilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zig/zig" build -Doptimize=ReleaseSafe --prefix "$RUNNER_TEMP/prefix"
+          tools/ci/check_abi.sh "$RUNNER_TEMP/prefix"
+
       - name: Test full suite in ReleaseSafe
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseSafe'
+
+  build-test-windows:
+    name: Build and test (Windows x86-64)
+    if: github.event_name == 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Git Bash is preinstalled, so the same installer serves all three
+      # platforms rather than growing a PowerShell twin.
+      - name: Install pinned Zig toolchain
+        shell: bash
+        run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
+
+      - name: Verify pinned Zig toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zig/zig.exe" version
+          [[ "$("$RUNNER_TEMP/zig/zig.exe" version)" == "$(< .zigversion)" ]]
+
+      - name: Build library
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig.exe" build -Doptimize=ReleaseSafe'
+
+      - name: Test full suite in ReleaseSafe
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig.exe" build test -Doptimize=ReleaseSafe'
+
+      - name: Install to a prefix for the ABI checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zig/zig.exe" build -Doptimize=ReleaseSafe --prefix "$RUNNER_TEMP/prefix"
+
+      # MSVC and dumpbin are the independent toolchain here, located through the
+      # preinstalled vswhere rather than a setup action.
+      - name: Check the C ABI with MSVC
+        shell: pwsh
+        run: tools/ci/check_abi.ps1 -Prefix "$env:RUNNER_TEMP/prefix"

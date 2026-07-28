@@ -92,13 +92,21 @@ A native Phaser distribution is expected eventually to contain:
 
 ```text
 include/phaser.h
-lib/libphaser.a
-lib/libphaser.so, libphaser.dylib, or phaser.dll
+lib/libphaser.a          (Windows: lib/phaser_static.lib)
+lib/libphaser.so, libphaser.dylib
+bin/phaser.dll, lib/phaser.lib   (Windows: the DLL and its import library)
 bin/phaser
 ```
 
 The build MAY provide static libraries, shared libraries, or both. The same
 public header and behavioral contract apply to both linkage modes.
+
+The static library carries a distinct name on Windows because the plain name
+collides: a shared build produces `phaser.dll` together with an import library
+also called `phaser.lib`, which would silently replace the static
+`phaser.lib` in the same directory and leave static linkage with no artifact.
+ELF and Mach-O have no such collision, so they keep `libphaser.a` beside
+`libphaser.so` or `libphaser.dylib`.
 
 The repository owns the authoritative `include/phaser.h`. A generated header MAY
 be used only if its generator is deterministic, its output is checked in or
