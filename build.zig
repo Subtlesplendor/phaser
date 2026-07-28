@@ -53,11 +53,24 @@ pub fn build(b: *std.Build) void {
     // link with "relocation R_X86_64_32S ... can not be used when making a PIE
     // object". Building the archive PIC is what makes static linkage work for a
     // consumer who has not been told to pass `-no-pie`.
+    //
+    // They are also stripped, which removes Zig's stack-trace symbolizer along
+    // with the debug info it reads.
+    //
+    // That machinery has no consumer here. A C caller cannot act on a Zig stack
+    // trace, and the interoperability specification requires that no Zig panic
+    // cross the boundary at all. What it does have is cost: it roughly triples
+    // the archive, and on Windows it reaches for `LdrRegisterDllNotification`,
+    // which ntdll exports at runtime but the Windows SDK import library does
+    // not, so a consumer's static link fails on a symbol belonging to a feature
+    // they cannot use. Safety checks are unaffected -- ReleaseSafe still traps;
+    // it simply does not symbolize.
     const library_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .pic = true,
+        .strip = true,
     });
 
     const library = b.addLibrary(.{

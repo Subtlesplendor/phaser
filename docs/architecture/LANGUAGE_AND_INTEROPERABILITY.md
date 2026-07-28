@@ -118,6 +118,15 @@ The static library MUST also carry the compiler-support routines the
 implementation language would otherwise contribute at its own link step, because
 a distributed archive is linked by the consumer's toolchain rather than ours.
 
+The distributed products are stripped, which removes the implementation
+language's stack-trace symbolizer along with its debug info. A client cannot act
+on an implementation-language stack trace, and §5.7 requires that no such panic
+cross the boundary in any case. Stripping also removes what that machinery
+drags in: it roughly tripled the artifacts, and on Windows it referenced an
+ntdll entry point the platform SDK's import library does not export, failing a
+consumer's static link over a feature they could not use. Runtime safety checks
+are unaffected; a violated check still traps, without symbolizing.
+
 ### 4.1 Linking statically on Windows
 
 Two things a Windows consumer must know, neither of which applies to Linux or
