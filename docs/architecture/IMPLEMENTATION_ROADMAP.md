@@ -449,13 +449,58 @@ each; see `zig build bench` for the full table and its variance.
 Exercise a useful scientific calculation through the first public client
 boundaries while the ABI remains experimental.
 
-### Scope
+### Prerequisites: outstanding
 
-- Experimental C ABI version 0.
-- C conformance client.
-- Python extension and high-level objects.
-- Jupyter rich display backed by the LaTeX exporter.
+Milestone 3 recorded its prerequisites once they were discharged. Milestone 4
+records them while some are still open, because the open ones gate when
+implementation may begin at all:
+
+- [Decision 0013](../decisions/0013-c-abi-v0-surface.md) fixes the ABI version 0
+  handle set, ownership model, status space, and diagnostics lifetime. Accepted.
+- [Decision 0014](../decisions/0014-public-header-and-toolchain-baseline.md)
+  fixes the authoritative header, the minimum C and C++ language versions, the
+  linkage and platform matrix, and the public-symbol allow-list. Accepted except
+  for its independent-compiler dependency proposal, which awaits the repository
+  owner's approval.
+- [Language and Interoperability §5](LANGUAGE_AND_INTEROPERABILITY.md#5-c-abi)
+  carries the operation-level contract those decisions imply. Its exact
+  signatures were deferred "until the corresponding core lifecycles have
+  executable prototypes"; Milestone 3 produced them, so the deferral has expired.
+- The Phase B dependencies are unapproved and unproposed: CPython Limited API
+  headers, a plotting package, and notebook-execution tooling. Section 17 still
+  defers the last two, while section 3 requires a notebook that cannot be
+  produced without them — the deferral and the requirement have to be resolved
+  together. No Phase B work may begin before each dependency has been proposed
+  and approved under
+  [Phaser Engineering Style](../../ENGINEERING_STYLE.md) and the repository
+  [agent instructions](../../AGENTS.md).
+
+### Phases
+
+The milestone splits at the dependency boundary. Phase A adds no dependency to
+the library itself and can proceed on the discharged prerequisites alone; Phase
+B cannot start until its dependencies are approved. The split is sequencing, not
+two milestones: the common gate closes once, over both phases.
+
+#### Phase A: the language-neutral boundary
+
+- Experimental C ABI version 0 over the Milestone 3 lifecycle: context, model,
+  request, artifact, kernel, parameter point, binding, diagnostics.
+- The authoritative `include/phaser.h`, built and executed against both static
+  and shared libraries.
+- C conformance client under `examples/`, exercising parse, diagnose, derive,
+  compile, bind, query workspace, and evaluate.
+- Header layout, constant, and public-symbol checks under independent C and C++
+  compilers.
 - Stable command-line workflows for the supported slice.
+
+#### Phase B: the researcher-facing surface
+
+- Python extension against the Limited API, and the high-level objects over it.
+- A `ctypes` client maintained as an independent ABI conformance consumer.
+- Jupyter rich display backed by the LaTeX exporter, without making IPython a
+  required dependency.
+- The required notebook described below.
 
 ### Required notebook
 
@@ -476,12 +521,39 @@ The underlying plotted data must also be covered by machine-readable tests.
 
 ### Exit criteria
 
-- Direct Zig, C, Python, and CLI results agree.
-- Ownership, diagnostic lifetime, and invalid-buffer behavior are tested.
+The milestone exits when both phases have closed. Phase A's criteria are
+independently checkable and close first.
+
+#### Phase A
+
+- Direct Zig, C, and CLI results agree, on the same models and parameter points
+  the Milestone 2 and Milestone 3 examples already commit.
+- Ownership, diagnostic lifetime, and invalid-buffer behavior are tested,
+  including repeated destruction and null handles at every documented
+  nullability boundary.
+- `phaser.h` compiles clean as C and as C++ under independent compilers, and the
+  header's layout, constants, and exported-symbol set are checked against the
+  ABI rather than against themselves.
+- Static and shared linkage both execute the C conformance client.
+- Per-point statuses cross the boundary undamaged: a negative eigenvalue remains
+  a successful complex result, and no point-level outcome is collapsed into a
+  control-plane status code.
+- ABI version 0 remains explicitly experimental, and its version query says so.
+
+#### Phase B
+
+- Python results agree with the direct Zig, C, and CLI results.
 - Python scalar and buffer-based batch calls agree.
+- The `ctypes` client agrees with the extension, having been built from the
+  header rather than from the extension's own understanding of it.
 - The notebook runs from a fresh kernel using public APIs only.
 - Equations and plots provide an effective human inspection path.
-- ABI version 0 remains explicitly experimental.
+- The notebook's plotted arrays are asserted in machine tests, not only plotted.
+
+### Gate accounting
+
+Filled in as each phase closes, in the form Milestones 2 and 3 use: one row per
+exit criterion, naming the evidence that closes it.
 
 ## 9. Milestone 5: C++ and Wolfram Language interoperability
 
@@ -750,7 +822,8 @@ have demonstrated their usefulness for the modern 3D EFT workflow.
 - The first complete higher-loop gauge-theory target.
 - The first beta-function derivation scope.
 - Detailed dimensional-reduction accuracy and supported gauge-model subset.
-- Plotting and notebook-execution dependencies.
-- Committed notebook-output and rendered-artifact policy.
+- Plotting and notebook-execution dependencies. Milestone 4 Phase B is where
+  this deferral runs out: its required notebook cannot be produced without both.
+- Committed notebook-output and rendered-artifact policy. Same expiry.
 - Release numbering and compatibility promises for each milestone.
 - Calendar estimates and staffing.
