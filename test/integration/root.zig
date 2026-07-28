@@ -3,6 +3,8 @@ test {
     _ = @import("value_graph.zig");
     _ = @import("symbolic_export.zig");
     _ = @import("cli_examples.zig");
+    _ = @import("abi_layout.zig");
+    _ = @import("abi_lifecycle.zig");
     // Last; see `test/conformance/root.zig`.
     _ = @import("leak_check.zig");
 }

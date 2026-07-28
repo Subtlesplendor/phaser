@@ -1,0 +1,170 @@
+//! Status spaces for the C ABI.
+//!
+//! Two spaces exist and are never converted into one another. `Status` is the
+//! control plane: whether a call was structurally well formed. `PointStatus` is
+//! the per-point numerical outcome and mirrors the kernel's own status value
+//! for value.
+//!
+//! The mirroring is deliberate coupling. It is what lets a caller read a batch
+//! of outcomes without a translation table, and the comptime checks below are
+//! what make a divergence a build failure here rather than a silent
+//! misinterpretation at a user's boundary.
+
+const std = @import("std");
+const foundation = @import("../foundation/root.zig");
+const kernel = @import("../kernel/root.zig");
+
+/// Control-plane status. Values are ABI and must not be renumbered while the
+/// ABI version is unchanged.
+pub const Status = enum(c_int) {
+    ok = 0,
+    invalid_argument = 1,
+    invalid_source = 2,
+    unsupported = 3,
+    limit_exceeded = 4,
+    insufficient_space = 5,
+    out_of_memory = 6,
+    internal = 7,
+};
+
+/// Per-point numerical outcome, mirroring `kernel.Status`.
+pub const PointStatus = enum(c_int) {
+    ok = 0,
+    non_finite = 1,
+    division_by_zero = 2,
+    nonconvergent = 3,
+    singular_derivative = 4,
+};
+
+/// Diagnostic severity, mirroring `foundation.Severity`.
+pub const Severity = enum(i32) {
+    err = 0,
+    warning = 1,
+    note = 2,
+};
+
+/// Diagnostic category, mirroring `foundation.Category`.
+pub const Category = enum(i32) {
+    source = 0,
+    capacity = 1,
+    allocation = 2,
+    configuration = 3,
+    json = 4,
+    expression = 5,
+    model = 6,
+    calculation = 7,
+};
+
+pub fn fromKernelStatus(status: kernel.Status) PointStatus {
+    return switch (status) {
+        .ok => .ok,
+        .non_finite => .non_finite,
+        .division_by_zero => .division_by_zero,
+        .nonconvergent => .nonconvergent,
+        .singular_derivative => .singular_derivative,
+    };
+}
+
+pub fn fromSeverity(severity: foundation.Severity) Severity {
+    return switch (severity) {
+        .err => .err,
+        .warning => .warning,
+        .note => .note,
+    };
+}
+
+pub fn fromCategory(category: foundation.Category) Category {
+    return switch (category) {
+        .source => .source,
+        .capacity => .capacity,
+        .allocation => .allocation,
+        .configuration => .configuration,
+        .json => .json,
+        .expression => .expression,
+        .model => .model,
+        .calculation => .calculation,
+    };
+}
+
+/// Asserts that an ABI mirror enum has exactly the same tag names, in the same
+/// order, with the same numeric values, as the internal enum it mirrors.
+///
+/// Name equality is the part that matters. Comparing only the count and the
+/// values would still pass if two internal tags were transposed, which is
+/// precisely the change that would silently repurpose a value a client has
+/// already recorded.
+fn assertMirrors(comptime Internal: type, comptime Abi: type) void {
+    const internal_fields = @typeInfo(Internal).@"enum".fields;
+    const abi_fields = @typeInfo(Abi).@"enum".fields;
+
+    if (internal_fields.len != abi_fields.len) {
+        @compileError(
+            "ABI enum " ++ @typeName(Abi) ++ " has a different number of tags than " ++
+                @typeName(Internal) ++ "; adding a tag is an ABI change",
+        );
+    }
+
+    for (internal_fields, abi_fields) |internal, abi| {
+        if (!std.mem.eql(u8, internal.name, abi.name)) {
+            @compileError(
+                "ABI enum " ++ @typeName(Abi) ++ " tag '" ++ abi.name ++
+                    "' does not mirror " ++ @typeName(Internal) ++ " tag '" ++
+                    internal.name ++ "'",
+            );
+        }
+        if (internal.value != abi.value) {
+            @compileError(
+                "ABI enum " ++ @typeName(Abi) ++ " tag '" ++ abi.name ++
+                    "' has a different numeric value than its " ++
+                    @typeName(Internal) ++ " counterpart",
+            );
+        }
+    }
+}
+
+comptime {
+    assertMirrors(kernel.Status, PointStatus);
+    assertMirrors(foundation.Severity, Severity);
+    assertMirrors(foundation.Category, Category);
+}
+
+test "point statuses mirror the kernel statuses they report" {
+    // The oracle is the internal enum: every kernel status must map to an ABI
+    // status with the same name and the same number, because a client reads the
+    // number and the documentation promises the name.
+    inline for (@typeInfo(kernel.Status).@"enum".fields) |field| {
+        const internal: kernel.Status = @enumFromInt(field.value);
+        const mapped = fromKernelStatus(internal);
+        try std.testing.expectEqualStrings(field.name, @tagName(mapped));
+        try std.testing.expectEqual(
+            @as(c_int, @intCast(field.value)),
+            @intFromEnum(mapped),
+        );
+    }
+}
+
+test "severities and categories mirror their foundation counterparts" {
+    inline for (@typeInfo(foundation.Severity).@"enum".fields) |field| {
+        const mapped = fromSeverity(@as(foundation.Severity, @enumFromInt(field.value)));
+        try std.testing.expectEqualStrings(field.name, @tagName(mapped));
+        try std.testing.expectEqual(@as(i32, @intCast(field.value)), @intFromEnum(mapped));
+    }
+    inline for (@typeInfo(foundation.Category).@"enum".fields) |field| {
+        const mapped = fromCategory(@as(foundation.Category, @enumFromInt(field.value)));
+        try std.testing.expectEqualStrings(field.name, @tagName(mapped));
+        try std.testing.expectEqual(@as(i32, @intCast(field.value)), @intFromEnum(mapped));
+    }
+}
+
+test "control-plane statuses keep the numbers the header publishes" {
+    // These are the values in include/phaser.h. A renumbering here is an ABI
+    // break; this test is the reminder rather than the permission.
+    try std.testing.expectEqual(@as(c_int, 0), @intFromEnum(Status.ok));
+    try std.testing.expectEqual(@as(c_int, 1), @intFromEnum(Status.invalid_argument));
+    try std.testing.expectEqual(@as(c_int, 2), @intFromEnum(Status.invalid_source));
+    try std.testing.expectEqual(@as(c_int, 3), @intFromEnum(Status.unsupported));
+    try std.testing.expectEqual(@as(c_int, 4), @intFromEnum(Status.limit_exceeded));
+    try std.testing.expectEqual(@as(c_int, 5), @intFromEnum(Status.insufficient_space));
+    try std.testing.expectEqual(@as(c_int, 6), @intFromEnum(Status.out_of_memory));
+    try std.testing.expectEqual(@as(c_int, 7), @intFromEnum(Status.internal));
+}
