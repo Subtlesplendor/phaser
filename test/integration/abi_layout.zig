@@ -210,3 +210,56 @@ test "result type and capability values are the ones the header publishes" {
         phaser.abi.status.fromArtifactResultType(.complex64),
     );
 }
+
+const Complex = extern struct { re: f64, im: f64 };
+
+const Outputs = extern struct {
+    struct_size: u32,
+    abi_version: u32,
+    values: ?[*]f64,
+    value_count: usize,
+    gradients: ?[*]f64,
+    gradient_count: usize,
+    hessians: ?[*]f64,
+    hessian_count: usize,
+    statuses: ?[*]i32,
+    status_count: usize,
+};
+
+test "a complex value is two doubles in declaration order" {
+    // Not C99 _Complex, which is optional in C11 and absent from C++. The
+    // layout has to match what a client writing {re, im} expects.
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(Complex, "re"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(Complex, "im"));
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(Complex));
+    try std.testing.expectEqual(@as(usize, 8), @alignOf(Complex));
+}
+
+test "output descriptions have the layout the header publishes" {
+    // Pointer-sized fields, so these offsets assume a 64-bit target -- which is
+    // every platform in the supported matrix. A 32-bit port would need this
+    // test parameterized rather than silently passing on different numbers.
+    try std.testing.expectEqual(@as(usize, 8), @sizeOf(usize));
+
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(Outputs, "struct_size"));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(Outputs, "abi_version"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(Outputs, "values"));
+    try std.testing.expectEqual(@as(usize, 16), @offsetOf(Outputs, "value_count"));
+    try std.testing.expectEqual(@as(usize, 24), @offsetOf(Outputs, "gradients"));
+    try std.testing.expectEqual(@as(usize, 32), @offsetOf(Outputs, "gradient_count"));
+    try std.testing.expectEqual(@as(usize, 40), @offsetOf(Outputs, "hessians"));
+    try std.testing.expectEqual(@as(usize, 48), @offsetOf(Outputs, "hessian_count"));
+    try std.testing.expectEqual(@as(usize, 56), @offsetOf(Outputs, "statuses"));
+    try std.testing.expectEqual(@as(usize, 64), @offsetOf(Outputs, "status_count"));
+    try std.testing.expectEqual(@as(usize, 72), @sizeOf(Outputs));
+    try std.testing.expectEqual(@as(usize, 8), @alignOf(Outputs));
+}
+
+test "the per-point status array element is the published width" {
+    // The kernel writes a one-byte enum internally; the ABI publishes int32_t
+    // so a client never has to know the width of an internal tag. The widening
+    // is what the boundary's extra workspace scratch exists for.
+    const phaser = @import("phaser");
+    try std.testing.expectEqual(@as(usize, 1), @sizeOf(phaser.kernel.Status));
+    try std.testing.expectEqual(@as(usize, 4), @sizeOf(i32));
+}

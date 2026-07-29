@@ -440,6 +440,169 @@ PHASER_API phaser_status phaser_kernel_parameter_count(
     size_t *out_count);
 
 /* ---------------------------------------------------------------------------
+ * Parameter point
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Parses a parameter point from UTF-8 JSON: values for every model parameter,
+ * a renormalization scheme, and a reference scale.
+ *
+ * Diagnostics behave as everywhere else. The point is reusable -- one point may
+ * be bound to several kernels -- and must not outlive its context.
+ */
+PHASER_API phaser_status phaser_point_parse(
+    phaser_context *context,
+    const void *source,
+    size_t source_length,
+    phaser_point **out_point,
+    phaser_diagnostics **out_diagnostics);
+
+/* Destroys a parameter point. NULL is a no-op. */
+PHASER_API void phaser_point_destroy(phaser_point *point);
+
+/* The point's renormalization reference scale. */
+PHASER_API phaser_status phaser_point_reference_scale(const phaser_point *point,
+                                                      double *out_scale);
+
+/* ---------------------------------------------------------------------------
+ * Binding
+ *
+ * A kernel bound to a parameter point. Binding does the parameter-dependent
+ * work once, so a batch pays for it once rather than once per point.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Binds a parameter point to a kernel.
+ *
+ * The point is validated against the complete model, not merely against the
+ * channels this kernel happens to use, so a kernel depending on a subset still
+ * requires a complete and consistent point. A point missing a parameter, naming
+ * an unknown one, or declaring a scheme the artifact did not, reports
+ * PHASER_STATUS_INVALID_ARGUMENT.
+ *
+ * The kernel, the model, and the point must outlive the binding.
+ */
+PHASER_API phaser_status phaser_binding_create(phaser_context *context,
+                                               const phaser_kernel *kernel,
+                                               const phaser_model *model,
+                                               const phaser_point *point,
+                                               phaser_binding **out_binding);
+
+/* Destroys a binding. NULL is a no-op. */
+PHASER_API void phaser_binding_destroy(phaser_binding *binding);
+
+/*
+ * Exact workspace requirement for evaluating `point_count` points.
+ *
+ * Both out parameters may be NULL. The byte count is exact rather than an
+ * estimate: a buffer of exactly this size succeeds and one byte less is
+ * rejected. Pass the value straight back to the evaluation call; it is this
+ * ABI's requirement and is not necessarily the core's, because the boundary
+ * needs a little scratch of its own to widen per-point statuses.
+ */
+PHASER_API phaser_status phaser_binding_workspace(const phaser_binding *binding,
+                                                  size_t point_count,
+                                                  size_t *out_bytes,
+                                                  size_t *out_alignment);
+
+PHASER_API phaser_status phaser_binding_coordinate_count(
+    const phaser_binding *binding,
+    size_t *out_count);
+/* Writes one of phaser_result_type. */
+PHASER_API phaser_status phaser_binding_result_type(
+    const phaser_binding *binding,
+    int32_t *out_result_type);
+
+/* ---------------------------------------------------------------------------
+ * Evaluation
+ *
+ * Allocation-free. The caller provides every buffer, and the required workspace
+ * size is queried beforehand.
+ * ------------------------------------------------------------------------- */
+
+/* A complex value. Two doubles, not C99 _Complex, which is optional in C11 and
+   absent from C++. */
+typedef struct phaser_complex {
+    double re;
+    double im;
+} phaser_complex;
+
+/*
+ * Output buffers for one real evaluation call.
+ *
+ * `statuses` receives one phaser_point_status per point. It is required, and
+ * its length must equal the point count: an unwritten entry must never be
+ * mistaken for success. Gradients and Hessians may be NULL with a zero count
+ * when the kernel's capability does not include them.
+ */
+typedef struct phaser_outputs {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    /* point_count entries. */
+    double *values;
+    size_t value_count;
+    /* point_count * coordinate_count, row-major. */
+    double *gradients;
+    size_t gradient_count;
+    /* point_count * coordinate_count * coordinate_count, row-major. */
+    double *hessians;
+    size_t hessian_count;
+    /* point_count entries, each one of phaser_point_status. */
+    int32_t *statuses;
+    size_t status_count;
+} phaser_outputs;
+
+/* The complex counterpart. A loop-containing selection uses this even where a
+   point's imaginary component happens to be zero. */
+typedef struct phaser_complex_outputs {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    phaser_complex *values;
+    size_t value_count;
+    phaser_complex *gradients;
+    size_t gradient_count;
+    phaser_complex *hessians;
+    size_t hessian_count;
+    int32_t *statuses;
+    size_t status_count;
+} phaser_complex_outputs;
+
+/*
+ * Evaluates `point_count` background points with real results.
+ *
+ * `backgrounds` is point_count * coordinate_count doubles, row-major.
+ * `workspace` must be at least the size phaser_binding_workspace reported for
+ * this point count, and aligned as it reported.
+ *
+ * Returns PHASER_STATUS_OK when the call itself was well formed, whatever the
+ * individual points reported. A batch in which every point is non-finite is a
+ * successful call; the client reads the status array to learn that. A
+ * control-plane failure writes no statuses at all.
+ *
+ * Reports PHASER_STATUS_INVALID_ARGUMENT when called on a binding whose result
+ * type is complex. The real part is NOT projected -- that would silently
+ * discard the imaginary component the calculation exists to produce.
+ */
+PHASER_API phaser_status phaser_evaluate(const phaser_binding *binding,
+                                         const double *backgrounds,
+                                         size_t background_count,
+                                         size_t point_count,
+                                         void *workspace,
+                                         size_t workspace_bytes,
+                                         phaser_outputs *outputs);
+
+/* The complex counterpart. Reports PHASER_STATUS_INVALID_ARGUMENT on a binding
+   whose result type is real. */
+PHASER_API phaser_status phaser_evaluate_complex(
+    const phaser_binding *binding,
+    const double *backgrounds,
+    size_t background_count,
+    size_t point_count,
+    void *workspace,
+    size_t workspace_bytes,
+    phaser_complex_outputs *outputs);
+
+/* ---------------------------------------------------------------------------
  * Diagnostics
  *
  * A diagnostics handle is immutable once produced and owned by the caller. It

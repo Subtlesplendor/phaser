@@ -413,8 +413,8 @@ authoritative. Every operation marked fallible returns `phaser_status`.
 | Request | `phaser_request_parse`, `phaser_request_destroy`, `phaser_request_loop_order`, `phaser_request_coordinate_count` | The parsed calculation request, reusable across derivations. |
 | Artifact | `phaser_artifact_derive`, `phaser_artifact_destroy`, `phaser_artifact_loop_order`, `phaser_artifact_coordinate_count`, `phaser_artifact_contribution_count`, `phaser_artifact_result_type`, `phaser_artifact_export` | Export renders Phaser notation or LaTeX per [Symbolic Export](SYMBOLIC_EXPORT.md). |
 | Kernel | `phaser_kernel_compile`, `phaser_kernel_destroy`, `phaser_kernel_result_type`, `phaser_kernel_capability`, `phaser_kernel_coordinate_count`, `phaser_kernel_parameter_count` | Typed queries, so no client parses JSON to size a buffer. |
-| Point | `phaser_point_parse`, `phaser_point_destroy` | A parsed parameter point, bindable more than once. |
-| Binding | `phaser_binding_create`, `phaser_binding_destroy`, `phaser_binding_workspace` | Workspace returns exact bytes and alignment for a point count. |
+| Point | `phaser_point_parse`, `phaser_point_destroy`, `phaser_point_reference_scale` | A parsed parameter point, bindable more than once. |
+| Binding | `phaser_binding_create`, `phaser_binding_destroy`, `phaser_binding_workspace`, `phaser_binding_coordinate_count`, `phaser_binding_result_type` | Workspace returns exact bytes and alignment for a point count. |
 | Evaluation | `phaser_evaluate`, `phaser_evaluate_complex` | Allocation-free. Separate entry points by result type; no mode flag. |
 | Diagnostics | `phaser_diagnostics_destroy`, `phaser_diagnostics_count`, `phaser_diagnostics_at`, `phaser_diagnostics_render` | Typed access is primary; rendering is a convenience over it. |
 
@@ -432,8 +432,12 @@ Requirements on this surface:
   count, so an unwritten entry is never mistaken for success.
 - Complex values cross as an explicit struct of two `double` fields, not as C99
   `_Complex`.
-- Workspace sizes cross unchanged from the core's exact layout query; the ABI
-  MUST NOT round them up.
+- The workspace size an evaluation requires MUST be queryable before the call,
+  MUST be exact rather than an estimate, and MUST be the figure the caller
+  passes back. It is the boundary's requirement, which is not necessarily the
+  core's: widening the kernel's per-point statuses to the published `int32_t`
+  needs scratch, and evaluation may not allocate. A caller queries the number
+  and does not need to know why it is what it is.
 - Every text-producing operation uses one sizing convention: a null buffer
   reports the required length and `PHASER_STATUS_INSUFFICIENT_SPACE`, a large
   enough buffer is filled exactly, and no null terminator is written. A short
@@ -524,6 +528,29 @@ is not the intended production Python binding.
 
 Wheel tooling, free-threaded CPython support, and the exact packaging system
 remain deferred.
+
+### 8.1 Build and platform status
+
+The extension is built by `zig build -Dpython=<interpreter>`, which is opt-in.
+Without that option nothing about the binding is configured, so a contributor
+without a suitable interpreter builds, tests, and fuzzes everything else
+unchanged. The interpreter is asked for its own include directory and extension
+suffix rather than either being assumed, so the same build serves a system
+interpreter and a virtual environment.
+
+The Phaser core is linked statically into the module, which therefore needs no
+co-installed shared library and no `rpath`.
+
+On ELF and Mach-O the module leaves the interpreter's symbols undefined and has
+them resolved at load time by the process that imports it, which is how CPython
+extensions are built on those platforms. Windows cannot do that and must link
+the Stable ABI stub `python3.lib` instead.
+
+**Windows is not yet covered.** The Linux and macOS tiers build and test the
+extension; the Windows tier does not. What is missing is the library search path
+for the stub, which the interpreter can report but the build does not yet ask
+for. This is a gap in the binding's platform coverage, not in the C ABI's:
+`phaser.h` and both library products remain tested on all three platforms.
 
 ## 9. Command-line interface
 

@@ -1116,3 +1116,772 @@ test "the calculation handles reject nulls and wrong types" {
     );
     try std.testing.expectEqual(@as(?*PhaserArtifact, null), artifact);
 }
+
+// ---------------------------------------------------------------------------
+// Binding and evaluation.
+// ---------------------------------------------------------------------------
+
+const PhaserPoint = opaque {};
+const PhaserBinding = opaque {};
+
+const Complex = extern struct { re: f64, im: f64 };
+
+const Outputs = extern struct {
+    struct_size: u32,
+    abi_version: u32,
+    values: ?[*]f64,
+    value_count: usize,
+    gradients: ?[*]f64,
+    gradient_count: usize,
+    hessians: ?[*]f64,
+    hessian_count: usize,
+    statuses: ?[*]i32,
+    status_count: usize,
+};
+
+const ComplexOutputs = extern struct {
+    struct_size: u32,
+    abi_version: u32,
+    values: ?[*]Complex,
+    value_count: usize,
+    gradients: ?[*]Complex,
+    gradient_count: usize,
+    hessians: ?[*]Complex,
+    hessian_count: usize,
+    statuses: ?[*]i32,
+    status_count: usize,
+};
+
+extern fn phaser_point_parse(
+    context: ?*PhaserContext,
+    source: ?*const anyopaque,
+    source_length: usize,
+    out_point: ?*?*PhaserPoint,
+    out_diagnostics: ?*?*PhaserDiagnostics,
+) callconv(.c) Status;
+extern fn phaser_point_destroy(point: ?*PhaserPoint) callconv(.c) void;
+extern fn phaser_point_reference_scale(
+    point: ?*const PhaserPoint,
+    out_scale: ?*f64,
+) callconv(.c) Status;
+
+extern fn phaser_binding_create(
+    context: ?*PhaserContext,
+    kernel: ?*const PhaserKernel,
+    model: ?*const PhaserModel,
+    point: ?*const PhaserPoint,
+    out_binding: ?*?*PhaserBinding,
+) callconv(.c) Status;
+extern fn phaser_binding_destroy(binding: ?*PhaserBinding) callconv(.c) void;
+extern fn phaser_binding_workspace(
+    binding: ?*const PhaserBinding,
+    point_count: usize,
+    out_bytes: ?*usize,
+    out_alignment: ?*usize,
+) callconv(.c) Status;
+extern fn phaser_binding_coordinate_count(
+    binding: ?*const PhaserBinding,
+    out_count: ?*usize,
+) callconv(.c) Status;
+extern fn phaser_binding_result_type(
+    binding: ?*const PhaserBinding,
+    out_result_type: ?*i32,
+) callconv(.c) Status;
+
+extern fn phaser_evaluate(
+    binding: ?*const PhaserBinding,
+    backgrounds: ?[*]const f64,
+    background_count: usize,
+    point_count: usize,
+    workspace: ?[*]u8,
+    workspace_bytes: usize,
+    outputs: ?*Outputs,
+) callconv(.c) Status;
+extern fn phaser_evaluate_complex(
+    binding: ?*const PhaserBinding,
+    backgrounds: ?[*]const f64,
+    background_count: usize,
+    point_count: usize,
+    workspace: ?[*]u8,
+    workspace_bytes: usize,
+    outputs: ?*ComplexOutputs,
+) callconv(.c) Status;
+
+/// Values for exactly the two parameters `valid_model` declares.
+///
+/// The mass-squared is `m2 + lambda * phi^2 / 2`, so it is negative below
+/// |phi| = sqrt(2 * 7812.5 / 0.26) ~= 245 and positive above. Both sides are
+/// used below, because the sign is what decides whether the one-loop result has
+/// an imaginary part.
+const parameter_point =
+    \\{
+    \\  "schema": "phaser.parameter-point/0.1",
+    \\  "units": { "mass": "GeV" },
+    \\  "renormalization": { "scheme": "MSbar", "reference_scale": 125.0 },
+    \\  "values": { "lambda": 0.26, "m2": -7812.5 }
+    \\}
+;
+
+const Bound = struct {
+    chain: Chain,
+    point: ?*PhaserPoint = null,
+    kernel: ?*PhaserKernel = null,
+    binding: ?*PhaserBinding = null,
+
+    fn deinit(self: *Bound) void {
+        phaser_binding_destroy(self.binding);
+        phaser_kernel_destroy(self.kernel);
+        phaser_point_destroy(self.point);
+        self.chain.deinit();
+    }
+};
+
+fn bind(request_source: []const u8) !Bound {
+    var bound = Bound{ .chain = try derive(request_source) };
+    errdefer bound.deinit();
+
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_point_parse(
+            bound.chain.context,
+            parameter_point.ptr,
+            parameter_point.len,
+            &bound.point,
+            null,
+        ),
+    );
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_compile(
+            bound.chain.context,
+            bound.chain.artifact,
+            null,
+            &bound.kernel,
+        ),
+    );
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_binding_create(
+            bound.chain.context,
+            bound.kernel,
+            bound.chain.model,
+            bound.point,
+            &bound.binding,
+        ),
+    );
+    return bound;
+}
+
+/// Workspace sized and aligned exactly as the binding reported.
+const Workspace = struct {
+    bytes: []align(64) u8,
+    fn deinit(self: *Workspace) void {
+        std.testing.allocator.free(self.bytes);
+    }
+};
+
+fn allocateWorkspace(binding: ?*const PhaserBinding, point_count: usize) !Workspace {
+    var required: usize = 0;
+    var alignment: usize = 0;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_binding_workspace(binding, point_count, &required, &alignment),
+    );
+    try std.testing.expect(alignment <= 64);
+    const bytes = try std.testing.allocator.alignedAlloc(u8, .@"64", required);
+    return .{ .bytes = bytes };
+}
+
+test "a parameter point parses and reports its reference scale" {
+    const context = try createContext();
+    defer phaser_context_destroy(context);
+
+    var point: ?*PhaserPoint = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_point_parse(
+            context,
+            parameter_point.ptr,
+            parameter_point.len,
+            &point,
+            null,
+        ),
+    );
+    defer phaser_point_destroy(point);
+
+    var scale: f64 = 0;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_point_reference_scale(point, &scale),
+    );
+    try std.testing.expectEqual(@as(f64, 125.0), scale);
+}
+
+test "binding rejects a point that does not cover the model" {
+    var chain = try derive(tree_request);
+    defer chain.deinit();
+
+    var kernel: ?*PhaserKernel = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_compile(chain.context, chain.artifact, null, &kernel),
+    );
+    defer phaser_kernel_destroy(kernel);
+
+    // Omits `lambda`, which the model declares.
+    const incomplete =
+        \\{
+        \\  "schema": "phaser.parameter-point/0.1",
+        \\  "units": { "mass": "GeV" },
+        \\  "renormalization": { "scheme": "MSbar", "reference_scale": 125.0 },
+        \\  "values": { "m2": -7812.5 }
+        \\}
+    ;
+    var point: ?*PhaserPoint = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_point_parse(chain.context, incomplete.ptr, incomplete.len, &point, null),
+    );
+    defer phaser_point_destroy(point);
+
+    // The point parses on its own terms; it is binding that finds it
+    // incomplete, because only there is it compared against the model.
+    var binding: ?*PhaserBinding = null;
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_binding_create(chain.context, kernel, chain.model, point, &binding),
+    );
+    try std.testing.expectEqual(@as(?*PhaserBinding, null), binding);
+}
+
+test "a tree binding evaluates real values with per-point statuses" {
+    var bound = try bind(tree_request);
+    defer bound.deinit();
+
+    var result_type: i32 = -1;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_binding_result_type(bound.binding, &result_type),
+    );
+    try std.testing.expectEqual(@as(i32, 0), result_type); // real64
+
+    const point_count: usize = 3;
+    const backgrounds = [_]f64{ 0.0, 100.0, 500.0 };
+
+    var workspace = try allocateWorkspace(bound.binding, point_count);
+    defer workspace.deinit();
+
+    var values: [3]f64 = @splat(0);
+    var gradients: [3]f64 = @splat(0);
+    var hessians: [3]f64 = @splat(0);
+    var statuses: [3]i32 = @splat(-1);
+
+    var outputs = Outputs{
+        .struct_size = @sizeOf(Outputs),
+        .abi_version = 0,
+        .values = &values,
+        .value_count = point_count,
+        .gradients = &gradients,
+        .gradient_count = point_count, // one coordinate
+        .hessians = &hessians,
+        .hessian_count = point_count,
+        .statuses = &statuses,
+        .status_count = point_count,
+    };
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_evaluate(
+            bound.binding,
+            &backgrounds,
+            backgrounds.len,
+            point_count,
+            workspace.bytes.ptr,
+            workspace.bytes.len,
+            &outputs,
+        ),
+    );
+
+    for (statuses) |status| {
+        try std.testing.expectEqual(@as(i32, 0), status); // PHASER_POINT_OK
+    }
+    for (values) |value| try std.testing.expect(std.math.isFinite(value));
+    // The tree potential is even in phi, so the gradient vanishes at the origin
+    // and does not at 100. This is a shape check on the plumbing, not a
+    // scientific assertion -- the kernel's own suites own that.
+    try std.testing.expectEqual(@as(f64, 0.0), gradients[0]);
+    try std.testing.expect(gradients[1] != 0.0);
+}
+
+test "a one-loop binding evaluates complex values, with a real part above the sign change" {
+    var bound = try bind(one_loop_request);
+    defer bound.deinit();
+
+    var result_type: i32 = -1;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_binding_result_type(bound.binding, &result_type),
+    );
+    try std.testing.expectEqual(@as(i32, 1), result_type); // complex64
+
+    // Below and above the point where the field-dependent mass-squared changes
+    // sign, which is near |phi| = 245 for these parameters.
+    const point_count: usize = 2;
+    const backgrounds = [_]f64{ 100.0, 500.0 };
+
+    var workspace = try allocateWorkspace(bound.binding, point_count);
+    defer workspace.deinit();
+
+    var values: [2]Complex = @splat(.{ .re = 0, .im = 0 });
+    var gradients: [2]Complex = @splat(.{ .re = 0, .im = 0 });
+    var hessians: [2]Complex = @splat(.{ .re = 0, .im = 0 });
+    var statuses: [2]i32 = @splat(-1);
+
+    var outputs = ComplexOutputs{
+        .struct_size = @sizeOf(ComplexOutputs),
+        .abi_version = 0,
+        .values = &values,
+        .value_count = point_count,
+        .gradients = &gradients,
+        .gradient_count = point_count,
+        .hessians = &hessians,
+        .hessian_count = point_count,
+        .statuses = &statuses,
+        .status_count = point_count,
+    };
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_evaluate_complex(
+            bound.binding,
+            &backgrounds,
+            backgrounds.len,
+            point_count,
+            workspace.bytes.ptr,
+            workspace.bytes.len,
+            &outputs,
+        ),
+    );
+
+    // This is the claim decision 0013's two status spaces exist for. A negative
+    // scalar mass-squared eigenvalue is a *successful* complex result, not a
+    // failed call: the status is ok and the imaginary component is nonzero.
+    // Collapsing the two spaces would have made this indistinguishable from a
+    // domain error.
+    try std.testing.expectEqual(@as(i32, 0), statuses[0]);
+    try std.testing.expect(values[0].im != 0.0);
+
+    // Above the sign change the same calculation is real, and the imaginary
+    // component is exactly zero rather than merely small.
+    try std.testing.expectEqual(@as(i32, 0), statuses[1]);
+    try std.testing.expectEqual(@as(f64, 0.0), values[1].im);
+
+    for (values) |value| {
+        try std.testing.expect(std.math.isFinite(value.re));
+        try std.testing.expect(std.math.isFinite(value.im));
+    }
+}
+
+test "the entry points refuse the result type they do not carry" {
+    var complex_bound = try bind(one_loop_request);
+    defer complex_bound.deinit();
+    var real_bound = try bind(tree_request);
+    defer real_bound.deinit();
+
+    const point_count: usize = 1;
+    const backgrounds = [_]f64{100.0};
+
+    var complex_workspace = try allocateWorkspace(complex_bound.binding, point_count);
+    defer complex_workspace.deinit();
+    var real_workspace = try allocateWorkspace(real_bound.binding, point_count);
+    defer real_workspace.deinit();
+
+    var real_values: [1]f64 = @splat(0);
+    var real_gradients: [1]f64 = @splat(0);
+    var real_hessians: [1]f64 = @splat(0);
+    var statuses: [1]i32 = @splat(-1);
+    var real_outputs = Outputs{
+        .struct_size = @sizeOf(Outputs),
+        .abi_version = 0,
+        .values = &real_values,
+        .value_count = point_count,
+        .gradients = &real_gradients,
+        .gradient_count = point_count,
+        .hessians = &real_hessians,
+        .hessian_count = point_count,
+        .statuses = &statuses,
+        .status_count = point_count,
+    };
+
+    // The real entry point on a complex kernel must refuse rather than project.
+    // Silently dropping the imaginary component is the substitution Milestone 3
+    // built conformance cases to detect internally; it must not be reachable
+    // here either.
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_evaluate(
+            complex_bound.binding,
+            &backgrounds,
+            backgrounds.len,
+            point_count,
+            complex_workspace.bytes.ptr,
+            complex_workspace.bytes.len,
+            &real_outputs,
+        ),
+    );
+
+    var complex_values: [1]Complex = @splat(.{ .re = 0, .im = 0 });
+    var complex_gradients: [1]Complex = @splat(.{ .re = 0, .im = 0 });
+    var complex_hessians: [1]Complex = @splat(.{ .re = 0, .im = 0 });
+    var complex_outputs = ComplexOutputs{
+        .struct_size = @sizeOf(ComplexOutputs),
+        .abi_version = 0,
+        .values = &complex_values,
+        .value_count = point_count,
+        .gradients = &complex_gradients,
+        .gradient_count = point_count,
+        .hessians = &complex_hessians,
+        .hessian_count = point_count,
+        .statuses = &statuses,
+        .status_count = point_count,
+    };
+
+    // And the converse, so neither direction silently widens or narrows.
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_evaluate_complex(
+            real_bound.binding,
+            &backgrounds,
+            backgrounds.len,
+            point_count,
+            real_workspace.bytes.ptr,
+            real_workspace.bytes.len,
+            &complex_outputs,
+        ),
+    );
+}
+
+test "the status array must be exactly as long as the point count" {
+    var bound = try bind(tree_request);
+    defer bound.deinit();
+
+    const point_count: usize = 3;
+    const backgrounds = [_]f64{ 0.0, 100.0, 500.0 };
+    var workspace = try allocateWorkspace(bound.binding, point_count);
+    defer workspace.deinit();
+
+    var values: [3]f64 = @splat(0);
+    var gradients: [3]f64 = @splat(0);
+    var hessians: [3]f64 = @splat(0);
+    var statuses: [3]i32 = @splat(-1);
+
+    var outputs = Outputs{
+        .struct_size = @sizeOf(Outputs),
+        .abi_version = 0,
+        .values = &values,
+        .value_count = point_count,
+        .gradients = &gradients,
+        .gradient_count = point_count,
+        .hessians = &hessians,
+        .hessian_count = point_count,
+        .statuses = &statuses,
+        .status_count = point_count,
+    };
+
+    // Short is rejected, as an unwritten entry would be indistinguishable from
+    // a successful point.
+    outputs.status_count = point_count - 1;
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_evaluate(
+            bound.binding,
+            &backgrounds,
+            backgrounds.len,
+            point_count,
+            workspace.bytes.ptr,
+            workspace.bytes.len,
+            &outputs,
+        ),
+    );
+
+    // Longer is rejected too: it means the caller and the library disagree
+    // about how many points are being evaluated.
+    outputs.status_count = point_count + 1;
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_evaluate(
+            bound.binding,
+            &backgrounds,
+            backgrounds.len,
+            point_count,
+            workspace.bytes.ptr,
+            workspace.bytes.len,
+            &outputs,
+        ),
+    );
+
+    // A missing status array is rejected outright.
+    outputs.status_count = point_count;
+    outputs.statuses = null;
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_evaluate(
+            bound.binding,
+            &backgrounds,
+            backgrounds.len,
+            point_count,
+            workspace.bytes.ptr,
+            workspace.bytes.len,
+            &outputs,
+        ),
+    );
+}
+
+test "workspace is exact: the queried size succeeds and one byte less does not" {
+    var bound = try bind(one_loop_request);
+    defer bound.deinit();
+
+    const point_count: usize = 2;
+    const backgrounds = [_]f64{ 100.0, 500.0 };
+    var workspace = try allocateWorkspace(bound.binding, point_count);
+    defer workspace.deinit();
+
+    var values: [2]Complex = @splat(.{ .re = 0, .im = 0 });
+    var gradients: [2]Complex = @splat(.{ .re = 0, .im = 0 });
+    var hessians: [2]Complex = @splat(.{ .re = 0, .im = 0 });
+    var statuses: [2]i32 = @splat(-1);
+    var outputs = ComplexOutputs{
+        .struct_size = @sizeOf(ComplexOutputs),
+        .abi_version = 0,
+        .values = &values,
+        .value_count = point_count,
+        .gradients = &gradients,
+        .gradient_count = point_count,
+        .hessians = &hessians,
+        .hessian_count = point_count,
+        .statuses = &statuses,
+        .status_count = point_count,
+    };
+
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_evaluate_complex(
+            bound.binding,
+            &backgrounds,
+            backgrounds.len,
+            point_count,
+            workspace.bytes.ptr,
+            workspace.bytes.len,
+            &outputs,
+        ),
+    );
+    try std.testing.expectEqual(
+        Status.insufficient_space,
+        phaser_evaluate_complex(
+            bound.binding,
+            &backgrounds,
+            backgrounds.len,
+            point_count,
+            workspace.bytes.ptr,
+            workspace.bytes.len - 1,
+            &outputs,
+        ),
+    );
+}
+
+test "a batch agrees point for point with single-point calls" {
+    // Batching is a performance decision, not a numerical one. Splitting a
+    // batch must not change any point's value or status.
+    var bound = try bind(one_loop_request);
+    defer bound.deinit();
+
+    const backgrounds = [_]f64{ 50.0, 100.0, 245.0, 500.0 };
+    const point_count = backgrounds.len;
+
+    var batch_workspace = try allocateWorkspace(bound.binding, point_count);
+    defer batch_workspace.deinit();
+
+    var batch_values: [point_count]Complex = @splat(.{ .re = 0, .im = 0 });
+    var batch_gradients: [point_count]Complex = @splat(.{ .re = 0, .im = 0 });
+    var batch_hessians: [point_count]Complex = @splat(.{ .re = 0, .im = 0 });
+    var batch_statuses: [point_count]i32 = @splat(-1);
+    var batch = ComplexOutputs{
+        .struct_size = @sizeOf(ComplexOutputs),
+        .abi_version = 0,
+        .values = &batch_values,
+        .value_count = point_count,
+        .gradients = &batch_gradients,
+        .gradient_count = point_count,
+        .hessians = &batch_hessians,
+        .hessian_count = point_count,
+        .statuses = &batch_statuses,
+        .status_count = point_count,
+    };
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_evaluate_complex(
+            bound.binding,
+            &backgrounds,
+            backgrounds.len,
+            point_count,
+            batch_workspace.bytes.ptr,
+            batch_workspace.bytes.len,
+            &batch,
+        ),
+    );
+
+    var single_workspace = try allocateWorkspace(bound.binding, 1);
+    defer single_workspace.deinit();
+
+    for (backgrounds, 0..) |background, index| {
+        var value: [1]Complex = @splat(.{ .re = 0, .im = 0 });
+        var gradient: [1]Complex = @splat(.{ .re = 0, .im = 0 });
+        var hessian: [1]Complex = @splat(.{ .re = 0, .im = 0 });
+        var status: [1]i32 = @splat(-1);
+        var single = ComplexOutputs{
+            .struct_size = @sizeOf(ComplexOutputs),
+            .abi_version = 0,
+            .values = &value,
+            .value_count = 1,
+            .gradients = &gradient,
+            .gradient_count = 1,
+            .hessians = &hessian,
+            .hessian_count = 1,
+            .statuses = &status,
+            .status_count = 1,
+        };
+        const one = [_]f64{background};
+        try std.testing.expectEqual(
+            Status.ok,
+            phaser_evaluate_complex(
+                bound.binding,
+                &one,
+                one.len,
+                1,
+                single_workspace.bytes.ptr,
+                single_workspace.bytes.len,
+                &single,
+            ),
+        );
+
+        // Bitwise, not approximately: the same kernel on the same input must
+        // reproduce exactly, whatever the batch partition.
+        try std.testing.expectEqual(batch_statuses[index], status[0]);
+        try std.testing.expectEqual(batch_values[index].re, value[0].re);
+        try std.testing.expectEqual(batch_values[index].im, value[0].im);
+        try std.testing.expectEqual(batch_gradients[index].re, gradient[0].re);
+        try std.testing.expectEqual(batch_hessians[index].re, hessian[0].re);
+    }
+}
+
+test "evaluation rejects a background buffer of the wrong length" {
+    var bound = try bind(tree_request);
+    defer bound.deinit();
+
+    const point_count: usize = 2;
+    const backgrounds = [_]f64{ 100.0, 500.0 };
+    var workspace = try allocateWorkspace(bound.binding, point_count);
+    defer workspace.deinit();
+
+    var values: [2]f64 = @splat(0);
+    var gradients: [2]f64 = @splat(0);
+    var hessians: [2]f64 = @splat(0);
+    var statuses: [2]i32 = @splat(-1);
+    var outputs = Outputs{
+        .struct_size = @sizeOf(Outputs),
+        .abi_version = 0,
+        .values = &values,
+        .value_count = point_count,
+        .gradients = &gradients,
+        .gradient_count = point_count,
+        .hessians = &hessians,
+        .hessian_count = point_count,
+        .statuses = &statuses,
+        .status_count = point_count,
+    };
+
+    // point_count * coordinate_count is the only admissible length.
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_evaluate(
+            bound.binding,
+            &backgrounds,
+            backgrounds.len - 1,
+            point_count,
+            workspace.bytes.ptr,
+            workspace.bytes.len,
+            &outputs,
+        ),
+    );
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_evaluate(
+            bound.binding,
+            null,
+            backgrounds.len,
+            point_count,
+            workspace.bytes.ptr,
+            workspace.bytes.len,
+            &outputs,
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Destruction misuse.
+// ---------------------------------------------------------------------------
+
+test "destroying through the wrong destructor is a no-op, not a corruption" {
+    // Each handle carries a distinct tag, so a destructor that receives the
+    // wrong kind of handle rejects it rather than freeing it as though it were
+    // its own type. That is the deterministic half of the double-destroy
+    // guard: nothing is freed, and the handle keeps working.
+    var bound = try bind(one_loop_request);
+    defer bound.deinit();
+
+    phaser_model_destroy(@ptrCast(bound.chain.request));
+    phaser_request_destroy(@ptrCast(bound.chain.artifact));
+    phaser_artifact_destroy(@ptrCast(bound.kernel));
+    phaser_kernel_destroy(@ptrCast(bound.point));
+    phaser_point_destroy(@ptrCast(bound.binding));
+    phaser_binding_destroy(@ptrCast(bound.chain.model));
+
+    // Every handle above survived, which it would not have if any destructor
+    // had acted on a foreign tag. The subsequent cleanup in `deinit` would also
+    // double-free if one had.
+    var count: usize = 0;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_model_parameter_count(bound.chain.model, &count),
+    );
+    try std.testing.expectEqual(@as(usize, 2), count);
+
+    var order: u32 = 99;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_request_loop_order(bound.chain.request, &order),
+    );
+    try std.testing.expectEqual(@as(u32, 1), order);
+
+    var kind: i32 = -1;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_binding_result_type(bound.binding, &kind),
+    );
+    try std.testing.expectEqual(@as(i32, 1), kind);
+}
+
+test "every destructor accepts null repeatedly" {
+    // Ordinary C cleanup calls a destructor on a variable that may never have
+    // been assigned, and does so on every path. It must be safe to do more than
+    // once.
+    var iteration: usize = 0;
+    while (iteration < 3) : (iteration += 1) {
+        phaser_context_destroy(null);
+        phaser_model_destroy(null);
+        phaser_request_destroy(null);
+        phaser_artifact_destroy(null);
+        phaser_kernel_destroy(null);
+        phaser_point_destroy(null);
+        phaser_binding_destroy(null);
+        phaser_diagnostics_destroy(null);
+    }
+}

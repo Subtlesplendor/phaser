@@ -102,6 +102,23 @@ pub fn build(b: *std.Build) void {
     // that could disagree with the reviewed file.
     b.installFile("include/phaser.h", "include/phaser.h");
 
+    // The Python extension, per decision 0015 and Language and
+    // Interoperability section 8.
+    //
+    // Opt-in through `-Dpython=<interpreter>`. Without it nothing here is
+    // configured, so a contributor with no Python 3.11 or later builds, tests,
+    // and fuzzes everything else exactly as before. That is the boundary
+    // decision 0015 promised: declining the dependency costs nothing but the
+    // binding itself.
+    const python_interpreter = b.option(
+        []const u8,
+        "python",
+        "Python 3.11+ interpreter used to build and test the extension",
+    );
+    if (python_interpreter) |interpreter| {
+        configurePythonExtension(b, target, optimize, library, interpreter);
+    }
+
     const unit_tests = b.addTest(.{
         .root_module = phaser_module,
     });
@@ -629,4 +646,101 @@ pub fn build(b: *std.Build) void {
         run_scan.addArg("--scan=0:0:600:13");
         examples_step.dependOn(&run_scan.step);
     }
+}
+
+/// Configures the Python extension and its test step.
+///
+/// The interpreter is asked for its own include directory and extension
+/// suffix rather than either being guessed. That keeps the build correct
+/// across the interpreters the runner images ship and across a contributor's
+/// virtual environment, and it fails loudly if the interpreter has no headers
+/// instead of producing a module that cannot be imported.
+fn configurePythonExtension(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    library: *std.Build.Step.Compile,
+    interpreter: []const u8,
+) void {
+    const include_directory = std.mem.trim(u8, b.run(&.{
+        interpreter,
+        "-c",
+        "import sysconfig; print(sysconfig.get_paths()['include'])",
+    }), " \r\n");
+
+    const extension_module = b.createModule(.{
+        .root_source_file = b.path("bindings/python/src/extension.zig"),
+        .target = target,
+        .optimize = optimize,
+        // The extension is loaded into a process it does not control, so it is
+        // position-independent for the same reason the shared library is.
+        .pic = true,
+    });
+    extension_module.addIncludePath(.{ .cwd_relative = include_directory });
+    extension_module.link_libc = true;
+
+    const extension = b.addLibrary(.{
+        .name = "_phaser",
+        .root_module = extension_module,
+        .linkage = .dynamic,
+    });
+    // The Phaser core is linked in statically, so the built module is
+    // self-contained and needs no rpath or co-installed shared library.
+    extension_module.linkLibrary(library);
+
+    // A CPython extension leaves the interpreter's own symbols undefined and
+    // has them resolved at load time by the process that imports it. Windows
+    // cannot do that and links the Stable ABI stub instead.
+    if (target.result.os.tag == .windows) {
+        extension_module.linkSystemLibrary("python3", .{});
+    } else {
+        extension.linker_allow_shlib_undefined = true;
+    }
+
+    // Python requires the file name to be the module name plus the
+    // interpreter's suffix, so the artifact is installed under that name
+    // rather than the platform's ordinary library name.
+    const suffix = std.mem.trim(u8, b.run(&.{
+        interpreter,
+        "-c",
+        "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))",
+    }), " \r\n");
+    const module_name = b.fmt("_phaser{s}", .{suffix});
+
+    const install_extension = b.addInstallFileWithDir(
+        extension.getEmittedBin(),
+        .{ .custom = "python/phaser" },
+        module_name,
+    );
+
+    const install_package = b.addInstallFileWithDir(
+        b.path("bindings/python/src/phaser/__init__.py"),
+        .{ .custom = "python/phaser" },
+        "__init__.py",
+    );
+
+    const python_step = b.step("python", "Build the Python extension");
+    python_step.dependOn(&install_extension.step);
+    python_step.dependOn(&install_package.step);
+
+    // The extension is exercised by an ordinary Python program, because that
+    // is the only way to check what an importing interpreter actually sees.
+    const run_python_tests = b.addSystemCommand(&.{
+        interpreter,
+        "bindings/python/test/test_extension.py",
+    });
+    run_python_tests.setEnvironmentVariable(
+        "PYTHONPATH",
+        b.getInstallPath(.{ .custom = "python" }, ""),
+    );
+    run_python_tests.step.dependOn(python_step);
+    // Nothing is cached: the check is that this interpreter can import and
+    // drive the module that was just built.
+    run_python_tests.has_side_effects = true;
+
+    const test_python_step = b.step(
+        "test-python",
+        "Run the Python binding tests",
+    );
+    test_python_step.dependOn(&run_python_tests.step);
 }
