@@ -79,6 +79,18 @@ jobs:
           "$RUNNER_TEMP/zig/zig" build -Doptimize=ReleaseSafe --prefix "$RUNNER_TEMP/prefix"
           tools/ci/check_abi.sh "$RUNNER_TEMP/prefix"
 
+      # The Python binding, per decision 0015. The runner's interpreter is used
+      # as it comes; nothing is installed from PyPI, because nothing in this
+      # tier needs a package yet. The plotting and notebook packages that
+      # decision approved arrive with the notebook that requires them.
+      - name: Test the Python binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 --version
+          "$RUNNER_TEMP/zig/zig" build test-python \
+            -Doptimize=ReleaseSafe -Dpython="$(command -v python3)"
+
       - name: Test deterministic core in Debug
         if: github.event_name == 'pull_request'
         shell: bash
@@ -131,6 +143,14 @@ jobs:
       - name: Test full suite in ReleaseSafe
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseSafe'
+
+      - name: Test the Python binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 --version
+          "$RUNNER_TEMP/zig/zig" build test-python \
+            -Doptimize=ReleaseSafe -Dpython="$(command -v python3)"
 
   build-test-windows:
     name: Build and test (Windows x86-64)

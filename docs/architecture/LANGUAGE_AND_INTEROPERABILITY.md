@@ -529,6 +529,29 @@ is not the intended production Python binding.
 Wheel tooling, free-threaded CPython support, and the exact packaging system
 remain deferred.
 
+### 8.1 Build and platform status
+
+The extension is built by `zig build -Dpython=<interpreter>`, which is opt-in.
+Without that option nothing about the binding is configured, so a contributor
+without a suitable interpreter builds, tests, and fuzzes everything else
+unchanged. The interpreter is asked for its own include directory and extension
+suffix rather than either being assumed, so the same build serves a system
+interpreter and a virtual environment.
+
+The Phaser core is linked statically into the module, which therefore needs no
+co-installed shared library and no `rpath`.
+
+On ELF and Mach-O the module leaves the interpreter's symbols undefined and has
+them resolved at load time by the process that imports it, which is how CPython
+extensions are built on those platforms. Windows cannot do that and must link
+the Stable ABI stub `python3.lib` instead.
+
+**Windows is not yet covered.** The Linux and macOS tiers build and test the
+extension; the Windows tier does not. What is missing is the library search path
+for the stub, which the interpreter can report but the build does not yet ask
+for. This is a gap in the binding's platform coverage, not in the C ABI's:
+`phaser.h` and both library products remain tested on all three platforms.
+
 ## 9. Command-line interface
 
 Phaser provides one CLI executable implemented in Zig. Its file and stream
