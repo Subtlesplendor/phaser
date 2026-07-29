@@ -67,6 +67,15 @@ one.
 - **Boundary.** `bindings/python/` only. No physics, no numerical evaluation, no
   canonicalization — §1 forbids adapters from reimplementing any of it.
 
+**Narrowed in implementation.** What is actually used is less than this proposal
+approved. The extension declares the Limited API subset it needs rather than
+translating `Python.h`, so the headers are not a build input on any platform;
+what remains of this dependency is the Stable ABI stub `python3.lib` on Windows
+and an interpreter to run against. The reason is recorded in
+[Language and Interoperability §8.1](../architecture/LANGUAGE_AND_INTEROPERABILITY.md#81-build-and-platform-status).
+Using less than was approved needs no further permission, but it is recorded
+here so this record continues to describe the dependency Phaser actually has.
+
 ## Proposal 2: Plotting — matplotlib
 
 **Recommended with reservations**, stated below.

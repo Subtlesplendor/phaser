@@ -547,9 +547,24 @@ remain deferred.
 The extension is built by `zig build -Dpython=<interpreter>`, which is opt-in.
 Without that option nothing about the binding is configured, so a contributor
 without a suitable interpreter builds, tests, and fuzzes everything else
-unchanged. The interpreter is asked for its own include directory and extension
-suffix rather than either being assumed, so the same build serves a system
-interpreter and a virtual environment.
+unchanged. The interpreter is asked for its own extension suffix, and on Windows
+for the directory holding the Stable ABI stub, rather than either being assumed,
+so the same build serves a system interpreter and a virtual environment.
+
+The extension declares the Limited API subset it uses rather than translating
+`Python.h`, so Python's headers are not a build input on any platform. Two
+reasons, one forced and one preferred. The forced one: Microsoft's C runtime
+declares its bounds-checked `_s` string functions through inline wrappers that
+Zig's C translation renders as unused local constants and then rejects, and
+they reach the extension through `Python.h` without it asking for them. The
+preferred one: a declared subset behaves the same on every platform, where a
+translated header behaves however each platform's headers happen to translate.
+
+What this gives up is a compiler checking those signatures against the real
+header. The Stable ABI is stable by contract, which is the reason for pinning
+`Py_LIMITED_API` in the first place, and a mistake in the declarations is loud
+rather than subtle: a wrong `PyModuleDef` layout makes the module unimportable,
+which every test in the binding reports immediately.
 
 The Phaser core is linked statically into the module, which therefore needs no
 co-installed shared library and no `rpath`.

@@ -657,11 +657,13 @@ pub fn build(b: *std.Build) void {
 
 /// Configures the Python extension and its test step.
 ///
-/// The interpreter is asked for its own include directory and extension
-/// suffix rather than either being guessed. That keeps the build correct
-/// across the interpreters the runner images ship and across a contributor's
-/// virtual environment, and it fails loudly if the interpreter has no headers
-/// instead of producing a module that cannot be imported.
+/// The interpreter is asked for its own extension suffix, and on Windows for
+/// the directory holding the Stable ABI stub, rather than either being
+/// guessed. That keeps the build correct across the interpreters the runner
+/// images ship and across a contributor's virtual environment.
+///
+/// Python's headers are not needed: the extension declares the Limited API
+/// subset it uses rather than translating Python.h.
 ///
 /// The interpreter must run on the target being built for. Everything here is
 /// derived from the interpreter that is invoked, so cross-compiling the
@@ -676,12 +678,6 @@ fn configurePythonExtension(
     shared_library_file: []const u8,
     interpreter: []const u8,
 ) void {
-    const include_directory = std.mem.trim(u8, b.run(&.{
-        interpreter,
-        "-c",
-        "import sysconfig; print(sysconfig.get_paths()['include'])",
-    }), " \r\n");
-
     const extension_module = b.createModule(.{
         .root_source_file = b.path("bindings/python/src/extension.zig"),
         .target = target,
@@ -690,7 +686,6 @@ fn configurePythonExtension(
         // position-independent for the same reason the shared library is.
         .pic = true,
     });
-    extension_module.addIncludePath(.{ .cwd_relative = include_directory });
     extension_module.link_libc = true;
 
     const extension = b.addLibrary(.{

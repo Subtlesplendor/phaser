@@ -18,18 +18,92 @@
 
 const std = @import("std");
 
-const py = @cImport({
-    @cDefine("Py_LIMITED_API", "0x030B0000");
-    @cDefine("PY_SSIZE_T_CLEAN", {});
-    // Microsoft's C runtime declares the bounds-checked `_s` string functions
-    // through inline wrappers that Zig's C translation renders as unused local
-    // constants, which it then rejects -- `wcscat_s` and `wcscpy_s` reach here
-    // through Python.h without anything in this file asking for them. The
-    // macro is the documented way to suppress those declarations. It is
-    // defined unconditionally because no other platform's headers consult it.
-    @cDefine("__STDC_WANT_SECURE_LIB__", "0");
-    @cInclude("Python.h");
-});
+// ---------------------------------------------------------------------------
+// CPython's Limited API, declared rather than translated.
+//
+// Zig's C translation cannot process Microsoft's headers here: the C runtime
+// declares its bounds-checked `_s` string functions through inline wrappers
+// that translate into unused local constants, which the compiler then rejects.
+// Nothing in this file asks for `wcscat_s`; it arrives through Python.h. The
+// documented macro for suppressing those declarations does not remove them.
+//
+// So the subset used is declared directly. That takes C translation out of the
+// build on every platform rather than only where it breaks, and it removes the
+// need for Python's headers at build time -- what remains is the Stable ABI
+// stub on Windows.
+//
+// The safety this gives up is a compiler checking these signatures against the
+// real header. Two things replace it. The Stable ABI is stable by contract,
+// which is the entire reason for pinning `Py_LIMITED_API`: these declarations
+// are guaranteed not to change under a conforming interpreter. And a mistake
+// here is loud rather than subtle -- a wrong `PyModuleDef` layout makes
+// `PyModule_Create2` fail and the module unimportable, which every test in
+// `bindings/python/test/` would report on the first line.
+// ---------------------------------------------------------------------------
+
+const py = struct {
+    /// Opaque to this file: every object is handled through the functions
+    /// below, never by reaching into it.
+    const PyObject = opaque {};
+
+    const Py_ssize_t = isize;
+
+    /// `PyModule_Create` passes this when `Py_LIMITED_API` is defined, in
+    /// place of the unstable `PYTHON_API_VERSION` an unlimited build uses.
+    const PYTHON_ABI_VERSION: c_int = 3;
+
+    const METH_VARARGS: c_int = 0x0001;
+    const METH_NOARGS: c_int = 0x0004;
+
+    const PyCFunction = ?*const fn (?*PyObject, ?*PyObject) callconv(.c) ?*PyObject;
+
+    const PyMethodDef = extern struct {
+        ml_name: ?[*:0]const u8,
+        ml_meth: PyCFunction,
+        ml_flags: c_int,
+        ml_doc: ?[*:0]const u8,
+    };
+
+    /// The `PyModuleDef_HEAD_INIT` prologue.
+    ///
+    /// `ob_base` is CPython's object head: a reference count and a type
+    /// pointer. It is two machine words rather than named fields because
+    /// free-threaded builds reshape the count into a union, and this file only
+    /// ever zeroes the whole thing, exactly as `PyModuleDef_HEAD_INIT` does.
+    const PyModuleDef_Base = extern struct {
+        ob_base: [2]usize,
+        m_init: ?*const fn () callconv(.c) ?*PyObject,
+        m_index: Py_ssize_t,
+        m_copy: ?*PyObject,
+    };
+
+    const PyModuleDef = extern struct {
+        m_base: PyModuleDef_Base,
+        m_name: ?[*:0]const u8,
+        m_doc: ?[*:0]const u8,
+        m_size: Py_ssize_t,
+        m_methods: ?[*]PyMethodDef,
+        m_slots: ?*anyopaque = null,
+        m_traverse: ?*anyopaque = null,
+        m_clear: ?*anyopaque = null,
+        m_free: ?*anyopaque = null,
+    };
+
+    extern fn PyModule_Create2(def: *PyModuleDef, apiver: c_int) ?*PyObject;
+    extern fn PyLong_FromUnsignedLong(value: c_ulong) ?*PyObject;
+    extern fn PyBool_FromLong(value: c_long) ?*PyObject;
+    extern fn PyErr_SetString(exception: ?*PyObject, message: [*:0]const u8) void;
+    extern fn PyArg_ParseTuple(args: ?*PyObject, format: [*:0]const u8, ...) c_int;
+    extern fn Py_BuildValue(format: [*:0]const u8, ...) ?*PyObject;
+
+    // Built-in exception objects. These are pointers the interpreter owns; the
+    // extern declaration is of the pointer variable itself.
+    extern const PyExc_ValueError: *PyObject;
+    extern const PyExc_TypeError: *PyObject;
+    extern const PyExc_MemoryError: *PyObject;
+    extern const PyExc_RuntimeError: *PyObject;
+    extern const PyExc_NotImplementedError: *PyObject;
+};
 
 // ---------------------------------------------------------------------------
 // The C ABI, declared as a C consumer declares it.
