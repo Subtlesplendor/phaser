@@ -556,14 +556,46 @@ use the general Python buffer protocol rather than require NumPy's C API.
 The interpreter lock is released around the core evaluation call and MUST NOT be
 released around anything that touches a Python object.
 
-### 8.3 Rich display
+### 8.3 Diagnostics
+
+A rejected document raises `SourceError`, which subclasses `ValueError` so that
+a caller who only wants to know the document was rejected keeps catching what it
+always caught. The structure is additional rather than a replacement.
+
+Every diagnostic the operation produced reaches the exception's `diagnostics`
+attribute, carrying the code, severity, category, rendered message, related
+count, and primary span. Severity and category are named rather than numbered;
+the names live in the Python layer, next to the tables that define them.
+
+The exception's message summarizes the first diagnostic only, because that is
+what a traceback shows. It MAY be abbreviated; the attribute MUST NOT be.
+
+A diagnostic with no primary source location MUST report no span rather than a
+span of zero. `[0, 0)` is a location in the document, and collapsing the two
+would point a reader at the first byte of a file the diagnostic has nothing to
+do with.
+
+An unrecognized severity or category MUST fall back to its number rather than
+raise. This runs while an exception is already being reported, and refusing to
+name a category is no reason to replace the diagnostic the caller needs to read.
+That is a deliberate exception to the rule elsewhere in the binding, where an
+unrecognized enumerator is a failure of its kind.
+
+### 8.4 Rich display
 
 Python symbolic objects SHOULD expose notebook rich representations through the
 MathJax-compatible LaTeX exporter specified in
 [Symbolic Export and Notebook Display](SYMBOLIC_EXPORT.md). Implementing that
 display protocol MUST NOT introduce a required IPython or Jupyter dependency.
 
-### 8.4 Independent conformance client
+The artifact implements `_repr_latex_`, which a frontend calls if it exists.
+Nothing in the package imports IPython, and a test asserts that importing
+`phaser` leaves no notebook module loaded. Delimiters are added by the display
+method rather than by the exporter, which emits a fragment precisely so each
+consumer chooses its own; `to_latex`, `to_phaser`, `str`, and `repr` remain
+available and unchanged outside a frontend.
+
+### 8.5 Independent conformance client
 
 A `ctypes` client SHOULD be maintained as an independent ABI conformance test. It
 is not the intended production Python binding.
@@ -584,7 +616,7 @@ agreement nobody checked.
 Wheel tooling, free-threaded CPython support, and the exact packaging system
 remain deferred.
 
-### 8.5 Build and platform status
+### 8.6 Build and platform status
 
 The extension is built by `zig build -Dpython=<interpreter>`, which is opt-in.
 Without that option nothing about the binding is configured, so a contributor

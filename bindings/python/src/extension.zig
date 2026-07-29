@@ -145,7 +145,25 @@ const py = struct {
     extern fn PyFloat_FromDouble(value: f64) ?*PyObject;
     extern fn PyBool_FromLong(value: c_long) ?*PyObject;
     extern fn PyErr_SetString(exception: ?*PyObject, message: [*:0]const u8) void;
+    extern fn PyErr_SetObject(exception: ?*PyObject, value: ?*PyObject) void;
+    extern fn PyErr_NewException(
+        name: [*:0]const u8,
+        base: ?*PyObject,
+        dict: ?*PyObject,
+    ) ?*PyObject;
     extern fn PyErr_Occurred() ?*PyObject;
+
+    extern fn PyObject_CallObject(callable: ?*PyObject, args: ?*PyObject) ?*PyObject;
+    extern fn PyObject_SetAttrString(
+        object: ?*PyObject,
+        name: [*:0]const u8,
+        value: ?*PyObject,
+    ) c_int;
+    extern fn PyModule_AddObjectRef(
+        module: ?*PyObject,
+        name: [*:0]const u8,
+        value: ?*PyObject,
+    ) c_int;
     extern fn Py_IncRef(object: ?*PyObject) void;
     extern fn Py_DecRef(object: ?*PyObject) void;
 
@@ -236,6 +254,23 @@ const Status = enum(c_int) {
 };
 
 const RESULT_COMPLEX64: i32 = 1;
+
+/// One structured diagnostic, in the extensible form the header publishes: the
+/// caller sets `struct_size` and the implementation writes only the fields that
+/// size covers.
+const Diagnostic = extern struct {
+    struct_size: u32,
+    abi_version: u32,
+    code: u32,
+    category: i32,
+    severity: i32,
+    has_primary: i32,
+    primary_source_id: u32,
+    primary_start: u32,
+    primary_end: u32,
+    related_count: u32,
+    reserved: u32,
+};
 
 const KernelOptions = extern struct {
     struct_size: u32,
@@ -446,6 +481,11 @@ extern fn phaser_diagnostics_count(
     diagnostics: ?*const PhaserDiagnostics,
     out_count: ?*usize,
 ) callconv(.c) Status;
+extern fn phaser_diagnostics_at(
+    diagnostics: ?*const PhaserDiagnostics,
+    index: usize,
+    out_diagnostic: ?*Diagnostic,
+) callconv(.c) Status;
 extern fn phaser_diagnostics_render(
     diagnostics: ?*const PhaserDiagnostics,
     index: usize,
@@ -491,9 +531,103 @@ fn raiseStatus(status: Status, what: []const u8) ?*py.PyObject {
     return null;
 }
 
-/// Renders the first diagnostic into an exception message, then releases the
-/// handle. The diagnostics are owned by this call; the caller does not free
-/// them.
+/// The exception a rejected document raises, created once at module import.
+///
+/// It subclasses `ValueError`, so a caller that only wants to know the document
+/// was rejected catches what it always caught, and a caller that wants to know
+/// why reads the `diagnostics` attribute attached to the instance.
+///
+/// A module-level static is consistent with `m_size = -1`, which already
+/// declares that this module holds no per-interpreter state and does not
+/// support subinterpreters.
+var source_error: ?*py.PyObject = null;
+
+/// Renders diagnostic `index` as a Python string.
+///
+/// Follows the ABI's one sizing convention: a null buffer reports the length
+/// that would be written. The buffer is heap-allocated rather than fixed,
+/// because a diagnostic's rendering has no documented bound and truncating one
+/// silently is exactly the failure this whole path exists to avoid.
+fn renderDiagnostic(
+    diagnostics: ?*const PhaserDiagnostics,
+    index: usize,
+) ?*py.PyObject {
+    var required: usize = 0;
+    const sizing = phaser_diagnostics_render(diagnostics, index, null, 0, &required);
+    if (sizing != .insufficient_space or required == 0) {
+        return py.PyUnicode_FromStringAndSize("", 0);
+    }
+
+    const buffer = std.heap.c_allocator.alloc(u8, required) catch
+        return raiseStatus(.out_of_memory, "diagnostics");
+    defer std.heap.c_allocator.free(buffer);
+
+    var written: usize = 0;
+    if (phaser_diagnostics_render(
+        diagnostics,
+        index,
+        buffer.ptr,
+        buffer.len,
+        &written,
+    ) != .ok) {
+        return py.PyUnicode_FromStringAndSize("", 0);
+    }
+    return py.PyUnicode_FromStringAndSize(buffer.ptr, @intCast(written));
+}
+
+/// Copies one diagnostic into a dictionary.
+///
+/// The span fields are present only when the diagnostic has a primary
+/// location. Omitting them is what lets the Python layer report no span rather
+/// than a span of zero, which would be a location in the document.
+fn diagnosticEntry(
+    diagnostics: ?*const PhaserDiagnostics,
+    index: usize,
+) ?*py.PyObject {
+    var record = std.mem.zeroes(Diagnostic);
+    record.struct_size = @sizeOf(Diagnostic);
+    if (phaser_diagnostics_at(diagnostics, index, &record) != .ok) {
+        return raiseStatus(.internal, "diagnostics");
+    }
+
+    const entry = py.PyDict_New() orelse return null;
+    var filled = setOwned(entry, "code", py.PyLong_FromUnsignedLong(record.code)) and
+        setOwned(entry, "category", py.PyLong_FromSsize_t(record.category)) and
+        setOwned(entry, "severity", py.PyLong_FromSsize_t(record.severity)) and
+        setOwned(
+            entry,
+            "related_count",
+            py.PyLong_FromUnsignedLong(record.related_count),
+        ) and
+        setOwned(entry, "message", renderDiagnostic(diagnostics, index));
+    if (filled and record.has_primary != 0) {
+        filled = setOwned(
+            entry,
+            "source_id",
+            py.PyLong_FromUnsignedLong(record.primary_source_id),
+        ) and setOwned(
+            entry,
+            "start",
+            py.PyLong_FromUnsignedLong(record.primary_start),
+        ) and setOwned(
+            entry,
+            "end",
+            py.PyLong_FromUnsignedLong(record.primary_end),
+        );
+    }
+    if (!filled) {
+        py.Py_DecRef(entry);
+        return null;
+    }
+    return entry;
+}
+
+/// Raises every diagnostic as one exception, then releases the handle. The
+/// diagnostics are owned by this call; the caller does not free them.
+///
+/// The exception's message summarizes the first diagnostic, which is what a
+/// traceback shows. All of them, structured, reach the `diagnostics`
+/// attribute -- so the summary may be abbreviated without anything being lost.
 fn raiseDiagnostics(diagnostics: ?*PhaserDiagnostics, what: []const u8) ?*py.PyObject {
     defer phaser_diagnostics_destroy(diagnostics);
 
@@ -501,14 +635,47 @@ fn raiseDiagnostics(diagnostics: ?*PhaserDiagnostics, what: []const u8) ?*py.PyO
     if (phaser_diagnostics_count(diagnostics, &count) != .ok or count == 0) {
         return raiseStatus(.invalid_source, what);
     }
+    const exception = source_error orelse return raiseStatus(.invalid_source, what);
 
-    var required: usize = 0;
-    _ = phaser_diagnostics_render(diagnostics, 0, null, 0, &required);
+    const structured = py.PyTuple_New(std.math.cast(py.Py_ssize_t, count) orelse
+        return raiseStatus(.limit_exceeded, "diagnostics")) orelse return null;
+    defer py.Py_DecRef(structured);
 
-    var rendered: [512]u8 = undefined;
-    if (required == 0 or required > rendered.len) {
-        return raiseStatus(.invalid_source, what);
+    for (0..count) |index| {
+        const entry = diagnosticEntry(diagnostics, index) orelse return null;
+        // PyTuple_SetItem steals the reference, including when it fails.
+        if (py.PyTuple_SetItem(structured, @intCast(index), entry) != 0) return null;
     }
+
+    var summary: [700]u8 = undefined;
+    const text = summarize(&summary, diagnostics, what, count) orelse
+        return raiseStatus(.invalid_source, what);
+
+    const arguments = py.PyTuple_New(1) orelse return null;
+    defer py.Py_DecRef(arguments);
+    const message = py.PyUnicode_FromStringAndSize(
+        text.ptr,
+        @intCast(text.len),
+    ) orelse return null;
+    if (py.PyTuple_SetItem(arguments, 0, message) != 0) return null;
+
+    const instance = py.PyObject_CallObject(exception, arguments) orelse return null;
+    defer py.Py_DecRef(instance);
+    if (py.PyObject_SetAttrString(instance, "diagnostics", structured) != 0) {
+        return null;
+    }
+    py.PyErr_SetObject(exception, instance);
+    return null;
+}
+
+/// Writes the one-line summary that becomes the exception's message.
+fn summarize(
+    buffer: []u8,
+    diagnostics: ?*const PhaserDiagnostics,
+    what: []const u8,
+    count: usize,
+) ?[:0]u8 {
+    var rendered: [512]u8 = undefined;
     var written: usize = 0;
     if (phaser_diagnostics_render(
         diagnostics,
@@ -517,17 +684,15 @@ fn raiseDiagnostics(diagnostics: ?*PhaserDiagnostics, what: []const u8) ?*py.PyO
         rendered.len,
         &written,
     ) != .ok) {
-        return raiseStatus(.invalid_source, what);
+        // Too long for the summary buffer, which is not a failure: the full
+        // text is in the structured attribute either way.
+        written = 0;
     }
-
-    var message: [700]u8 = undefined;
-    const text = std.fmt.bufPrintZ(&message, "{s}: {s}{s}", .{
+    return std.fmt.bufPrintZ(buffer, "{s}: {s}{s}", .{
         what,
         rendered[0..written],
         if (count > 1) " (and further diagnostics)" else "",
-    }) catch return raiseStatus(.invalid_source, what);
-    py.PyErr_SetString(py.PyExc_ValueError, text.ptr);
-    return null;
+    }) catch null;
 }
 
 fn raiseType(comptime message: []const u8) ?*py.PyObject {
@@ -1402,5 +1567,23 @@ var module = py.PyModuleDef{
 };
 
 export fn PyInit__phaser() ?*py.PyObject {
-    return py.PyModule_Create2(&module, py.PYTHON_ABI_VERSION);
+    const created = py.PyModule_Create2(&module, py.PYTHON_ABI_VERSION) orelse
+        return null;
+
+    if (source_error == null) {
+        source_error = py.PyErr_NewException(
+            "phaser._phaser.SourceError",
+            py.PyExc_ValueError,
+            null,
+        );
+    }
+    const exception = source_error orelse {
+        py.Py_DecRef(created);
+        return null;
+    };
+    if (py.PyModule_AddObjectRef(created, "SourceError", exception) != 0) {
+        py.Py_DecRef(created);
+        return null;
+    }
+    return created;
 }

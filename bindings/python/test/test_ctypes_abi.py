@@ -55,6 +55,30 @@ class Complex(ctypes.Structure):
     _fields_ = [("re", ctypes.c_double), ("im", ctypes.c_double)]
 
 
+SEVERITY_ERROR = 0
+
+CATEGORY_JSON = 4
+CATEGORY_MODEL = 6
+
+
+class DiagnosticRecord(ctypes.Structure):
+    """`phaser_diagnostic`, transcribed field by field from the header."""
+
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("abi_version", ctypes.c_uint32),
+        ("code", ctypes.c_uint32),
+        ("category", ctypes.c_int32),
+        ("severity", ctypes.c_int32),
+        ("has_primary", ctypes.c_int32),
+        ("primary_source_id", ctypes.c_uint32),
+        ("primary_start", ctypes.c_uint32),
+        ("primary_end", ctypes.c_uint32),
+        ("related_count", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+    ]
+
+
 class ComplexOutputs(ctypes.Structure):
     _fields_ = [
         ("struct_size", ctypes.c_uint32),
@@ -174,6 +198,14 @@ def load():
         ),
         "phaser_diagnostics_destroy": ([p], None),
         "phaser_diagnostics_count": ([p, size_p], ctypes.c_int),
+        "phaser_diagnostics_at": (
+            [p, ctypes.c_size_t, ctypes.POINTER(DiagnosticRecord)],
+            ctypes.c_int,
+        ),
+        "phaser_diagnostics_render": (
+            [p, ctypes.c_size_t, p, ctypes.c_size_t, size_p],
+            ctypes.c_int,
+        ),
     }
     for name, (argtypes, restype) in signatures.items():
         function = getattr(library, name)
@@ -757,6 +789,74 @@ class TestExtensionAgreement(AbiTestCase):
             phaser.CAPABILITIES[native_kernel.capability], capability.value
         )
         self.assertEqual(native_kernel.coordinate_count, coordinates.value)
+
+    def test_the_structured_diagnostics_agree(self):
+        # The extension's `phaser_diagnostic` layout is transcribed here by
+        # hand, from the header. A field that moved would show up as a wrong
+        # value in one description and not the other, which is the same
+        # reasoning as `test/integration/abi_layout.zig`.
+        context = self.context()
+        model = ctypes.c_void_p()
+        diagnostics = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_model_load(
+                context,
+                b"{ not json",
+                len(b"{ not json"),
+                ctypes.byref(model),
+                ctypes.byref(diagnostics),
+            ),
+            STATUS_INVALID_SOURCE,
+        )
+        self.own(self.lib.phaser_diagnostics_destroy, diagnostics)
+
+        count = ctypes.c_size_t()
+        self.assertEqual(
+            self.lib.phaser_diagnostics_count(diagnostics, ctypes.byref(count)),
+            STATUS_OK,
+        )
+
+        record = DiagnosticRecord()
+        record.struct_size = ctypes.sizeof(DiagnosticRecord)
+        self.assertEqual(
+            self.lib.phaser_diagnostics_at(diagnostics, 0, ctypes.byref(record)),
+            STATUS_OK,
+        )
+        self.assertEqual(record.severity, SEVERITY_ERROR)
+        self.assertEqual(record.category, CATEGORY_JSON)
+        self.assertNotEqual(record.has_primary, 0)
+
+        required = ctypes.c_size_t()
+        self.assertEqual(
+            self.lib.phaser_diagnostics_render(
+                diagnostics, 0, None, 0, ctypes.byref(required)
+            ),
+            STATUS_INSUFFICIENT_SPACE,
+        )
+        buffer = ctypes.create_string_buffer(required.value)
+        written = ctypes.c_size_t()
+        self.assertEqual(
+            self.lib.phaser_diagnostics_render(
+                diagnostics, 0, buffer, required.value, ctypes.byref(written)
+            ),
+            STATUS_OK,
+        )
+        rendered = buffer.raw[: written.value].decode("utf-8")
+
+        with self.assertRaises(phaser.SourceError) as raised:
+            phaser.Model(b"{ not json")
+        native = raised.exception
+
+        self.assertEqual(len(native.diagnostics), count.value)
+        first = native.diagnostics[0]
+        self.assertEqual(first.code, record.code)
+        self.assertEqual(first.message, rendered)
+        self.assertEqual(first.related_count, record.related_count)
+        self.assertEqual(phaser.SEVERITIES[record.severity], first.severity)
+        self.assertEqual(phaser.CATEGORIES[record.category], first.category)
+        self.assertEqual(first.source_id, record.primary_source_id)
+        self.assertEqual(first.start, record.primary_start)
+        self.assertEqual(first.end, record.primary_end)
 
     def test_the_rendered_equations_agree(self):
         artifact, _, _ = self.build_binding()

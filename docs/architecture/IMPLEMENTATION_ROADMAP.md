@@ -636,6 +636,20 @@ verified.
   equality. The observation is stronger than the promise, and the promise is
   what a later target must satisfy.
 
+- **More than one diagnostic on a single rejection.** The Python binding
+  attaches every diagnostic a rejected document produced, and its exception
+  message says "(and further diagnostics)" when there is more than one. Neither
+  is currently reachable: every rejection the tests can construct — malformed
+  JSON, a wrong schema, a tensor component naming an unknown field, a request
+  coordinate the model does not have, nesting deep enough to exhaust the
+  parser — produces exactly one. The loader stops at the first error rather
+  than recovering and continuing. The plural path is implemented, and the
+  single-diagnostic path is what is tested.
+
+  What is exercised is the other axis: a diagnostic with a primary span and one
+  without both reach Python, and the second reports no span rather than a span
+  of zero.
+
 - **`nonconvergent` and scheme mismatch.** Both remain reachable only as
   Milestone 3 recorded them. The C ABI publishes `PHASER_POINT_NONCONVERGENT`
   and maps the scheme-mismatch bind failure to `PHASER_STATUS_INVALID_ARGUMENT`,
