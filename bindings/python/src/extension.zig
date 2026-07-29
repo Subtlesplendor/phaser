@@ -21,6 +21,13 @@ const std = @import("std");
 const py = @cImport({
     @cDefine("Py_LIMITED_API", "0x030B0000");
     @cDefine("PY_SSIZE_T_CLEAN", {});
+    // Microsoft's C runtime declares the bounds-checked `_s` string functions
+    // through inline wrappers that Zig's C translation renders as unused local
+    // constants, which it then rejects -- `wcscat_s` and `wcscpy_s` reach here
+    // through Python.h without anything in this file asking for them. The
+    // macro is the documented way to suppress those declarations. It is
+    // defined unconditionally because no other platform's headers consult it.
+    @cDefine("__STDC_WANT_SECURE_LIB__", "0");
     @cInclude("Python.h");
 });
 
