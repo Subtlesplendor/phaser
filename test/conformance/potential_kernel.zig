@@ -415,6 +415,70 @@ test "fused outputs agree with separately compiled kernels" {
     try std.testing.expectEqual(fused_hessian[1], fused_hessian[2]);
 }
 
+test "each point's gradient and Hessian land at its own offset in a batch" {
+    // A single-point evaluation isn't enough to pin down the output indexing
+    // arithmetic (point * coordinates + index, point * stride + index):
+    // every `point` term is multiplied by zero. This batches two points with
+    // two coordinates each (stride 4, distinct from the coordinate count 2)
+    // and checks the second point's slice against its own solo evaluation.
+    var batched = try Harness.init(
+        example_data.multi_scalar_model,
+        full_space_request,
+        .value_gradient_hessian,
+    );
+    defer batched.deinit();
+
+    var parameters: [15]Scalar = undefined;
+    for (&parameters, 0..) |*slot, index| {
+        slot.* = 0.75 + @as(Scalar, @floatFromInt(index)) * 0.25;
+    }
+    const points = [_]Scalar{ 1.5, -0.5, 0.3, 0.7 };
+
+    const layout = batched.kernel.workspaceLayout(2);
+    const workspace = try test_allocator.allocator.alignedAlloc(
+        u8,
+        .of(Scalar),
+        layout.bytes,
+    );
+    defer test_allocator.allocator.free(workspace);
+
+    var values: [2]Scalar = undefined;
+    var gradients: [4]Scalar = undefined;
+    var hessians: [8]Scalar = undefined;
+    var statuses: [2]kernel_module.Status = undefined;
+    try batched.kernel.evaluate(
+        .{ .parameters = &parameters, .backgrounds = &points },
+        2,
+        workspace,
+        .{
+            .values = &values,
+            .gradients = &gradients,
+            .hessians = &hessians,
+            .statuses = &statuses,
+        },
+    );
+
+    var solo_value: [1]Scalar = undefined;
+    var solo_gradient: [2]Scalar = undefined;
+    var solo_hessian: [4]Scalar = undefined;
+    var solo_status: [1]kernel_module.Status = undefined;
+    try batched.kernel.evaluate(
+        .{ .parameters = &parameters, .backgrounds = points[2..4] },
+        1,
+        batched.workspace,
+        .{
+            .values = &solo_value,
+            .gradients = &solo_gradient,
+            .hessians = &solo_hessian,
+            .statuses = &solo_status,
+        },
+    );
+
+    try std.testing.expectEqual(solo_value[0], values[1]);
+    try std.testing.expectEqualSlices(Scalar, &solo_gradient, gradients[2..4]);
+    try std.testing.expectEqualSlices(Scalar, &solo_hessian, hessians[4..8]);
+}
+
 test "workspace is sufficient at the queried size and rejected below it" {
     var harness = try Harness.init(
         example_data.phi4_model,

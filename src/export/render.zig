@@ -1126,6 +1126,37 @@ test "symbolic constants and exact radicals are preserved" {
     try std.testing.expect(std.mem.indexOf(u8, latex, "\\,") != null);
 }
 
+test "a bare negative root keeps its sign" {
+    // The top-level step is built with the default negate_coefficient
+    // (false): nothing upstream has already emitted a "-" for this root, so
+    // its own sign must not be stripped.
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const negative_three = try builder.integer(-3, 0);
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    try expectRender(&graph, negative_three, .phaser, "-3");
+}
+
+test "a negative radicand keeps its sign inside the radical" {
+    // sqrt_rational never receives the caller's negate_coefficient (unlike
+    // .rational): its sign is part of the radicand, not a factor a preceding
+    // "-" already accounted for. A negative value here must render with the
+    // "-" still attached to the digits inside sqrt(...) / \sqrt{...}.
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    var minus_two = try value.graph.exact.MutableRational.initInteger(
+        std.testing.allocator,
+        "-2",
+    );
+    defer minus_two.deinit();
+    const radical = try builder.sqrtRational(&minus_two, 0);
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    try expectRender(&graph, radical, .phaser, "sqrt(-2)");
+    try expectRender(&graph, radical, .latex, "\\sqrt{-2}");
+}
+
 test "precedence adds only the parentheses it needs" {
     var builder = try value.Builder.init(std.testing.allocator, .{});
     const a = try builder.parameter(0, "a", 0);
@@ -1174,6 +1205,25 @@ test "negative coefficients render as conventional subtraction" {
     try std.testing.expect(std.mem.indexOf(u8, text, " - ") != null or
         std.mem.startsWith(u8, text, "-"));
     try std.testing.expect(std.mem.indexOf(u8, text, "-1") == null);
+}
+
+test "a non-unit negative coefficient keeps its magnitude" {
+    // isUnitMagnitude must say no for a 3/4 coefficient, or a negated term
+    // like "-3/4 * b" collapses to "-b" and silently drops the magnitude.
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const a = try builder.parameter(0, "a", 0);
+    const b = try builder.parameter(1, "b", 0);
+    const three_quarters_b = try builder.multiply(&.{
+        try builder.divide(try builder.integer(3, 0), try builder.integer(4, 0)),
+        b,
+    });
+    const difference = try builder.subtract(a, three_quarters_b);
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    const text = try renderForTest(&graph, difference, .phaser);
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "3/4") != null);
 }
 
 test "identifiers are escaped rather than interpreted as markup" {
@@ -1315,6 +1365,22 @@ test "shared subexpressions are counted once" {
 
     // add(2, phi^2) reaches four distinct nodes: the sum, the coefficient, the
     // power, and the coordinate.
+    const total = try countNodes(&graph, doubled, std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 4), total);
+}
+
+test "a node built earlier but not reachable from root is not counted" {
+    // The reachable set must start all-false: an unrelated node with a lower
+    // index than root sits inside the scanned range but must not be marked
+    // reachable just because the sweep passes over its slot.
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const phi = try builder.background(0, "phi", 1);
+    _ = try builder.parameter(0, "unrelated", 0);
+    const squared = try builder.power(phi, 2);
+    const doubled = try builder.add(&.{ squared, squared });
+    var graph = try builder.finish();
+    defer graph.deinit();
+
     const total = try countNodes(&graph, doubled, std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 4), total);
 }

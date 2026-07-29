@@ -791,6 +791,30 @@ test "an invalid request reports diagnostics and no handle" {
     try std.testing.expect(count > 0);
 }
 
+test "a null request source with a nonzero length is rejected, and an empty one is not" {
+    const context = try createContext();
+    defer phaser_context_destroy(context);
+
+    var request: ?*PhaserRequest = null;
+    var diagnostics: ?*PhaserDiagnostics = null;
+
+    // A null pointer with a claimed length is a caller mistake, and one that
+    // would otherwise be a read of address zero.
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_request_parse(context, null, 16, &request, &diagnostics),
+    );
+
+    // Zero bytes is a well-formed call describing an empty document, which the
+    // parser then rejects on its own terms.
+    try std.testing.expectEqual(
+        Status.invalid_source,
+        phaser_request_parse(context, null, 0, &request, &diagnostics),
+    );
+    defer phaser_diagnostics_destroy(diagnostics);
+    try std.testing.expect(diagnostics != null);
+}
+
 test "a one-loop artifact is complex and carries both contributions" {
     var chain = try derive(one_loop_request);
     defer chain.deinit();
