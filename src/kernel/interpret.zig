@@ -915,3 +915,66 @@ test "the spectral sum preserves multiplicity and adds in stored order" {
     const without = scalarOneLoopSum(&.{4}, 1);
     try std.testing.expectEqual(without.re, with_zero.re);
 }
+
+/// Builds a minimal validated program directly from instructions, without
+/// going through model derivation. `value.Builder.divide` folds division by
+/// any compile-time rational into a multiply by its reciprocal, so no
+/// derived program ever contains a genuine `.divide` instruction at tree
+/// level; this is the only way to exercise the interpreter's own division.
+fn programForDivideTest(allocator: std.mem.Allocator) !Program {
+    const arena = try allocator.create(std.heap.ArenaAllocator);
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    const instructions = try arena.allocator().dupe(Instruction, &.{
+        .{ .load_constant = .{ .result = 0, .source = 0 } },
+        .{ .load_constant = .{ .result = 1, .source = 1 } },
+        .{ .divide = .{ .result = 2, .numerator = 0, .denominator = 1 } },
+    });
+    const constants = try arena.allocator().dupe(Scalar, &.{ 6.0, 4.0 });
+    const temporaries = try arena.allocator().alloc(Temporary, 3);
+    for (temporaries, 0..) |*slot, index| {
+        slot.* = .{
+            .kind = .real,
+            .alignment = @alignOf(Scalar),
+            .offset = index * @sizeOf(Scalar),
+            .bytes = @sizeOf(Scalar),
+            .live = .{ .first_write = 0, .last_use = std.math.maxInt(u32) },
+        };
+    }
+    const frame_bytes = 3 * @sizeOf(Scalar);
+    return .{
+        .arena = arena,
+        .instructions = instructions,
+        .constants = constants,
+        .temporaries = temporaries,
+        .outputs = .{ .value = 2, .gradient = &.{}, .hessian = &.{} },
+        .capability = .value,
+        .result_type = .real64,
+        .frame_bytes = frame_bytes,
+        .scratch_offset = frame_bytes,
+        .scratch_bytes = 0,
+        .parameter_stage_count = 0,
+        .parameter_count = 0,
+        .scale_count = 0,
+        .background_count = 0,
+        .coordinate_count = 0,
+    };
+}
+
+test "division computes the quotient rather than the product" {
+    var program = try programForDivideTest(std.testing.allocator);
+    defer program.deinit();
+
+    var workspace: [3 * @sizeOf(Scalar)]u8 align(@alignOf(Scalar)) = undefined;
+    var value: [1]Scalar = undefined;
+    var status: [1]Status = undefined;
+    try evaluate(
+        &program,
+        .{ .parameters = &.{}, .backgrounds = &.{} },
+        1,
+        &workspace,
+        .{ .values = &value, .statuses = &status },
+    );
+
+    try std.testing.expectEqual(Status.ok, status[0]);
+    try std.testing.expectEqual(@as(Scalar, 1.5), value[0]);
+}

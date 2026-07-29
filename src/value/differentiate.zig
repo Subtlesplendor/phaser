@@ -68,6 +68,14 @@ pub fn differentiate(
     background: Background,
     position: usize,
 ) BuildError!ValueId {
+    // A caller precondition, not a validated input: every legitimate call
+    // already has `position < background.count()`, so no test built from
+    // legitimate usage can distinguish `<` from `<=` here -- both accept the
+    // same calls a correct caller makes. The only way to exercise the
+    // boundary itself is to call with `position == background.count()`,
+    // which is invalid usage by definition and (as an `assert`, not a
+    // catchable error) would abort the test process rather than fail a
+    // single test. Kept as a guard against a future caller bug.
     std.debug.assert(position < background.count());
 
     var sweep = Sweep{ .builder = builder, .background = background };

@@ -1197,6 +1197,13 @@ test "orbit denominators follow the multiplicity rule" {
 fn denominatorOf(indices: []const u32) u64 {
     var denominator: u64 = 1;
     var start: usize = 0;
+    // `start <= indices.len` is an equivalent mutant, not merely an untested
+    // one: relaxing the bound only lets the loop run once more with
+    // `start == indices.len`, and that extra pass computes `end = start + 1`
+    // then finds `end < indices.len` immediately false, short-circuiting the
+    // `and` before `indices[start]` is ever read. The pass ends with
+    // `multiplicity = end - start == 1`, so it multiplies the denominator by
+    // `factorial(1) == 1` -- a no-op for every input, not just this one.
     while (start < indices.len) {
         var end = start + 1;
         while (end < indices.len and indices[end] == indices[start]) end += 1;
@@ -1570,12 +1577,26 @@ test "audit catches a contribution whose value's domain disagrees with its decla
 test "audit catches contributions out of canonical role order" {
     var artifact = try freshAuditableArtifact();
     defer artifact.deinit();
-    const contributions = @constCast(artifact.contributions);
-    // Two contributions naming the same role is the least-ordered case: it
-    // violates strict ascending order at the boundary (equal, not merely
-    // out of order), which is exactly what distinguishes this check from one
-    // that only rejects a decrease.
-    contributions[1].role = contributions[0].role;
+    if (artifact.contributions.len == 0) return error.TestUnexpectedResult;
+    // Inserting a second copy of the first contribution right after itself
+    // makes every original role still derived exactly once (so the
+    // requested/derived/absent check downstream stays satisfied) while
+    // introducing a tie at the very front: the least-ordered violation there
+    // is, which is exactly what distinguishes this check from one that only
+    // rejects a decrease. Overwriting a field in place instead would also
+    // break the loop_order/role consistency check, which would catch the
+    // corruption first and mask whether this boundary check itself works.
+    var owned = std.ArrayList(Contribution).empty;
+    defer owned.deinit(std.testing.allocator);
+    try owned.append(std.testing.allocator, artifact.contributions[0]);
+    try owned.append(std.testing.allocator, artifact.contributions[0]);
+    for (artifact.contributions[1..]) |item| {
+        try owned.append(std.testing.allocator, item);
+    }
+    artifact.contributions = try artifact.arena.allocator().dupe(
+        Contribution,
+        owned.items,
+    );
     try std.testing.expect(!artifact.audit());
 }
 
