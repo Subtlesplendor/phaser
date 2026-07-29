@@ -20,6 +20,8 @@ pub const diagnostics: u32 = 0x5048_4303;
 pub const request: u32 = 0x5048_4304;
 pub const artifact: u32 = 0x5048_4305;
 pub const kernel: u32 = 0x5048_4306;
+pub const point: u32 = 0x5048_4307;
+pub const binding: u32 = 0x5048_4308;
 
 /// Written over a tag immediately before the handle's memory is freed.
 pub const destroyed: u32 = 0x5048_44ED;
@@ -38,6 +40,8 @@ test "tags are distinct" {
         request,
         artifact,
         kernel,
+        point,
+        binding,
         destroyed,
     };
     for (tags, 0..) |left, i| {
