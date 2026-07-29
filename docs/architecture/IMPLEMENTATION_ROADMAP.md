@@ -569,8 +569,59 @@ independently checkable and close first.
 
 ### Gate accounting
 
-Filled in as each phase closes, in the form Milestones 2 and 3 use: one row per
-exit criterion, naming the evidence that closes it.
+In the form Milestones 2 and 3 use: one row per exit criterion, naming the
+evidence that closes it. Phase B's rows are added when that phase closes.
+
+#### Phase A
+
+| Criterion | Evidence |
+|---|---|
+| Direct Zig, C, and CLI results agree on committed models and points | `test/differential/abi_agreement.zig` evaluates `examples/phi4` at one loop through the C ABI and through the Zig core, and compares both against `examples/phi4/scan_total.tsv`, which is command-line output that `test/integration/cli_examples.zig` compares byte for byte. The comparison is bitwise rather than approximate, and the scan crosses the sign change of the field-dependent mass-squared, so both the complex and the exactly-real branch are exercised |
+| Ownership, diagnostic lifetime, and invalid-buffer behavior are tested | `test/integration/abi_lifecycle.zig`: diagnostics outlive the source bytes they describe, every query rejects null handles and null out parameters, handles of the wrong type are rejected rather than dereferenced, wrong-destructor calls are no-ops that leave the handle usable, and capacity failures are reported before anything is written. Repeated destruction is qualified below |
+| `phaser.h` compiles clean as C and C++ under independent compilers; layout, constants, and symbols checked against the ABI | `tools/ci/check_abi.sh` and `check_abi.ps1` compile the header under GCC, Clang, Apple Clang, and MSVC with warnings as errors. `test/integration/abi_layout.zig` transcribes the header's offsets, sizes, and enumerator values by hand rather than reading them from the Zig types, so the two descriptions are independent. `tools/ci/abi_public_symbols.txt` is compared against the shared library's exports in both directions, and was failed deliberately each way |
+| Static and shared linkage both execute the C conformance client on all three platforms | `examples/c/abi_client.c` runs against both products on Linux x86-64, macOS ARM64, and Windows x86-64. The Windows static link uses `lld-link`; `link.exe` cannot consume the archive, which is recorded in [Language and Interoperability §4.1](LANGUAGE_AND_INTEROPERABILITY.md#41-linking-statically-on-windows) |
+| Windows results agree with the other platforms, natively | The Windows tier runs the complete bounded suite natively on `windows-2025`, not by cross-compilation. Agreement is byte-for-byte through the committed golden outputs, which `test/integration/cli_examples.zig` compares on every platform, and through the bitwise comparison in the first row. See the qualification below on what this does and does not establish |
+| Per-point statuses cross the boundary undamaged | `test/integration/abi_lifecycle.zig` evaluates below and above the sign change: the point below reports `PHASER_POINT_OK` with a nonzero imaginary component, and the point above reports `PHASER_POINT_OK` with an imaginary component of exactly zero. `phaser_evaluate` refuses a complex binding rather than projecting, and `phaser_evaluate_complex` refuses a real one. The status array's length must equal the point count, so an unwritten entry cannot be read as a success. `src/abi/status.zig` asserts at compile time that the published enum mirrors the kernel's by name and by value |
+| ABI version 0 remains explicitly experimental | `phaser_abi_experimental()` returns nonzero and is asserted by both the Zig tests and the C client. It is a separate query from the version so that declaring version 1 and dropping the marker stay distinguishable events |
+
+Common-gate items: the specifications this phase implements were reviewed in
+decisions [0013](../decisions/0013-c-abi-v0-surface.md) and
+[0014](../decisions/0014-public-header-and-toolchain-baseline.md) and in
+[Language and Interoperability §5](LANGUAGE_AND_INTEROPERABILITY.md#5-c-abi);
+supported and unsupported cases are stated there; Debug and ReleaseSafe both run
+in continuous integration on all three platforms.
+
+### Requirements satisfied only trivially
+
+Implemented but not currently exercisable, recorded here rather than counted as
+verified.
+
+- **Repeated destruction of the same handle.** Each handle carries a distinct
+  tag that is overwritten before its memory is released, so a second
+  destruction usually finds a tag that is no longer its own and returns without
+  acting. That is best effort and cannot be asserted: once the allocator has
+  reused the block, the bytes may spell anything, and a test that destroyed a
+  live handle twice would be reading freed memory to check that reading freed
+  memory is safe. What is tested is the deterministic half — a destructor
+  handed a handle of the wrong type rejects it and leaves that handle usable.
+  The contract remains that a handle is destroyed exactly once.
+
+- **Cross-platform numerical agreement, continued.** Milestone 3 recorded that
+  its two platforms had identical arithmetic and that the one-loop logarithm was
+  the first operation that could distinguish them. Adding Windows x86-64 does
+  not change that: it executes the same instruction set as Linux x86-64 with the
+  same rounding, so the third tier can expose a code-generation or library
+  difference but is not a third arithmetic. The committed goldens do now agree
+  byte for byte across all three, which is real evidence and is more than
+  Milestone 3 had; it is not yet evidence that ARM64 and x86-64 agree on the
+  logarithm, because no comparison in this repository isolates that operation
+  across those two targets.
+
+- **`nonconvergent` and scheme mismatch.** Both remain reachable only as
+  Milestone 3 recorded them. The C ABI publishes `PHASER_POINT_NONCONVERGENT`
+  and maps the scheme-mismatch bind failure to `PHASER_STATUS_INVALID_ARGUMENT`,
+  so neither is unimplemented at the boundary, but neither is produced by any
+  admissible input the tests can construct.
 
 ## 9. Milestone 5: C++ and Wolfram Language interoperability
 

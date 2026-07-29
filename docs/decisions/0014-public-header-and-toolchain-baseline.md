@@ -138,7 +138,7 @@ Beyond compiling the header, the per-change tier gains:
   and the client, so the independent-compiler requirement is met by the front
   end that reads them. The limitation and its two failing configurations are
   recorded in
-  [Language and Interoperability §4.1](../architecture/LANGUAGE_AND_INTEROPERABILITY.md#41-known-limitation-msvc-and-static-linkage),
+  [Language and Interoperability §4.1](../architecture/LANGUAGE_AND_INTEROPERABILITY.md#41-linking-statically-on-windows),
   where a Windows consumer will look for it.
 - **Layout parity across ABIs.** The layout tests run on all three platforms
   rather than one, because the Windows x64 calling convention and structure

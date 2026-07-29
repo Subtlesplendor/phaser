@@ -1800,3 +1800,64 @@ test "evaluation rejects a background buffer of the wrong length" {
         ),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Destruction misuse.
+// ---------------------------------------------------------------------------
+
+test "destroying through the wrong destructor is a no-op, not a corruption" {
+    // Each handle carries a distinct tag, so a destructor that receives the
+    // wrong kind of handle rejects it rather than freeing it as though it were
+    // its own type. That is the deterministic half of the double-destroy
+    // guard: nothing is freed, and the handle keeps working.
+    var bound = try bind(one_loop_request);
+    defer bound.deinit();
+
+    phaser_model_destroy(@ptrCast(bound.chain.request));
+    phaser_request_destroy(@ptrCast(bound.chain.artifact));
+    phaser_artifact_destroy(@ptrCast(bound.kernel));
+    phaser_kernel_destroy(@ptrCast(bound.point));
+    phaser_point_destroy(@ptrCast(bound.binding));
+    phaser_binding_destroy(@ptrCast(bound.chain.model));
+
+    // Every handle above survived, which it would not have if any destructor
+    // had acted on a foreign tag. The subsequent cleanup in `deinit` would also
+    // double-free if one had.
+    var count: usize = 0;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_model_parameter_count(bound.chain.model, &count),
+    );
+    try std.testing.expectEqual(@as(usize, 2), count);
+
+    var order: u32 = 99;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_request_loop_order(bound.chain.request, &order),
+    );
+    try std.testing.expectEqual(@as(u32, 1), order);
+
+    var kind: i32 = -1;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_binding_result_type(bound.binding, &kind),
+    );
+    try std.testing.expectEqual(@as(i32, 1), kind);
+}
+
+test "every destructor accepts null repeatedly" {
+    // Ordinary C cleanup calls a destructor on a variable that may never have
+    // been assigned, and does so on every path. It must be safe to do more than
+    // once.
+    var iteration: usize = 0;
+    while (iteration < 3) : (iteration += 1) {
+        phaser_context_destroy(null);
+        phaser_model_destroy(null);
+        phaser_request_destroy(null);
+        phaser_artifact_destroy(null);
+        phaser_kernel_destroy(null);
+        phaser_point_destroy(null);
+        phaser_binding_destroy(null);
+        phaser_diagnostics_destroy(null);
+    }
+}
