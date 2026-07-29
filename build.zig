@@ -767,9 +767,14 @@ fn configurePythonExtension(
             "PYTHONPATH",
             b.getInstallPath(.{ .custom = "python" }, ""),
         );
+        // Windows installs a DLL beside the executables and leaves only its
+        // import library in lib/, so the artifact the ctypes client loads is
+        // not in the same place on every platform.
+        const shared_directory: std.Build.InstallDir =
+            if (target.result.os.tag == .windows) .bin else .lib;
         run_suite.setEnvironmentVariable(
             "PHASER_SHARED_LIBRARY",
-            b.getInstallPath(.lib, shared_library_file),
+            b.getInstallPath(shared_directory, shared_library_file),
         );
         run_suite.step.dependOn(python_step);
         run_suite.step.dependOn(b.getInstallStep());
