@@ -26,6 +26,7 @@ from collections import namedtuple
 
 from . import _phaser
 from ._phaser import (  # noqa: F401
+    SourceError,
     abi_experimental,
     abi_version,
     library_version,
@@ -35,12 +36,14 @@ __all__ = [
     "Artifact",
     "Binding",
     "Context",
+    "Diagnostic",
     "Evaluation",
     "Kernel",
     "Model",
     "ParameterPoint",
     "PointResult",
     "Request",
+    "SourceError",
     "abi_experimental",
     "abi_version",
     "library_version",
@@ -66,10 +69,61 @@ POINT_STATUSES = {
     4: "singular_derivative",
 }
 
+SEVERITIES = {0: "error", 1: "warning", 2: "note"}
+CATEGORIES = {
+    0: "source",
+    1: "capacity",
+    2: "allocation",
+    3: "configuration",
+    4: "json",
+    5: "expression",
+    6: "model",
+    7: "calculation",
+}
+
 _CAPABILITY_NAMES = {code: name for name, code in CAPABILITIES.items()}
 
 #: One point's results, as returned by :meth:`Binding.evaluate_at`.
 PointResult = namedtuple("PointResult", "value gradient hessian status")
+
+#: One structured diagnostic. ``source_id``, ``start``, and ``end`` are None
+#: when the diagnostic carries no primary source location -- which is different
+#: from a span at offset zero, and has to stay different.
+Diagnostic = namedtuple(
+    "Diagnostic",
+    "code severity category message related_count source_id start end",
+    defaults=(None, None, None),
+)
+
+
+def _diagnostic(entry):
+    return Diagnostic(
+        code=entry["code"],
+        # Unlike everywhere else, an unrecognized enumerator falls back to its
+        # number instead of raising. This runs while an exception is already
+        # being reported, and refusing to name a category is no reason to
+        # replace the diagnostic the caller actually needs to read.
+        severity=SEVERITIES.get(entry["severity"], entry["severity"]),
+        category=CATEGORIES.get(entry["category"], entry["category"]),
+        message=entry["message"],
+        related_count=entry["related_count"],
+        source_id=entry.get("source_id"),
+        start=entry.get("start"),
+        end=entry.get("end"),
+    )
+
+
+def _structured(call, *arguments):
+    """Calls a parse primitive, naming the diagnostics it may raise.
+
+    The extension attaches the raw records; the names live here, next to the
+    tables that define them, rather than being duplicated in Zig.
+    """
+    try:
+        return call(*arguments)
+    except SourceError as error:
+        error.diagnostics = tuple(_diagnostic(entry) for entry in error.diagnostics)
+        raise
 
 
 def _named(table, code, what):
@@ -122,7 +176,9 @@ class Model:
 
     def __init__(self, source, *, context=None):
         self.context = Context() if context is None else context
-        self._capsule = _phaser.model_load(self.context._capsule, source)
+        self._capsule = _structured(
+            _phaser.model_load, self.context._capsule, source
+        )
         info = _phaser.model_info(self._capsule)
         self.fingerprint = info["fingerprint"]
         self.parameter_count = info["parameter_count"]
@@ -145,7 +201,9 @@ class Request:
 
     def __init__(self, source, *, context=None):
         self.context = Context() if context is None else context
-        self._capsule = _phaser.request_parse(self.context._capsule, source)
+        self._capsule = _structured(
+            _phaser.request_parse, self.context._capsule, source
+        )
         info = _phaser.request_info(self._capsule)
         self.loop_order = info["loop_order"]
         self.coordinate_count = info["coordinate_count"]
@@ -165,8 +223,11 @@ class Artifact:
         self.model = model
         self.request = request
         self.context = model.context
-        self._capsule = _phaser.artifact_derive(
-            self.context._capsule, model._capsule, request._capsule
+        self._capsule = _structured(
+            _phaser.artifact_derive,
+            self.context._capsule,
+            model._capsule,
+            request._capsule,
         )
         info = _phaser.artifact_info(self._capsule)
         self.loop_order = info["loop_order"]
@@ -184,9 +245,38 @@ class Artifact:
             self._capsule, _code(EXPORT_TARGETS, target, "export target")
         )
 
+    def to_latex(self):
+        """The delimiter-free MathJax-compatible fragment.
+
+        No ``$``, no preamble, no document class: the consumer chooses inline
+        or display delimiters. :meth:`_repr_latex_` is one such consumer.
+        """
+        return self.export("latex")
+
+    def to_phaser(self):
+        """The compact plain-text notation, for terminals and logs."""
+        return self.export("phaser")
+
     def compile(self, capability="value_gradient_hessian"):
         """Lowers the symbolic graph to a numerical kernel."""
         return Kernel(self, capability)
+
+    def _repr_latex_(self):
+        """Rich display in a notebook frontend.
+
+        This is a protocol, not a dependency: IPython calls the method if it
+        exists and nothing here imports it, so the package works identically
+        with no notebook stack installed. Outside a frontend the ordinary
+        `repr` below is what a reader sees, and ``print`` gives the equations
+        as plain text.
+
+        The delimiters are added here rather than by the exporter, which emits
+        a fragment precisely so that each consumer can choose them.
+        """
+        return f"$\\displaystyle {self.to_latex()}$"
+
+    def __str__(self):
+        return self.to_phaser()
 
     def __repr__(self):
         return (
@@ -233,7 +323,9 @@ class ParameterPoint:
 
     def __init__(self, source, *, context=None):
         self.context = Context() if context is None else context
-        self._capsule = _phaser.point_parse(self.context._capsule, source)
+        self._capsule = _structured(
+            _phaser.point_parse, self.context._capsule, source
+        )
         self.reference_scale = _phaser.point_info(self._capsule)["reference_scale"]
 
     def __repr__(self):

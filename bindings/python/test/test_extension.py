@@ -64,6 +64,21 @@ ONE_LOOP_REQUEST = b"""{
 }
 """
 
+# Individually valid, but it names a scalar this model does not have. That is
+# the derive-time rejection: neither document is wrong on its own.
+MISMATCHED_REQUEST = b"""{
+  "schema": "phaser.calculation/0.1",
+  "kind": "effective_potential",
+  "background": {
+    "mode": "component_slice",
+    "coordinates": [{"id": "h", "scalar": "nonexistent"}]
+  },
+  "environment": { "kind": "vacuum" },
+  "renormalization": { "scheme": "MSbar" },
+  "orders": { "loop": { "through": 1 } }
+}
+"""
+
 TREE_REQUEST = b"""{
   "schema": "phaser.calculation/0.1",
   "kind": "effective_potential",
@@ -248,6 +263,146 @@ class TestObjects(unittest.TestCase):
     def test_a_plain_object_is_not_a_handle(self):
         with self.assertRaises(TypeError):
             _phaser.model_info(object())
+
+
+class TestDiagnostics(unittest.TestCase):
+    """A rejected document reaches Python as inspectable structure.
+
+    The rendered text alone was enough to say a document was rejected. It is
+    not enough to act on one: a tool that wants to underline the offending
+    span, or filter by severity, would have to parse the message back apart.
+    """
+
+    def rejected(self, *arguments, **keywords):
+        constructor = arguments[0]
+        with self.assertRaises(phaser.SourceError) as raised:
+            constructor(*arguments[1:], **keywords)
+        return raised.exception
+
+    def test_the_error_is_still_a_value_error(self):
+        # Callers that only want to know a document was rejected keep catching
+        # what they always caught. The structure is additional, not a change.
+        error = self.rejected(phaser.Model, b"{ not json")
+        self.assertIsInstance(error, ValueError)
+
+    def test_a_rejected_model_carries_its_diagnostics(self):
+        error = self.rejected(phaser.Model, b"{ not json")
+        self.assertGreater(len(error.diagnostics), 0)
+        diagnostic = error.diagnostics[0]
+        self.assertIsInstance(diagnostic, phaser.Diagnostic)
+        self.assertIsInstance(diagnostic.code, int)
+        self.assertEqual(diagnostic.severity, "error")
+        self.assertEqual(diagnostic.category, "json")
+        self.assertIn("invalid_json", diagnostic.message)
+        self.assertEqual(diagnostic.related_count, 0)
+
+    def test_the_summary_message_names_the_first_diagnostic(self):
+        error = self.rejected(phaser.Model, b"{ not json")
+        self.assertIn("model", str(error))
+        self.assertIn(error.diagnostics[0].message, str(error))
+
+    def test_a_primary_span_reaches_python_when_there_is_one(self):
+        error = self.rejected(phaser.Model, b"{ not json")
+        diagnostic = error.diagnostics[0]
+        self.assertIsNotNone(diagnostic.start)
+        self.assertIsNotNone(diagnostic.end)
+        self.assertIsNotNone(diagnostic.source_id)
+        self.assertLessEqual(diagnostic.start, diagnostic.end)
+
+    def test_a_diagnostic_without_a_span_reports_none_rather_than_zero(self):
+        # A span of [0, 0) is a location in the document. No span at all is
+        # not, and collapsing the two would point a reader at the first byte
+        # of a file the diagnostic has nothing to do with.
+        context = phaser.Context()
+        model = phaser.Model(VALID_MODEL, context=context)
+        request = phaser.Request(MISMATCHED_REQUEST, context=context)
+        error = self.rejected(model.derive, request)
+
+        diagnostic = error.diagnostics[0]
+        self.assertEqual(diagnostic.category, "calculation")
+        self.assertIn("invalid_background_coordinate", diagnostic.message)
+        self.assertIsNone(diagnostic.source_id)
+        self.assertIsNone(diagnostic.start)
+        self.assertIsNone(diagnostic.end)
+
+    def test_every_parse_path_raises_the_same_way(self):
+        for what, constructor in [
+            ("model", phaser.Model),
+            ("request", phaser.Request),
+            ("point", phaser.ParameterPoint),
+        ]:
+            with self.subTest(document=what):
+                error = self.rejected(constructor, b"{ not json")
+                self.assertGreater(len(error.diagnostics), 0)
+                self.assertIn(what, str(error))
+
+    def test_the_enumerators_are_named_rather_than_numbered(self):
+        error = self.rejected(phaser.Model, b'{"schema": "not.a.phaser.schema/0.1"}')
+        diagnostic = error.diagnostics[0]
+        self.assertIn(diagnostic.severity, phaser.SEVERITIES.values())
+        self.assertIn(diagnostic.category, phaser.CATEGORIES.values())
+
+    def test_diagnostics_survive_the_source_bytes_they_describe(self):
+        # The C ABI promises a diagnostics handle does not borrow from the
+        # source buffer. The extension copies the rendering out before the
+        # handle is destroyed, so this holds in Python for a stronger reason,
+        # and the test states the guarantee a caller relies on.
+        source = bytearray(b"{ not json")
+        error = self.rejected(phaser.Model, bytes(source))
+        source[:] = b"          "
+        del source
+        gc.collect()
+        self.assertIn("invalid_json", error.diagnostics[0].message)
+
+
+class TestRichDisplay(unittest.TestCase):
+    """Notebook display, without a notebook.
+
+    `_repr_latex_` is a protocol rather than a dependency: a frontend calls the
+    method if it exists. Nothing in the package imports IPython, so all of this
+    is checkable with no notebook stack installed -- which is also the point of
+    the last test here.
+    """
+
+    def artifact(self):
+        context = phaser.Context()
+        model = phaser.Model(VALID_MODEL, context=context)
+        return model.derive(phaser.Request(ONE_LOOP_REQUEST, context=context))
+
+    def test_the_latex_fragment_carries_no_delimiters_or_preamble(self):
+        latex = self.artifact().to_latex()
+        for forbidden in ("$", r"\(", r"\[", r"\begin{document}", r"\documentclass"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, latex)
+
+    def test_rich_display_wraps_the_fragment_the_frontend_needs(self):
+        artifact = self.artifact()
+        rendered = artifact._repr_latex_()
+        self.assertTrue(rendered.startswith("$\\displaystyle "))
+        self.assertTrue(rendered.endswith("$"))
+        # The delimiters are the only difference: the exporter emits a fragment
+        # precisely so each consumer chooses its own.
+        self.assertIn(artifact.to_latex(), rendered)
+
+    def test_printing_gives_plain_text_and_repr_gives_a_summary(self):
+        artifact = self.artifact()
+        self.assertEqual(str(artifact), artifact.to_phaser())
+        self.assertNotEqual(str(artifact), artifact.to_latex())
+        self.assertTrue(repr(artifact).startswith("<phaser.Artifact "))
+
+    def test_the_explicit_methods_agree_with_export(self):
+        artifact = self.artifact()
+        self.assertEqual(artifact.to_latex(), artifact.export("latex"))
+        self.assertEqual(artifact.to_phaser(), artifact.export("phaser"))
+
+    def test_importing_phaser_does_not_import_ipython(self):
+        # The specification forbids implementing the display protocol from
+        # introducing a required IPython or Jupyter dependency. Since `phaser`
+        # is already imported at the top of this file, a module here would mean
+        # importing it pulled one in.
+        for forbidden in ("IPython", "jupyter_core", "ipykernel"):
+            with self.subTest(module=forbidden):
+                self.assertNotIn(forbidden, sys.modules)
 
 
 class TestExport(unittest.TestCase):
