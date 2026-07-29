@@ -657,11 +657,19 @@ pub fn build(b: *std.Build) void {
 
 /// Configures the Python extension and its test step.
 ///
-/// The interpreter is asked for its own include directory and extension
-/// suffix rather than either being guessed. That keeps the build correct
-/// across the interpreters the runner images ship and across a contributor's
-/// virtual environment, and it fails loudly if the interpreter has no headers
-/// instead of producing a module that cannot be imported.
+/// The interpreter is asked for its own extension suffix, and on Windows for
+/// the directory holding the Stable ABI stub, rather than either being
+/// guessed. That keeps the build correct across the interpreters the runner
+/// images ship and across a contributor's virtual environment.
+///
+/// Python's headers are not needed: the extension declares the Limited API
+/// subset it uses rather than translating Python.h.
+///
+/// The interpreter must run on the target being built for. Everything here is
+/// derived from the interpreter that is invoked, so cross-compiling the
+/// extension would take the include path and the file-name suffix from the
+/// host and produce a module named for the wrong platform. That is not a
+/// supported configuration; each platform builds its own.
 fn configurePythonExtension(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -670,12 +678,6 @@ fn configurePythonExtension(
     shared_library_file: []const u8,
     interpreter: []const u8,
 ) void {
-    const include_directory = std.mem.trim(u8, b.run(&.{
-        interpreter,
-        "-c",
-        "import sysconfig; print(sysconfig.get_paths()['include'])",
-    }), " \r\n");
-
     const extension_module = b.createModule(.{
         .root_source_file = b.path("bindings/python/src/extension.zig"),
         .target = target,
@@ -684,7 +686,6 @@ fn configurePythonExtension(
         // position-independent for the same reason the shared library is.
         .pic = true,
     });
-    extension_module.addIncludePath(.{ .cwd_relative = include_directory });
     extension_module.link_libc = true;
 
     const extension = b.addLibrary(.{
@@ -699,7 +700,20 @@ fn configurePythonExtension(
     // A CPython extension leaves the interpreter's own symbols undefined and
     // has them resolved at load time by the process that imports it. Windows
     // cannot do that and links the Stable ABI stub instead.
+    //
+    // `python3.lib` is the stub for the Limited API, as distinct from
+    // `python3X.lib`, which pins one minor version and would defeat the point
+    // of building against a stable ABI. It sits in `libs/` beside the
+    // interpreter's installation, which is asked for rather than assumed --
+    // a virtual environment reports the base installation's path, which is
+    // where the import libraries actually live.
     if (target.result.os.tag == .windows) {
+        const libs_directory = std.mem.trim(u8, b.run(&.{
+            interpreter,
+            "-c",
+            "import os, sys; print(os.path.join(sys.base_prefix, 'libs'))",
+        }), " \r\n");
+        extension_module.addLibraryPath(.{ .cwd_relative = libs_directory });
         extension_module.linkSystemLibrary("python3", .{});
     } else {
         extension.linker_allow_shlib_undefined = true;
@@ -753,9 +767,14 @@ fn configurePythonExtension(
             "PYTHONPATH",
             b.getInstallPath(.{ .custom = "python" }, ""),
         );
+        // Windows installs a DLL beside the executables and leaves only its
+        // import library in lib/, so the artifact the ctypes client loads is
+        // not in the same place on every platform.
+        const shared_directory: std.Build.InstallDir =
+            if (target.result.os.tag == .windows) .bin else .lib;
         run_suite.setEnvironmentVariable(
             "PHASER_SHARED_LIBRARY",
-            b.getInstallPath(.lib, shared_library_file),
+            b.getInstallPath(shared_directory, shared_library_file),
         );
         run_suite.step.dependOn(python_step);
         run_suite.step.dependOn(b.getInstallStep());

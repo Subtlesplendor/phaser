@@ -547,23 +547,40 @@ remain deferred.
 The extension is built by `zig build -Dpython=<interpreter>`, which is opt-in.
 Without that option nothing about the binding is configured, so a contributor
 without a suitable interpreter builds, tests, and fuzzes everything else
-unchanged. The interpreter is asked for its own include directory and extension
-suffix rather than either being assumed, so the same build serves a system
-interpreter and a virtual environment.
+unchanged. The interpreter is asked for its own extension suffix, and on Windows
+for the directory holding the Stable ABI stub, rather than either being assumed,
+so the same build serves a system interpreter and a virtual environment.
+
+The extension declares the Limited API subset it uses rather than translating
+`Python.h`, so Python's headers are not a build input on any platform. Two
+reasons, one forced and one preferred. The forced one: Microsoft's C runtime
+declares its bounds-checked `_s` string functions through inline wrappers that
+Zig's C translation renders as unused local constants and then rejects, and
+they reach the extension through `Python.h` without it asking for them. The
+preferred one: a declared subset behaves the same on every platform, where a
+translated header behaves however each platform's headers happen to translate.
+
+What this gives up is a compiler checking those signatures against the real
+header. The Stable ABI is stable by contract, which is the reason for pinning
+`Py_LIMITED_API` in the first place, and a mistake in the declarations is loud
+rather than subtle: a wrong `PyModuleDef` layout makes the module unimportable,
+which every test in the binding reports immediately.
 
 The Phaser core is linked statically into the module, which therefore needs no
 co-installed shared library and no `rpath`.
 
 On ELF and Mach-O the module leaves the interpreter's symbols undefined and has
 them resolved at load time by the process that imports it, which is how CPython
-extensions are built on those platforms. Windows cannot do that and must link
-the Stable ABI stub `python3.lib` instead.
+extensions are built on those platforms. Windows cannot do that and links the
+Stable ABI stub `python3.lib` instead.
 
-**Windows is not yet covered.** The Linux and macOS tiers build and test the
-extension; the Windows tier does not. What is missing is the library search path
-for the stub, which the interpreter can report but the build does not yet ask
-for. This is a gap in the binding's platform coverage, not in the C ABI's:
-`phaser.h` and both library products remain tested on all three platforms.
+That stub is `python3.lib` rather than `python3X.lib`: the latter pins one minor
+version and would defeat the purpose of building against a stable ABI. It lives
+in `libs/` beside the interpreter's base installation, whose path the build asks
+the interpreter for. A virtual environment reports its base installation, which
+is where the import libraries actually are.
+
+All three platforms build and test the binding.
 
 ## 9. Command-line interface
 
