@@ -116,7 +116,14 @@ pub fn build(b: *std.Build) void {
         "Python 3.11+ interpreter used to build and test the extension",
     );
     if (python_interpreter) |interpreter| {
-        configurePythonExtension(b, target, optimize, library, interpreter);
+        configurePythonExtension(
+            b,
+            target,
+            optimize,
+            library,
+            shared_library.out_filename,
+            interpreter,
+        );
     }
 
     const unit_tests = b.addTest(.{
@@ -660,6 +667,7 @@ fn configurePythonExtension(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     library: *std.Build.Step.Compile,
+    shared_library_file: []const u8,
     interpreter: []const u8,
 ) void {
     const include_directory = std.mem.trim(u8, b.run(&.{
@@ -723,24 +731,37 @@ fn configurePythonExtension(
     python_step.dependOn(&install_extension.step);
     python_step.dependOn(&install_package.step);
 
-    // The extension is exercised by an ordinary Python program, because that
-    // is the only way to check what an importing interpreter actually sees.
-    const run_python_tests = b.addSystemCommand(&.{
-        interpreter,
-        "bindings/python/test/test_extension.py",
-    });
-    run_python_tests.setEnvironmentVariable(
-        "PYTHONPATH",
-        b.getInstallPath(.{ .custom = "python" }, ""),
-    );
-    run_python_tests.step.dependOn(python_step);
-    // Nothing is cached: the check is that this interpreter can import and
-    // drive the module that was just built.
-    run_python_tests.has_side_effects = true;
-
     const test_python_step = b.step(
         "test-python",
         "Run the Python binding tests",
     );
-    test_python_step.dependOn(&run_python_tests.step);
+
+    // Both suites are exercised by an ordinary Python program, because that is
+    // the only way to check what an importing interpreter actually sees.
+    //
+    // The ctypes suite additionally needs the shared library, since that is
+    // what it loads: it is an independent consumer of the ABI rather than a
+    // second view of the extension, and loading the same artifact a C client
+    // would is the whole point of keeping it.
+    const python_suites = [_][]const u8{
+        "bindings/python/test/test_extension.py",
+        "bindings/python/test/test_ctypes_abi.py",
+    };
+    for (python_suites) |suite| {
+        const run_suite = b.addSystemCommand(&.{ interpreter, suite });
+        run_suite.setEnvironmentVariable(
+            "PYTHONPATH",
+            b.getInstallPath(.{ .custom = "python" }, ""),
+        );
+        run_suite.setEnvironmentVariable(
+            "PHASER_SHARED_LIBRARY",
+            b.getInstallPath(.lib, shared_library_file),
+        );
+        run_suite.step.dependOn(python_step);
+        run_suite.step.dependOn(b.getInstallStep());
+        // Nothing is cached: the check is that this interpreter can import and
+        // drive what was just built.
+        run_suite.has_side_effects = true;
+        test_python_step.dependOn(&run_suite.step);
+    }
 }
