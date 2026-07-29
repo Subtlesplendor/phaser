@@ -776,6 +776,14 @@ fn configurePythonExtension(
             "PHASER_SHARED_LIBRARY",
             b.getInstallPath(shared_directory, shared_library_file),
         );
+        // The committed example inputs and their golden command-line output.
+        // Comparing against those files is how the binding's numbers are
+        // checked against the same values the CLI and the C ABI are checked
+        // against, rather than against a second copy of them.
+        run_suite.setEnvironmentVariable(
+            "PHASER_EXAMPLES",
+            b.pathFromRoot("examples"),
+        );
         run_suite.step.dependOn(python_step);
         run_suite.step.dependOn(b.getInstallStep());
         // Nothing is cached: the check is that this interpreter can import and

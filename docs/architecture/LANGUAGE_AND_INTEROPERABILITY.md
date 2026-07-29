@@ -515,13 +515,55 @@ The extension SHOULD:
   work where safe; and
 - keep all physics and numerical evaluation in the Zig core.
 
+### 8.1 Objects and lifetimes
+
+The extension publishes primitives, not the user-facing API. Each ABI handle
+crosses into Python as a named capsule; `bindings/python/src/phaser/__init__.py`
+wraps those capsules in classes. Presentation, naming, and convenience are
+ordinary Python, and only what touches the ABI or the buffer protocol is native.
+
+Each capsule owns a strong reference to the capsules its handle was derived
+from, and releases those references only after its own handle has been
+destroyed. That is what enforces the C ABI's outlives-relationships, and it MUST
+stay at the capsule level rather than moving to the Python classes. Holding the
+parent object as an attribute of the child is not sufficient: when the last
+reference to a child goes, its instance dictionary is released and the parent
+may be freed while the child's own capsule is still in that dictionary awaiting
+its turn. The order attributes are torn down in is an interpreter implementation
+detail, and depending on it destroyed a context before the model it owned.
+
+A capsule's name is checked on the way back in, so passing a model where a
+kernel belongs raises rather than reinterpreting a pointer.
+
+### 8.2 Arrays
+
+Backgrounds arrive through the buffer protocol and MUST be C-contiguous
+`float64`. A NumPy array, an `array.array('d')`, and a cast `memoryview` all
+cross without a copy; a plain sequence is copied into one. `bytes` and
+`bytearray` MUST be refused rather than reinterpreted: they do export a buffer,
+of unsigned bytes, and reading those bytes as doubles would turn a plausible
+mistake into a plausible wrong answer.
+
+Results leave as byte buffers the Python layer presents as shaped memoryviews.
+A complex result's trailing axis is the real and imaginary parts, which is
+`phaser_complex`'s layout and also NumPy's `complex128`, so a caller who has
+NumPy views the same bytes with no conversion step in the binding. NumPy MUST
+NOT become a requirement of the binding in either direction.
+
+NumPy is the expected user-level array interface, but the initial binding SHOULD
+use the general Python buffer protocol rather than require NumPy's C API.
+
+The interpreter lock is released around the core evaluation call and MUST NOT be
+released around anything that touches a Python object.
+
+### 8.3 Rich display
+
 Python symbolic objects SHOULD expose notebook rich representations through the
 MathJax-compatible LaTeX exporter specified in
 [Symbolic Export and Notebook Display](SYMBOLIC_EXPORT.md). Implementing that
 display protocol MUST NOT introduce a required IPython or Jupyter dependency.
 
-NumPy is the expected user-level array interface, but the initial binding SHOULD
-use the general Python buffer protocol rather than require NumPy's C API.
+### 8.4 Independent conformance client
 
 A `ctypes` client SHOULD be maintained as an independent ABI conformance test. It
 is not the intended production Python binding.
@@ -542,7 +584,7 @@ agreement nobody checked.
 Wheel tooling, free-threaded CPython support, and the exact packaging system
 remain deferred.
 
-### 8.1 Build and platform status
+### 8.5 Build and platform status
 
 The extension is built by `zig build -Dpython=<interpreter>`, which is opt-in.
 Without that option nothing about the binding is configured, so a contributor

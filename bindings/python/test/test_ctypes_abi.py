@@ -257,6 +257,72 @@ class AbiTestCase(unittest.TestCase):
         )
         return self.own(self.lib.phaser_context_destroy, out)
 
+    def build_binding(self):
+        context = self.context()
+
+        model = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_model_load(
+                context, VALID_MODEL, len(VALID_MODEL), ctypes.byref(model), None
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_model_destroy, model)
+
+        request = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_request_parse(
+                context,
+                ONE_LOOP_REQUEST,
+                len(ONE_LOOP_REQUEST),
+                ctypes.byref(request),
+                None,
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_request_destroy, request)
+
+        artifact = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_artifact_derive(
+                context, model, request, ctypes.byref(artifact), None
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_artifact_destroy, artifact)
+
+        kernel = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_kernel_compile(
+                context, artifact, None, ctypes.byref(kernel)
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_kernel_destroy, kernel)
+
+        point = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_point_parse(
+                context,
+                PARAMETER_POINT,
+                len(PARAMETER_POINT),
+                ctypes.byref(point),
+                None,
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_point_destroy, point)
+
+        binding = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_binding_create(
+                context, kernel, model, point, ctypes.byref(binding)
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_binding_destroy, binding)
+        return artifact, kernel, binding
+
 
 class TestVersions(AbiTestCase):
     def test_the_library_and_the_extension_report_the_same_versions(self):
@@ -365,72 +431,6 @@ class TestModel(AbiTestCase):
 
 
 class TestEvaluation(AbiTestCase):
-    def build_binding(self):
-        context = self.context()
-
-        model = ctypes.c_void_p()
-        self.assertEqual(
-            self.lib.phaser_model_load(
-                context, VALID_MODEL, len(VALID_MODEL), ctypes.byref(model), None
-            ),
-            STATUS_OK,
-        )
-        self.own(self.lib.phaser_model_destroy, model)
-
-        request = ctypes.c_void_p()
-        self.assertEqual(
-            self.lib.phaser_request_parse(
-                context,
-                ONE_LOOP_REQUEST,
-                len(ONE_LOOP_REQUEST),
-                ctypes.byref(request),
-                None,
-            ),
-            STATUS_OK,
-        )
-        self.own(self.lib.phaser_request_destroy, request)
-
-        artifact = ctypes.c_void_p()
-        self.assertEqual(
-            self.lib.phaser_artifact_derive(
-                context, model, request, ctypes.byref(artifact), None
-            ),
-            STATUS_OK,
-        )
-        self.own(self.lib.phaser_artifact_destroy, artifact)
-
-        kernel = ctypes.c_void_p()
-        self.assertEqual(
-            self.lib.phaser_kernel_compile(
-                context, artifact, None, ctypes.byref(kernel)
-            ),
-            STATUS_OK,
-        )
-        self.own(self.lib.phaser_kernel_destroy, kernel)
-
-        point = ctypes.c_void_p()
-        self.assertEqual(
-            self.lib.phaser_point_parse(
-                context,
-                PARAMETER_POINT,
-                len(PARAMETER_POINT),
-                ctypes.byref(point),
-                None,
-            ),
-            STATUS_OK,
-        )
-        self.own(self.lib.phaser_point_destroy, point)
-
-        binding = ctypes.c_void_p()
-        self.assertEqual(
-            self.lib.phaser_binding_create(
-                context, kernel, model, point, ctypes.byref(binding)
-            ),
-            STATUS_OK,
-        )
-        self.own(self.lib.phaser_binding_destroy, binding)
-        return artifact, kernel, binding
-
     def test_the_one_loop_calculation_is_complex_and_evaluates(self):
         artifact, kernel, binding = self.build_binding()
 
@@ -630,6 +630,159 @@ class TestEvaluation(AbiTestCase):
             ),
             STATUS_INVALID_ARGUMENT,
         )
+
+
+class TestExtensionAgreement(AbiTestCase):
+    """Compares this client's results against the production binding's.
+
+    Two consumers of one library, reaching it by different routes: this file
+    loads the shared library and drives it through hand-written ctypes
+    declarations, while the extension is compiled against `phaser.h` and linked
+    against the same core statically. Where they overlap they must agree
+    exactly, and a tolerance here would defeat the purpose -- the question is
+    whether the two paths compute the same thing, not whether they compute
+    something similar.
+    """
+
+    BACKGROUNDS = (0.0, 100.0, 250.0, 500.0)
+
+    def through_ctypes(self):
+        _, _, binding = self.build_binding()
+        point_count = len(self.BACKGROUNDS)
+        backgrounds = (ctypes.c_double * point_count)(*self.BACKGROUNDS)
+
+        required = ctypes.c_size_t()
+        self.assertEqual(
+            self.lib.phaser_binding_workspace(
+                binding, point_count, ctypes.byref(required), None
+            ),
+            STATUS_OK,
+        )
+        workspace = ctypes.create_string_buffer(required.value)
+
+        values = (Complex * point_count)()
+        gradients = (Complex * point_count)()
+        hessians = (Complex * point_count)()
+        statuses = (ctypes.c_int32 * point_count)()
+        outputs = ComplexOutputs(
+            struct_size=ctypes.sizeof(ComplexOutputs),
+            abi_version=0,
+            values=values,
+            value_count=point_count,
+            gradients=gradients,
+            gradient_count=point_count,
+            hessians=hessians,
+            hessian_count=point_count,
+            statuses=statuses,
+            status_count=point_count,
+        )
+        self.assertEqual(
+            self.lib.phaser_evaluate_complex(
+                binding,
+                backgrounds,
+                point_count,
+                point_count,
+                workspace,
+                required.value,
+                ctypes.byref(outputs),
+            ),
+            STATUS_OK,
+        )
+        return values, gradients, hessians, statuses
+
+    def through_extension(self):
+        context = phaser.Context()
+        model = phaser.Model(VALID_MODEL, context=context)
+        request = phaser.Request(ONE_LOOP_REQUEST, context=context)
+        point = phaser.ParameterPoint(PARAMETER_POINT, context=context)
+        binding = model.derive(request).compile().bind(point)
+        return binding.evaluate(list(self.BACKGROUNDS))
+
+    def test_values_gradients_hessians_and_statuses_all_agree(self):
+        values, gradients, hessians, statuses = self.through_ctypes()
+        native = self.through_extension()
+
+        self.assertEqual(len(native), len(self.BACKGROUNDS))
+        for index in range(len(self.BACKGROUNDS)):
+            with self.subTest(phi=self.BACKGROUNDS[index]):
+                value = native.value(index)
+                self.assertEqual(value.real, values[index].re)
+                self.assertEqual(value.imag, values[index].im)
+
+                # One coordinate, so the gradient and the Hessian each have a
+                # single entry per point.
+                gradient = native.gradient(index)[0]
+                self.assertEqual(gradient.real, gradients[index].re)
+                self.assertEqual(gradient.imag, gradients[index].im)
+
+                hessian = native.hessian(index)[0][0]
+                self.assertEqual(hessian.real, hessians[index].re)
+                self.assertEqual(hessian.imag, hessians[index].im)
+
+                self.assertEqual(statuses[index], POINT_OK)
+                self.assertEqual(native.status(index), "ok")
+
+    def test_the_typed_metadata_agrees(self):
+        artifact, kernel, binding = self.build_binding()
+
+        result_type = ctypes.c_int32()
+        capability = ctypes.c_int32()
+        coordinates = ctypes.c_size_t()
+        self.assertEqual(
+            self.lib.phaser_artifact_result_type(artifact, ctypes.byref(result_type)),
+            STATUS_OK,
+        )
+        self.assertEqual(
+            self.lib.phaser_kernel_capability(kernel, ctypes.byref(capability)),
+            STATUS_OK,
+        )
+        self.assertEqual(
+            self.lib.phaser_binding_coordinate_count(
+                binding, ctypes.byref(coordinates)
+            ),
+            STATUS_OK,
+        )
+
+        context = phaser.Context()
+        model = phaser.Model(VALID_MODEL, context=context)
+        request = phaser.Request(ONE_LOOP_REQUEST, context=context)
+        native_artifact = model.derive(request)
+        native_kernel = native_artifact.compile()
+
+        self.assertEqual(
+            native_artifact.result_type,
+            phaser.RESULT_TYPES[result_type.value],
+        )
+        self.assertEqual(
+            phaser.CAPABILITIES[native_kernel.capability], capability.value
+        )
+        self.assertEqual(native_kernel.coordinate_count, coordinates.value)
+
+    def test_the_rendered_equations_agree(self):
+        artifact, _, _ = self.build_binding()
+
+        required = ctypes.c_size_t()
+        self.assertEqual(
+            self.lib.phaser_artifact_export(
+                artifact, EXPORT_LATEX, None, 0, ctypes.byref(required)
+            ),
+            STATUS_INSUFFICIENT_SPACE,
+        )
+        buffer = ctypes.create_string_buffer(required.value)
+        written = ctypes.c_size_t()
+        self.assertEqual(
+            self.lib.phaser_artifact_export(
+                artifact, EXPORT_LATEX, buffer, required.value, ctypes.byref(written)
+            ),
+            STATUS_OK,
+        )
+        # No null terminator is written, so the length is authoritative.
+        rendered = buffer.raw[: written.value].decode("utf-8")
+
+        context = phaser.Context()
+        model = phaser.Model(VALID_MODEL, context=context)
+        request = phaser.Request(ONE_LOOP_REQUEST, context=context)
+        self.assertEqual(model.derive(request).export("latex"), rendered)
 
 
 if __name__ == "__main__":

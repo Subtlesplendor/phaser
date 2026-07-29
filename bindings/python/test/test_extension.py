@@ -1,4 +1,4 @@
-"""Tests for the native Phaser extension.
+"""Tests for the native Phaser extension and the objects over it.
 
 Run through ``zig build test-python``, which builds the extension, installs it
 where an interpreter can find it, and runs this file with that interpreter.
@@ -13,10 +13,15 @@ a Python dependency set for the binding and the notebook; a test runner was not
 in it, and nothing here needs one.
 """
 
+import array
+import gc
+import os
 import sys
 import unittest
+from pathlib import Path
 
 import phaser
+from phaser import _phaser
 
 # The smallest valid model: two parameters and one real scalar field. Kept here
 # rather than shared with the Zig fixtures so a change to one cannot silently
@@ -48,6 +53,45 @@ VALID_MODEL = b"""{
   }
 }
 """
+
+ONE_LOOP_REQUEST = b"""{
+  "schema": "phaser.calculation/0.1",
+  "kind": "effective_potential",
+  "background": { "mode": "full_scalar_space" },
+  "environment": { "kind": "vacuum" },
+  "renormalization": { "scheme": "MSbar" },
+  "orders": { "loop": { "through": 1 } }
+}
+"""
+
+TREE_REQUEST = b"""{
+  "schema": "phaser.calculation/0.1",
+  "kind": "effective_potential",
+  "background": { "mode": "full_scalar_space" },
+  "environment": { "kind": "vacuum" },
+  "renormalization": { "scheme": "MSbar" },
+  "orders": { "loop": { "through": 0 } }
+}
+"""
+
+# The field-dependent mass-squared is m2 + lambda * phi^2 / 2, negative below
+# |phi| ~= 245 and positive above.
+PARAMETER_POINT = b"""{
+  "schema": "phaser.parameter-point/0.1",
+  "units": { "mass": "GeV" },
+  "renormalization": { "scheme": "MSbar", "reference_scale": 125.0 },
+  "values": { "lambda": 0.26, "m2": -7812.5 }
+}
+"""
+
+
+def build(request=ONE_LOOP_REQUEST, capability="value_gradient_hessian"):
+    """Builds a binding over one shared context, as a client would."""
+    context = phaser.Context()
+    model = phaser.Model(VALID_MODEL, context=context)
+    artifact = model.derive(phaser.Request(request, context=context))
+    point = phaser.ParameterPoint(PARAMETER_POINT, context=context)
+    return artifact.compile(capability).bind(point)
 
 
 class TestInterpreterRequirements(unittest.TestCase):
@@ -124,6 +168,309 @@ class TestModelMetadata(unittest.TestCase):
     def test_empty_input_raises(self):
         with self.assertRaises(ValueError):
             phaser.model_metadata(b"")
+
+
+class TestObjects(unittest.TestCase):
+    def test_the_whole_lifecycle_reports_its_metadata(self):
+        context = phaser.Context()
+        model = phaser.Model(VALID_MODEL, context=context)
+        self.assertEqual(model.parameter_count, 2)
+        self.assertEqual(model.scalar_field_count, 1)
+
+        request = phaser.Request(ONE_LOOP_REQUEST, context=context)
+        self.assertEqual(request.loop_order, 1)
+
+        artifact = model.derive(request)
+        self.assertEqual(artifact.loop_order, 1)
+        self.assertEqual(artifact.coordinate_count, 1)
+        self.assertGreater(artifact.contribution_count, 0)
+        self.assertEqual(artifact.result_type, "complex64")
+
+        kernel = artifact.compile()
+        self.assertEqual(kernel.capability, "value_gradient_hessian")
+        self.assertEqual(kernel.result_type, "complex64")
+        self.assertEqual(kernel.coordinate_count, 1)
+        self.assertEqual(kernel.parameter_count, model.parameter_count)
+
+        point = phaser.ParameterPoint(PARAMETER_POINT, context=context)
+        self.assertEqual(point.reference_scale, 125.0)
+
+        binding = kernel.bind(point)
+        self.assertEqual(binding.coordinate_count, 1)
+        self.assertEqual(binding.result_type, "complex64")
+
+    def test_a_tree_level_calculation_is_real(self):
+        # The two result types are not a formatting choice: a tree-level
+        # potential is real and a loop-containing one is not, and the binding
+        # has to report which without the caller asking the physics.
+        self.assertEqual(build(TREE_REQUEST).result_type, "real64")
+
+    def test_repeated_construction_and_collection_is_clean(self):
+        # A regression test with a specific history. Holding the parent objects
+        # as attributes of the child is not enough to order destruction: when
+        # the last reference to a binding goes, its instance dictionary is
+        # released and the context inside it can be freed before the binding's
+        # own handle. That destroyed a context while its children were live,
+        # which the core's allocator reported as leaks and which then crashed.
+        #
+        # The ordering now lives in the capsules, so this loop is silent. It is
+        # a weak test in isolation and a sharp one in context: the failure it
+        # guards against was a segmentation fault within a few iterations.
+        for _ in range(20):
+            binding = build()
+            binding.evaluate_at(100.0)
+            del binding
+            gc.collect()
+
+    def test_a_binding_outlives_the_names_of_the_handles_it_needs(self):
+        # Every intermediate goes out of scope inside build(). If any of them
+        # were released early the evaluation below would read freed memory.
+        binding = build()
+        gc.collect()
+        self.assertEqual(binding.evaluate_at(100.0).status, "ok")
+
+    def test_objects_from_different_contexts_are_refused(self):
+        model = phaser.Model(VALID_MODEL)
+        request = phaser.Request(ONE_LOOP_REQUEST)
+        with self.assertRaises(ValueError):
+            model.derive(request)
+
+    def test_a_handle_of_the_wrong_type_is_rejected(self):
+        # The capsules are named and the name is checked, so a mistake at this
+        # level raises rather than reinterpreting a pointer.
+        context = phaser.Context()
+        model = phaser.Model(VALID_MODEL, context=context)
+        with self.assertRaises(TypeError):
+            _phaser.model_info(context._capsule)
+        with self.assertRaises(TypeError):
+            _phaser.kernel_info(model._capsule)
+
+    def test_a_plain_object_is_not_a_handle(self):
+        with self.assertRaises(TypeError):
+            _phaser.model_info(object())
+
+
+class TestExport(unittest.TestCase):
+    def test_both_targets_render_and_differ(self):
+        artifact = build().kernel.artifact
+        plain = artifact.export("phaser")
+        latex = artifact.export("latex")
+        self.assertIsInstance(plain, str)
+        self.assertIsInstance(latex, str)
+        self.assertNotEqual(plain, latex)
+        self.assertGreater(len(plain), 0)
+        # A MathJax-compatible fragment: no delimiters and no preamble.
+        self.assertNotIn("$", latex)
+        self.assertNotIn(r"\begin{document}", latex)
+
+    def test_an_unknown_target_is_refused_rather_than_defaulted(self):
+        artifact = build().kernel.artifact
+        with self.assertRaises(ValueError):
+            artifact.export("markdown")
+
+    def test_an_unknown_capability_is_refused(self):
+        artifact = build().kernel.artifact
+        with self.assertRaises(ValueError):
+            artifact.compile("value_and_everything")
+
+
+class TestEvaluation(unittest.TestCase):
+    def test_the_two_branches_cross_the_boundary_undamaged(self):
+        # Below the sign change of the field-dependent mass-squared the result
+        # is a successful complex value; above it the same calculation is
+        # exactly real. Neither is an error, and the distinction must survive
+        # the trip through Python.
+        results = build().evaluate([100.0, 500.0])
+        self.assertEqual(results.result_type, "complex64")
+        self.assertEqual(results.status(0), "ok")
+        self.assertNotEqual(results.value(0).imag, 0.0)
+        self.assertEqual(results.status(1), "ok")
+        self.assertEqual(results.value(1).imag, 0.0)
+
+    def test_a_scalar_call_agrees_with_the_same_point_in_a_batch(self):
+        binding = build()
+        batch = binding.evaluate([0.0, 100.0, 250.0, 500.0])
+        for index, phi in enumerate([0.0, 100.0, 250.0, 500.0]):
+            with self.subTest(phi=phi):
+                self.assertEqual(binding.evaluate_at(phi), batch.point(index))
+
+    def test_the_grouping_of_a_batch_does_not_change_its_results(self):
+        # Points are independent. Splitting one batch in two must reproduce it
+        # exactly, not approximately.
+        binding = build()
+        whole = binding.evaluate([0.0, 100.0, 250.0, 500.0])
+        first = binding.evaluate([0.0, 100.0])
+        second = binding.evaluate([250.0, 500.0])
+        parts = [first.point(0), first.point(1), second.point(0), second.point(1)]
+        self.assertEqual([whole.point(index) for index in range(4)], parts)
+
+    def test_every_accepted_input_form_gives_the_same_answer(self):
+        binding = build()
+        expected = binding.evaluate(array.array("d", [100.0, 500.0]))
+        typed = array.array("d", [100.0, 500.0])
+        forms = {
+            "flat sequence": [100.0, 500.0],
+            "sequence of points": [[100.0], [500.0]],
+            "array.array": typed,
+            "memoryview": memoryview(typed),
+            "cast memoryview": memoryview(bytearray(typed.tobytes())).cast("d"),
+            "tuple": (100.0, 500.0),
+        }
+        for name, backgrounds in forms.items():
+            with self.subTest(form=name):
+                results = binding.evaluate(backgrounds)
+                self.assertEqual(
+                    [results.point(index) for index in range(2)],
+                    [expected.point(index) for index in range(2)],
+                )
+
+    def test_raw_bytes_are_refused_rather_than_reinterpreted(self):
+        # bytes does expose a buffer, of unsigned bytes. Reading those bytes as
+        # doubles would turn a plausible mistake into a plausible wrong answer.
+        binding = build()
+        with self.assertRaises(TypeError):
+            binding.evaluate(array.array("d", [100.0]).tobytes())
+
+    def test_a_buffer_of_the_wrong_item_type_is_refused(self):
+        binding = build()
+        with self.assertRaises(TypeError):
+            binding.evaluate(array.array("f", [100.0, 500.0]))
+        with self.assertRaises(TypeError):
+            binding.evaluate(array.array("q", [100, 500]))
+
+    def test_a_non_contiguous_buffer_is_refused(self):
+        binding = build()
+        every_other = memoryview(array.array("d", [100.0, 0.0, 500.0, 0.0]))[::2]
+        self.assertFalse(every_other.c_contiguous)
+        with self.assertRaises(ValueError):
+            binding.evaluate(every_other)
+
+    def test_a_partial_point_is_refused(self):
+        # One coordinate per point here, so this needs a model with more. The
+        # empty batch is the reachable case: it has no whole point in it.
+        binding = build()
+        with self.assertRaises(ValueError):
+            binding.evaluate([])
+        with self.assertRaises(ValueError):
+            binding.evaluate_at(100.0, 200.0)
+
+    def test_a_value_only_kernel_reports_no_derivatives(self):
+        binding = build(capability="value")
+        results = binding.evaluate([100.0])
+        self.assertIsNone(results.gradients)
+        self.assertIsNone(results.hessians)
+        self.assertIsNone(results.gradient(0))
+        self.assertIsNone(results.hessian(0))
+        # The value itself is the same one the full kernel computes.
+        self.assertEqual(results.value(0), build().evaluate([100.0]).value(0))
+
+    def test_the_shapes_are_what_the_documented_layout_says(self):
+        binding = build()
+        results = binding.evaluate([100.0, 500.0])
+        coordinates = binding.coordinate_count
+        # A trailing axis of two for the real and imaginary parts, which is
+        # phaser_complex's layout and NumPy's complex128.
+        self.assertEqual(results.values.shape, (2, 2))
+        self.assertEqual(results.gradients.shape, (2, coordinates, 2))
+        self.assertEqual(results.hessians.shape, (2, coordinates, coordinates, 2))
+        self.assertEqual(results.statuses.shape, (2,))
+
+    def test_a_real_binding_reports_plain_floats(self):
+        results = build(TREE_REQUEST).evaluate([100.0, 500.0])
+        self.assertEqual(results.result_type, "real64")
+        self.assertEqual(results.values.shape, (2,))
+        for index in range(2):
+            self.assertIsInstance(results.value(index), float)
+
+
+class TestGoldenAgreement(unittest.TestCase):
+    """Compares the binding against the committed command-line output.
+
+    This is the exit criterion that Python results agree with the direct Zig,
+    C, and CLI results, checked against the same committed files the C ABI and
+    the CLI are checked against rather than against a second copy of them.
+
+    The comparison is exact. The scan's fields are shortest round-trip
+    decimals, so parsing one recovers the identical double; a disagreement in
+    the last bit fails here rather than being absorbed by a tolerance.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        directory = os.environ.get("PHASER_EXAMPLES")
+        if not directory:
+            raise RuntimeError(
+                "PHASER_EXAMPLES is not set. Run this through "
+                "`zig build test-python -Dpython=<interpreter>`, which points "
+                "it at the committed example inputs."
+            )
+        cls.examples = Path(directory) / "phi4"
+
+    def read(self, name):
+        return (self.examples / name).read_bytes()
+
+    def scan(self, name):
+        """Reads a committed scan as (backgrounds, rows)."""
+        backgrounds = []
+        rows = []
+        for line in (self.examples / name).read_text().splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            fields = line.split("\t")
+            if fields[0] == "phi":
+                continue
+            backgrounds.append(float(fields[0]))
+            rows.append(fields[1:])
+        return backgrounds, rows
+
+    def test_the_one_loop_scan_matches_the_committed_output(self):
+        context = phaser.Context()
+        model = phaser.Model(self.read("model.json"), context=context)
+        request = phaser.Request(self.read("request_one_loop.json"), context=context)
+        point = phaser.ParameterPoint(self.read("point.json"), context=context)
+        binding = model.derive(request).compile().bind(point)
+
+        backgrounds, rows = self.scan("scan_total.tsv")
+        self.assertGreater(len(backgrounds), 1)
+
+        results = binding.evaluate(backgrounds)
+        self.assertEqual(len(results), len(backgrounds))
+
+        for index, (phi, row) in enumerate(zip(backgrounds, rows)):
+            with self.subTest(phi=phi):
+                value_re, value_im, gradient_re, gradient_im, status = row
+                value = results.value(index)
+                gradient = results.gradient(index)[0]
+                self.assertEqual(value.real, float(value_re))
+                self.assertEqual(value.imag, float(value_im))
+                self.assertEqual(gradient.real, float(gradient_re))
+                self.assertEqual(gradient.imag, float(gradient_im))
+                self.assertEqual(results.status(index), status)
+
+    def test_the_scan_crosses_both_branches(self):
+        # The agreement above is only worth what it covers, so this asserts the
+        # committed scan is not entirely on one side of the sign change.
+        _, rows = self.scan("scan_total.tsv")
+        imaginary = [float(row[1]) for row in rows]
+        self.assertTrue(any(part != 0.0 for part in imaginary))
+        self.assertTrue(any(part == 0.0 for part in imaginary))
+
+    def test_the_exported_latex_matches_the_committed_document(self):
+        # The committed document is the CLI's output, which prefixes the
+        # background map the client adds; `phaser_artifact_export` renders the
+        # equations alone. So the equations are compared, exactly, and the
+        # prefix is what the two surfaces are allowed to differ by.
+        context = phaser.Context()
+        model = phaser.Model(self.read("model.json"), context=context)
+        request = phaser.Request(self.read("request_one_loop.json"), context=context)
+        exported = model.derive(request).export("latex").strip()
+        committed = (self.examples / "equations_one_loop.tex").read_text().strip()
+        self.assertTrue(exported.startswith("V^{"), exported[:40])
+        self.assertTrue(
+            committed.endswith(exported),
+            f"exported equations are not the tail of the committed document:\n"
+            f"{exported}\n---\n{committed}",
+        )
 
 
 if __name__ == "__main__":
