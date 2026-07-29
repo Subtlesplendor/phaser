@@ -662,6 +662,12 @@ pub fn build(b: *std.Build) void {
 /// across the interpreters the runner images ship and across a contributor's
 /// virtual environment, and it fails loudly if the interpreter has no headers
 /// instead of producing a module that cannot be imported.
+///
+/// The interpreter must run on the target being built for. Everything here is
+/// derived from the interpreter that is invoked, so cross-compiling the
+/// extension would take the include path and the file-name suffix from the
+/// host and produce a module named for the wrong platform. That is not a
+/// supported configuration; each platform builds its own.
 fn configurePythonExtension(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -699,7 +705,20 @@ fn configurePythonExtension(
     // A CPython extension leaves the interpreter's own symbols undefined and
     // has them resolved at load time by the process that imports it. Windows
     // cannot do that and links the Stable ABI stub instead.
+    //
+    // `python3.lib` is the stub for the Limited API, as distinct from
+    // `python3X.lib`, which pins one minor version and would defeat the point
+    // of building against a stable ABI. It sits in `libs/` beside the
+    // interpreter's installation, which is asked for rather than assumed --
+    // a virtual environment reports the base installation's path, which is
+    // where the import libraries actually live.
     if (target.result.os.tag == .windows) {
+        const libs_directory = std.mem.trim(u8, b.run(&.{
+            interpreter,
+            "-c",
+            "import os, sys; print(os.path.join(sys.base_prefix, 'libs'))",
+        }), " \r\n");
+        extension_module.addLibraryPath(.{ .cwd_relative = libs_directory });
         extension_module.linkSystemLibrary("python3", .{});
     } else {
         extension.linker_allow_shlib_undefined = true;

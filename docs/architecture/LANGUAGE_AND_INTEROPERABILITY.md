@@ -556,14 +556,16 @@ co-installed shared library and no `rpath`.
 
 On ELF and Mach-O the module leaves the interpreter's symbols undefined and has
 them resolved at load time by the process that imports it, which is how CPython
-extensions are built on those platforms. Windows cannot do that and must link
-the Stable ABI stub `python3.lib` instead.
+extensions are built on those platforms. Windows cannot do that and links the
+Stable ABI stub `python3.lib` instead.
 
-**Windows is not yet covered.** The Linux and macOS tiers build and test the
-extension; the Windows tier does not. What is missing is the library search path
-for the stub, which the interpreter can report but the build does not yet ask
-for. This is a gap in the binding's platform coverage, not in the C ABI's:
-`phaser.h` and both library products remain tested on all three platforms.
+That stub is `python3.lib` rather than `python3X.lib`: the latter pins one minor
+version and would defeat the purpose of building against a stable ABI. It lives
+in `libs/` beside the interpreter's base installation, whose path the build asks
+the interpreter for. A virtual environment reports its base installation, which
+is where the import libraries actually are.
+
+All three platforms build and test the binding.
 
 ## 9. Command-line interface
 

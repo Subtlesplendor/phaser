@@ -196,3 +196,13 @@ jobs:
       - name: Check the C ABI with MSVC
         shell: pwsh
         run: tools/ci/check_abi.ps1 -Prefix "$env:RUNNER_TEMP/prefix"
+
+      # Unlike ELF and Mach-O, a Windows extension cannot leave the
+      # interpreter's symbols undefined, so it links the Limited API stub.
+      - name: Test the Python binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          python --version
+          "$RUNNER_TEMP/zig/zig.exe" build test-python \
+            -Doptimize=ReleaseSafe -Dpython="$(command -v python)"
