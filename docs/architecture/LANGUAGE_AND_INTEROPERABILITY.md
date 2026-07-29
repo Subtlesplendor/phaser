@@ -526,6 +526,19 @@ use the general Python buffer protocol rather than require NumPy's C API.
 A `ctypes` client SHOULD be maintained as an independent ABI conformance test. It
 is not the intended production Python binding.
 
+That client lives in `bindings/python/test/test_ctypes_abi.py`. Its
+independence is the point and has to be preserved: it re-declares every
+signature it uses by hand, from the header read as documentation, rather than
+sharing declarations with the extension. The extension is compiled against
+`phaser.h` by a compiler that checks each signature, so the two would agree
+even if both drifted together; a hand transcription in another language would
+not. It loads the shared library rather than importing the extension, and it
+compares the results of both where they overlap.
+
+A run that cannot find the shared library MUST fail rather than skip. A
+conformance suite that skips still reports success, which would claim an
+agreement nobody checked.
+
 Wheel tooling, free-threaded CPython support, and the exact packaging system
 remain deferred.
 
