@@ -430,6 +430,10 @@ verified.
   the continuous-integration matrix is now the measurement that would show it.
   Nothing in this repository can produce that evidence from one host.
 
+  Discharged in Milestone 4: the matrix has since run, and the committed
+  one-loop scans agree byte for byte on macOS ARM64 and Linux x86-64. See that
+  milestone's entry for what the observation does and does not establish.
+
 ### Known characteristics
 
 Not defects, but measured behavior a later milestone should know about.
@@ -606,16 +610,31 @@ verified.
   handed a handle of the wrong type rejects it and leaves that handle usable.
   The contract remains that a handle is destroyed exactly once.
 
-- **Cross-platform numerical agreement, continued.** Milestone 3 recorded that
-  its two platforms had identical arithmetic and that the one-loop logarithm was
-  the first operation that could distinguish them. Adding Windows x86-64 does
-  not change that: it executes the same instruction set as Linux x86-64 with the
-  same rounding, so the third tier can expose a code-generation or library
-  difference but is not a third arithmetic. The committed goldens do now agree
-  byte for byte across all three, which is real evidence and is more than
-  Milestone 3 had; it is not yet evidence that ARM64 and x86-64 agree on the
-  logarithm, because no comparison in this repository isolates that operation
-  across those two targets.
+- **Cross-platform numerical agreement.** This one is no longer trivially
+  satisfied, and is recorded here to say so rather than to defer it again.
+
+  Milestone 3 listed it as a requirement nothing in this repository could
+  produce evidence for from one host, with the one-loop logarithm named as the
+  first operation whose result could differ between platforms. That evidence now
+  exists: `test/integration/cli_examples.zig` compares the committed one-loop
+  scans byte for byte, it runs in the bounded suite on every platform, and it
+  passes on macOS ARM64 as well as on Linux x86-64. Those values are computed
+  through the logarithm, so ARM64 and x86-64 agree on it bitwise for every point
+  in the committed scans.
+
+  Two limits on that claim are worth keeping. It is a whole-pipeline comparison
+  rather than an operation-level one, so it establishes that the results agree,
+  not that every intermediate does. And adding Windows x86-64 does not widen it:
+  Windows and Linux execute the same instruction set with the same rounding, so
+  the third tier can expose a code-generation or library difference but is not a
+  third arithmetic. Agreement across a genuinely different arithmetic still
+  rests on the ARM64 pair alone.
+
+  What remains deliberately unpromised is the policy position rather than the
+  measurement: [Numerical Comparison](NUMERICAL_COMPARISON.md) declares
+  operation-specific bounds and does not promise bitwise cross-platform
+  equality. The observation is stronger than the promise, and the promise is
+  what a later target must satisfy.
 
 - **`nonconvergent` and scheme mismatch.** Both remain reachable only as
   Milestone 3 recorded them. The C ABI publishes `PHASER_POINT_NONCONVERGENT`
