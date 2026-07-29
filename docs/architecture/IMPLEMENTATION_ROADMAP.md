@@ -536,6 +536,42 @@ Provide at least one end-to-end scalar effective-potential notebook that:
 
 The underlying plotted data must also be covered by machine-readable tests.
 
+#### How the three curves are obtained
+
+ABI version 0 has no contribution-selection operation. The command-line client
+has `--selection`, which is what produced the committed `scan_tree.tsv`,
+`scan_one_loop.tsv`, and `scan_total.tsv`; a client reaching the core through
+the C ABI cannot ask the same question, and the Python binding therefore cannot
+either.
+
+The notebook obtains its three curves this way instead:
+
+- **tree** — a separate loop-order-zero request, evaluated directly;
+- **total** — the loop-order-one request, evaluated directly; and
+- **one-loop contribution** — the difference of the two.
+
+The first two are exact. `bindings/python/test/test_extension.py` compares them
+against the committed scans bitwise, and additionally asserts that the
+loop-order-zero request agrees bitwise with `--selection=loop:0` applied to the
+loop-order-one artifact — a three-contribution artifact and a four-contribution
+one with the loop term selected away produce the same numbers. That agreement is
+what makes the decomposition mean what it claims.
+
+The third is not compared against `scan_one_loop.tsv`, and the reason is
+recorded rather than worked around. The difference and the client's directly
+summed loop-order-one contribution are two accumulation orders for a quantity
+that is far below the largest term summed to reach it: a cancellation regime, at
+a measured worst relative separation of about `1.3e-11` across the committed
+grid. [Numerical Comparison](NUMERICAL_COMPARISON.md) declares no policy for
+that pair, and §3 of that document is explicit that an undeclared bound is a gap
+to close rather than a value to guess. So no tolerance is asserted here.
+
+The exit criterion is still met: every array the notebook plots is either
+compared bitwise against a committed scan, or is an exactly reproducible
+function of two arrays that are. What is not established is agreement between
+the reconstruction and the client's directly summed contribution, which would
+need either a declared policy or a selection operation in the ABI.
+
 ### Exit criteria
 
 The milestone exits when both phases have closed. Phase A's criteria are

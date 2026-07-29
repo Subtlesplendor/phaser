@@ -578,13 +578,15 @@ class TestGoldenAgreement(unittest.TestCase):
             rows.append(fields[1:])
         return backgrounds, rows
 
-    def test_the_one_loop_scan_matches_the_committed_output(self):
+    def binding(self, request_name):
         context = phaser.Context()
         model = phaser.Model(self.read("model.json"), context=context)
-        request = phaser.Request(self.read("request_one_loop.json"), context=context)
+        request = phaser.Request(self.read(request_name), context=context)
         point = phaser.ParameterPoint(self.read("point.json"), context=context)
-        binding = model.derive(request).compile().bind(point)
+        return model.derive(request).compile().bind(point)
 
+    def test_the_one_loop_scan_matches_the_committed_output(self):
+        binding = self.binding("request_one_loop.json")
         backgrounds, rows = self.scan("scan_total.tsv")
         self.assertGreater(len(backgrounds), 1)
 
@@ -601,6 +603,64 @@ class TestGoldenAgreement(unittest.TestCase):
                 self.assertEqual(gradient.real, float(gradient_re))
                 self.assertEqual(gradient.imag, float(gradient_im))
                 self.assertEqual(results.status(index), status)
+
+    def test_the_tree_scan_matches_both_committed_routes_to_it(self):
+        """The tree curve the notebook plots, against two committed files.
+
+        `scan.tsv` is a loop-order-zero request evaluated directly, which is
+        what the binding below computes. `scan_tree.tsv` is the loop-order-one
+        request with `--selection=loop:0` -- a four-contribution artifact with
+        the loop term selected away, rather than a three-contribution artifact
+        that never had one.
+
+        Asserting both matters for the notebook. It plots the tree from its own
+        request and the total from another, and shows the loop contribution as
+        the difference; that decomposition means what it claims only if the two
+        routes to the tree are the same numbers. They are, bitwise.
+        """
+        binding = self.binding("request.json")
+        self.assertEqual(binding.result_type, "real64")
+
+        backgrounds, rows = self.scan("scan_tree.tsv")
+        results = binding.evaluate(backgrounds)
+
+        selected, selected_rows = self.scan("scan.tsv")
+        self.assertEqual(selected, backgrounds)
+
+        for index, phi in enumerate(backgrounds):
+            with self.subTest(phi=phi):
+                value, gradient, status = rows[index]
+                self.assertEqual(results.value(index), float(value))
+                self.assertEqual(results.gradient(index)[0], float(gradient))
+                self.assertEqual(results.status(index), status)
+                # The same two columns from the separately derived artifact.
+                self.assertEqual(results.value(index), float(selected_rows[index][0]))
+                self.assertEqual(
+                    results.gradient(index)[0], float(selected_rows[index][1])
+                )
+
+    def test_the_loop_correction_is_where_the_imaginary_part_comes_from(self):
+        """The property that makes the notebook's decomposition readable.
+
+        The tree potential is real everywhere; the total is complex below the
+        sign change. So the entire imaginary part of the total belongs to the
+        loop correction, and a reader looking at the two curves can attribute
+        it without being told.
+        """
+        tree = self.binding("request.json")
+        total = self.binding("request_one_loop.json")
+        self.assertEqual(tree.result_type, "real64")
+        self.assertEqual(total.result_type, "complex64")
+
+        backgrounds, _ = self.scan("scan_total.tsv")
+        tree_results = tree.evaluate(backgrounds)
+        total_results = total.evaluate(backgrounds)
+
+        for index, phi in enumerate(backgrounds):
+            with self.subTest(phi=phi):
+                self.assertIsInstance(tree_results.value(index), float)
+                correction = total_results.value(index) - tree_results.value(index)
+                self.assertEqual(correction.imag, total_results.value(index).imag)
 
     def test_the_scan_crosses_both_branches(self):
         # The agreement above is only worth what it covers, so this asserts the
