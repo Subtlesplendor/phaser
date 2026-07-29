@@ -6,9 +6,9 @@
  * program, compiled by a compiler that is not Zig and linked against either
  * library product, can drive the boundary and observe what the header promises.
  *
- * It grows with the ABI. Today it covers the version, context, model, request,
- * artifact, and kernel operations; bind and evaluate join it as those handles
- * are added.
+ * It covers the whole of ABI version 0: version, context, model, request,
+ * artifact, kernel, parameter point, binding, and both evaluation entry
+ * points.
  *
  * Exit status is 0 when every check held, 1 otherwise, and every failure prints
  * what it expected. Build it with:
@@ -268,6 +268,147 @@ static void check_calculation(phaser_context *context) {
     phaser_model_destroy(model);
 }
 
+/* Values for exactly the two parameters the model declares. The field-dependent
+   mass-squared is m2 + lambda * phi^2 / 2, so it is negative below
+   |phi| ~= 245 and positive above. Both sides are used below. */
+static const char parameter_point[] =
+    "{\n"
+    "  \"schema\": \"phaser.parameter-point/0.1\",\n"
+    "  \"units\": { \"mass\": \"GeV\" },\n"
+    "  \"renormalization\": { \"scheme\": \"MSbar\", \"reference_scale\": 125.0 },\n"
+    "  \"values\": { \"lambda\": 0.26, \"m2\": -7812.5 }\n"
+    "}\n";
+
+static void check_evaluation(phaser_context *context) {
+    phaser_model *model = NULL;
+    phaser_request *request = NULL;
+    phaser_artifact *artifact = NULL;
+    phaser_kernel *kernel = NULL;
+    phaser_point *point = NULL;
+    phaser_binding *binding = NULL;
+    phaser_complex_outputs outputs;
+    phaser_complex values[2];
+    phaser_complex gradients[2];
+    phaser_complex hessians[2];
+    int32_t statuses[2];
+    /* Below and above the sign change of the field-dependent mass-squared. */
+    const double backgrounds[2] = { 100.0, 500.0 };
+    size_t workspace_bytes = 0;
+    size_t workspace_alignment = 0;
+    void *workspace = NULL;
+    int32_t result_type = -1;
+
+    printf("evaluation\n");
+
+    if (phaser_model_load(context, valid_model, strlen(valid_model), &model,
+                          NULL) != PHASER_STATUS_OK ||
+        phaser_request_parse(context, one_loop_request,
+                             strlen(one_loop_request), &request,
+                             NULL) != PHASER_STATUS_OK ||
+        phaser_artifact_derive(context, model, request, &artifact, NULL) !=
+            PHASER_STATUS_OK ||
+        phaser_kernel_compile(context, artifact, NULL, &kernel) !=
+            PHASER_STATUS_OK) {
+        check(0, "the calculation chain built for evaluation");
+        goto cleanup;
+    }
+
+    check(phaser_point_parse(context, parameter_point, strlen(parameter_point),
+                             &point, NULL) == PHASER_STATUS_OK,
+          "a parameter point parses");
+    check(phaser_binding_create(context, kernel, model, point, &binding) ==
+              PHASER_STATUS_OK,
+          "the point binds to the kernel");
+    if (binding == NULL) {
+        goto cleanup;
+    }
+
+    check(phaser_binding_result_type(binding, &result_type) ==
+              PHASER_STATUS_OK &&
+              result_type == PHASER_RESULT_COMPLEX64,
+          "the binding reports a complex result type");
+
+    check(phaser_binding_workspace(binding, 2, &workspace_bytes,
+                                   &workspace_alignment) ==
+              PHASER_STATUS_OK &&
+              workspace_bytes > 0,
+          "the exact workspace requirement is queryable");
+
+    /* malloc is suitably aligned for any fundamental type, which covers every
+       alignment this ABI reports. */
+    workspace = malloc(workspace_bytes);
+    if (workspace == NULL) {
+        check(0, "workspace allocated");
+        goto cleanup;
+    }
+
+    memset(&outputs, 0, sizeof outputs);
+    outputs.struct_size = (uint32_t)sizeof outputs;
+    outputs.abi_version = PHASER_ABI_VERSION;
+    outputs.values = values;
+    outputs.value_count = 2;
+    outputs.gradients = gradients;
+    outputs.gradient_count = 2;
+    outputs.hessians = hessians;
+    outputs.hessian_count = 2;
+    outputs.statuses = statuses;
+    outputs.status_count = 2;
+
+    check(phaser_evaluate_complex(binding, backgrounds, 2, 2, workspace,
+                                  workspace_bytes, &outputs) ==
+              PHASER_STATUS_OK,
+          "a two-point batch evaluates");
+
+    /* The claim the two status spaces exist for: a negative scalar
+       mass-squared eigenvalue is a successful complex result, not a failure. */
+    check(statuses[0] == PHASER_POINT_OK && values[0].im != 0.0,
+          "below the sign change the result is ok and genuinely complex");
+    check(statuses[1] == PHASER_POINT_OK && values[1].im == 0.0,
+          "above it the same calculation is exactly real");
+    printf("        V(100) = %g %+gi\n", values[0].re, values[0].im);
+    printf("        V(500) = %g %+gi\n", values[1].re, values[1].im);
+
+    /* The real entry point must refuse rather than drop the imaginary part. */
+    {
+        phaser_outputs real_outputs;
+        double real_values[2];
+        memset(&real_outputs, 0, sizeof real_outputs);
+        real_outputs.struct_size = (uint32_t)sizeof real_outputs;
+        real_outputs.abi_version = PHASER_ABI_VERSION;
+        real_outputs.values = real_values;
+        real_outputs.value_count = 2;
+        real_outputs.statuses = statuses;
+        real_outputs.status_count = 2;
+        check(phaser_evaluate(binding, backgrounds, 2, 2, workspace,
+                              workspace_bytes, &real_outputs) ==
+                  PHASER_STATUS_INVALID_ARGUMENT,
+              "the real entry point refuses a complex kernel");
+    }
+
+    /* A status array of the wrong length is rejected, because an unwritten
+       entry must never be mistaken for a successful point. */
+    outputs.status_count = 1;
+    check(phaser_evaluate_complex(binding, backgrounds, 2, 2, workspace,
+                                  workspace_bytes, &outputs) ==
+              PHASER_STATUS_INVALID_ARGUMENT,
+          "a short status array is rejected");
+    outputs.status_count = 2;
+
+    check(phaser_evaluate_complex(binding, backgrounds, 2, 2, workspace,
+                                  workspace_bytes - 1, &outputs) ==
+              PHASER_STATUS_INSUFFICIENT_SPACE,
+          "one byte less workspace is a reported capacity failure");
+
+cleanup:
+    free(workspace);
+    phaser_binding_destroy(binding);
+    phaser_point_destroy(point);
+    phaser_kernel_destroy(kernel);
+    phaser_artifact_destroy(artifact);
+    phaser_request_destroy(request);
+    phaser_model_destroy(model);
+}
+
 static void check_misuse(phaser_context *context) {
     size_t count = 0;
 
@@ -317,6 +458,7 @@ int main(void) {
     check_valid_model(context);
     check_invalid_model(context);
     check_calculation(context);
+    check_evaluation(context);
     check_misuse(context);
 
     phaser_context_destroy(context);
