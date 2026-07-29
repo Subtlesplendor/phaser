@@ -89,12 +89,44 @@ const py = struct {
         m_free: ?*anyopaque = null,
     };
 
+    // None of these is variadic, deliberately.
+    //
+    // `PyArg_ParseTuple` and `Py_BuildValue` take printf-style format strings
+    // whose `#` conversions change width with the `PY_SSIZE_T_CLEAN` macro --
+    // which, when defined, also renames the functions. Interpreters differ in
+    // whether the older narrow variants still exist, so the same call is
+    // correct on one version and a `SystemError` on another. Reading tuples and
+    // building dictionaries through the typed functions avoids the question
+    // rather than answering it per version.
     extern fn PyModule_Create2(def: *PyModuleDef, apiver: c_int) ?*PyObject;
     extern fn PyLong_FromUnsignedLong(value: c_ulong) ?*PyObject;
+    extern fn PyLong_FromSsize_t(value: Py_ssize_t) ?*PyObject;
     extern fn PyBool_FromLong(value: c_long) ?*PyObject;
     extern fn PyErr_SetString(exception: ?*PyObject, message: [*:0]const u8) void;
-    extern fn PyArg_ParseTuple(args: ?*PyObject, format: [*:0]const u8, ...) c_int;
-    extern fn Py_BuildValue(format: [*:0]const u8, ...) ?*PyObject;
+    extern fn Py_DecRef(object: ?*PyObject) void;
+
+    extern fn PyTuple_Size(tuple: ?*PyObject) Py_ssize_t;
+    extern fn PyTuple_GetItem(tuple: ?*PyObject, index: Py_ssize_t) ?*PyObject;
+    extern fn PyTuple_New(size: Py_ssize_t) ?*PyObject;
+    extern fn PyTuple_SetItem(tuple: ?*PyObject, index: Py_ssize_t, item: ?*PyObject) c_int;
+
+    extern fn PyBytes_AsStringAndSize(
+        object: ?*PyObject,
+        buffer: *?[*]u8,
+        length: *Py_ssize_t,
+    ) c_int;
+
+    extern fn PyDict_New() ?*PyObject;
+    extern fn PyDict_SetItemString(
+        dict: ?*PyObject,
+        key: [*:0]const u8,
+        value: ?*PyObject,
+    ) c_int;
+
+    extern fn PyUnicode_FromStringAndSize(
+        text: [*]const u8,
+        length: Py_ssize_t,
+    ) ?*PyObject;
 
     // Built-in exception objects. These are pointers the interpreter owns; the
     // extern declaration is of the pointer variable itself.
@@ -271,7 +303,32 @@ fn libraryVersion(_: ?*py.PyObject, _: ?*py.PyObject) callconv(.c) ?*py.PyObject
     var minor: u32 = 0;
     var patch: u32 = 0;
     phaser_library_version(&major, &minor, &patch);
-    return py.Py_BuildValue("(III)", major, minor, patch);
+
+    const tuple = py.PyTuple_New(3) orelse return null;
+    const parts = [_]u32{ major, minor, patch };
+    for (parts, 0..) |part, index| {
+        const item = py.PyLong_FromUnsignedLong(part) orelse {
+            py.Py_DecRef(tuple);
+            return null;
+        };
+        // PyTuple_SetItem steals the reference, including when it fails.
+        if (py.PyTuple_SetItem(tuple, @intCast(index), item) != 0) {
+            py.Py_DecRef(tuple);
+            return null;
+        }
+    }
+    return tuple;
+}
+
+/// Sets one dictionary entry, taking ownership of `value`.
+///
+/// PyDict_SetItemString does not steal the reference, so the caller would have
+/// to release it on both paths. Doing that here keeps every call site to one
+/// line and one decision.
+fn setOwned(dict: ?*py.PyObject, key: [*:0]const u8, value: ?*py.PyObject) bool {
+    const item = value orelse return false;
+    defer py.Py_DecRef(item);
+    return py.PyDict_SetItemString(dict, key, item) == 0;
 }
 
 /// Parses a model and returns its metadata as a dictionary.
@@ -284,11 +341,19 @@ fn modelMetadata(
     _: ?*py.PyObject,
     args: ?*py.PyObject,
 ) callconv(.c) ?*py.PyObject {
-    var source: [*c]const u8 = undefined;
+    // One positional argument, read through the tuple rather than a format
+    // string. PyBytes_AsStringAndSize accepts bytes without copying and raises
+    // TypeError for anything else, so the caller decides the encoding rather
+    // than the binding guessing at it.
+    if (py.PyTuple_Size(args) != 1) {
+        py.PyErr_SetString(py.PyExc_TypeError, "model_metadata expects one argument");
+        return null;
+    }
+    const argument = py.PyTuple_GetItem(args, 0) orelse return null;
+
+    var source: ?[*]u8 = null;
     var length: py.Py_ssize_t = 0;
-    // `y#` accepts bytes without copying and rejects str, so the caller
-    // decides the encoding rather than the binding guessing at it.
-    if (py.PyArg_ParseTuple(args, "y#", &source, &length) == 0) return null;
+    if (py.PyBytes_AsStringAndSize(argument, &source, &length) != 0) return null;
     if (length < 0) return raiseStatus(.invalid_argument, "model");
 
     var context: ?*PhaserContext = null;
@@ -324,16 +389,25 @@ fn modelMetadata(
     _ = std.fmt.bufPrint(&hex, "{x}", .{&fingerprint}) catch
         return raiseStatus(.internal, "model");
 
-    return py.Py_BuildValue(
-        "{s:s#,s:n,s:n}",
+    const metadata = py.PyDict_New() orelse return null;
+    const filled = setOwned(
+        metadata,
         "fingerprint",
-        &hex,
-        @as(py.Py_ssize_t, hex.len),
+        py.PyUnicode_FromStringAndSize(&hex, hex.len),
+    ) and setOwned(
+        metadata,
         "parameter_count",
-        @as(py.Py_ssize_t, @intCast(parameters)),
+        py.PyLong_FromSsize_t(@intCast(parameters)),
+    ) and setOwned(
+        metadata,
         "scalar_field_count",
-        @as(py.Py_ssize_t, @intCast(scalars)),
+        py.PyLong_FromSsize_t(@intCast(scalars)),
     );
+    if (!filled) {
+        py.Py_DecRef(metadata);
+        return null;
+    }
+    return metadata;
 }
 
 // ---------------------------------------------------------------------------
