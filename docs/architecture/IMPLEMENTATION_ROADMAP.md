@@ -88,9 +88,16 @@ Every maintained notebook:
   now a requirement rather than a conditional one.
 
 Short canonical demonstration notebooks MAY retain reviewed outputs so equations
-and plots are visible when opened. The policy for committed outputs, deterministic
-execution, and rendered derivatives remains to be selected before notebooks are
-added.
+and plots are visible when opened. That allowance is **declined for Phaser**:
+[Decision 0015](../decisions/0015-phase-b-python-dependencies.md) records that
+notebook outputs are not versioned. A committed notebook carries no stored
+outputs and no execution counts; a reader runs it to see them.
+`tools/ci/check_notebook_outputs.py` enforces this and
+`tools/ci/clear_notebook_outputs.py` restores it, both standard library only.
+
+Notebook execution runs on Linux x86-64 only, also recorded in decision 0015,
+because every number a notebook plots is already asserted on all three platforms
+by tests that need none of the notebook packages.
 
 This roadmap selects neither package itself; adding one is subject to the
 external-dependency proposal and explicit approval required by

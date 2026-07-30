@@ -145,14 +145,106 @@ here so this record continues to describe the dependency Phaser actually has.
 - **Boundary.** CI job steps and the notebook tier. No Phaser source imports
   either package.
 
-## Deferred within this record
+## Transitive set, recorded in implementation
 
-The committed-notebook-output and rendered-artifact policy that roadmap §17
-also defers is **not** settled here. Whether a notebook keeps reviewed outputs in
-version control is a reviewability and diff-noise question, independent of which
-packages execute it, and it should be decided when there is a real notebook to
-look at. Executing in CI does not require committed outputs, and committing
-outputs does not require executing in CI.
+This record enumerated matplotlib's transitive tree when it was written and did
+not enumerate the others'. The four approved packages resolve to **47** on Linux
+x86-64 and CPython 3.12, and since this record states that "a transitive set"
+requires renewed permission, the resolved set is written down here rather than
+left to be discovered in a lock file. `tools/ci/python-requirements.txt` carries
+the same list with hashes and is the operative artifact; this table is what was
+put to the owner and approved.
+
+| Package | Version | | Package | Version |
+|---|---|---|---|---|
+| `appnope` (Darwin only) | 0.1.4 | | `packaging` | 26.2 |
+| `asttokens` | 3.0.2 | | `parso` | 0.8.7 |
+| `attrs` | 26.1.0 | | `pexpect` | 4.9.0 |
+| `comm` | 0.2.3 | | `pillow` | 12.2.0 |
+| `contourpy` | 1.3.2 | | `platformdirs` | 4.11.0 |
+| `cycler` | 0.12.1 | | `prompt-toolkit` | 3.0.53 |
+| `debugpy` | 1.8.21 | | `psutil` | 7.2.2 |
+| `decorator` | 5.3.1 | | `ptyprocess` | 0.7.0 |
+| `executing` | 2.2.1 | | `pure-eval` | 0.2.3 |
+| `fastjsonschema` | 2.22.1 | | `pygments` | 2.20.0 |
+| `fonttools` | 4.63.0 | | `pyparsing` | 3.3.2 |
+| **`ipykernel`** | 7.3.0 | | `python-dateutil` | 2.9.0.post0 |
+| `ipython` | 9.15.0 | | `pyzmq` | 26.4.0 |
+| `ipython-pygments-lexers` | 1.1.1 | | `referencing` | 0.37.0 |
+| `jedi` | 0.20.0 | | `rpds-py` | 2026.6.3 |
+| `jsonschema` | 4.26.0 | | `six` | 1.17.0 |
+| `jsonschema-specifications` | 2025.9.1 | | `stack-data` | 0.6.3 |
+| `jupyter-client` | 8.9.1 | | `tornado` | 6.5.7 |
+| `jupyter-core` | 5.9.1 | | `traitlets` | 5.15.1 |
+| `kiwisolver` | 1.5.0 | | `typing-extensions` | 4.16.0 |
+| **`matplotlib`** | 3.11.1 | | `wcwidth` | 0.8.2 |
+| `matplotlib-inline` | 0.2.2 | | **`nbclient`** | 0.11.0 |
+| `nest-asyncio2` | 1.7.2 | | **`nbformat`** | 5.10.4 |
+| `numpy` | 2.2.6 | | | |
+
+The four in bold are the ones this record approved by name. The rest arrive
+through them.
+
+### One entry that needed a decision of its own
+
+`nest-asyncio2` is not the well-known `nest_asyncio`. It is a fork of it,
+published from `github.com/Chaoses-Ib/nest-asyncio2`, which retains the original
+author's name and email in its package metadata while being maintained by
+someone else. `ipykernel` 7 depends on it; `ipykernel` 6.31 depends on the
+original `nest_asyncio` instead, and the two resolutions are otherwise identical
+package for package.
+
+It was checked rather than waved through, because a package named after another
+with a digit appended is also what a typosquat looks like. What it actually is:
+a self-declared fork of an unmaintained project, BSD licensed, adding CPython
+3.12 and 3.14 support, and depended on by `ipython/ipykernel` upstream rather
+than pulled in by Phaser's own resolution.
+
+The owner chose `ipykernel` 7 knowing this. The trade is one additional
+maintainer to trust against staying on a version line whose own dependency is
+unmaintained. Revisit if the fork is abandoned or if `ipykernel` changes course
+again.
+
+## Deferred within this record, and since settled
+
+The committed-notebook-output and rendered-artifact policy that roadmap §17 also
+defers was **not** settled when this record was written. Whether a notebook keeps
+reviewed outputs in version control is a reviewability and diff-noise question,
+independent of which packages execute it, and it was left until there was a real
+notebook to look at. Executing in CI does not require committed outputs, and
+committing outputs does not require executing in CI.
+
+There is now a real notebook, and the repository owner has settled both open
+points.
+
+**Notebook outputs are not versioned.** A committed notebook carries no stored
+outputs and no execution counts. A reader runs it to see the figures and the
+printed numbers. Roadmap §3's allowance that "short canonical demonstration
+notebooks MAY retain reviewed outputs" is therefore declined for Phaser rather
+than left open.
+
+What this costs is real and is accepted: a notebook opened on a repository
+browser shows source without figures, and a reviewer who wants to see a plot
+must run it. What it buys is that the history carries no base64 images, no
+diffs that change on every execution, and no rendered output that can disagree
+with the code above it — an output committed once and not re-run is a claim
+nobody is checking.
+
+The policy needs a guard, because a frontend stores outputs on save.
+`tools/ci/check_notebook_outputs.py` fails the repository tier if any survive,
+and `tools/ci/clear_notebook_outputs.py` removes them. Both are standard library
+only, so neither depends on anything this record approved.
+
+**The notebook tier runs on Linux x86-64 only.** The three approved packages are
+installed on that platform and nowhere else. Every number the notebook plots is
+already asserted bitwise on all three platforms by tests that import none of
+them, so executing the notebook on macOS and Windows would establish that
+matplotlib renders rather than that Phaser computes, at the cost of pinning
+wheels for three platforms and three interpreter versions.
+
+The limit is worth stating plainly: "the notebook runs from a fresh kernel using
+public APIs only" is verified on one platform. A Python-level portability defect
+that the machine tests do not already cover would not be caught by this tier.
 
 ## Consequences
 

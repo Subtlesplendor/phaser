@@ -42,6 +42,13 @@ jobs:
         shell: bash
         run: tools/ci/check_markdown_links.sh
 
+      # Phaser does not version notebook outputs, and a frontend stores them on
+      # save. Standard library only, so this belongs in the tier that installs
+      # no Python environment.
+      - name: Check committed notebooks carry no outputs
+        shell: bash
+        run: python3 tools/ci/check_notebook_outputs.py
+
       - name: Install pinned Zig toolchain
         shell: bash
         run: tools/ci/install_zig.sh "$RUNNER_TEMP/zig"
@@ -90,6 +97,43 @@ jobs:
           python3 --version
           "$RUNNER_TEMP/zig/zig" build test-python \
             -Doptimize=ReleaseSafe -Dpython="$(command -v python3)"
+
+      # The notebook tier, per decision 0015. Linux only, deliberately: the
+      # numbers the notebook plots are asserted on all three platforms by tests
+      # that need none of these packages, so executing it elsewhere would check
+      # that matplotlib renders rather than that Phaser computes.
+      #
+      # A virtual environment because Ubuntu's interpreter is externally
+      # managed and refuses installs into itself. The extension is built
+      # against the same interpreter and uses the Stable ABI, so it loads here
+      # unchanged.
+      #
+      # `--require-hashes` makes every entry pinned and hashed or the install
+      # fails; `--no-deps` makes the pinned set exhaustive rather than a
+      # starting point for resolution.
+      - name: Install the pinned notebook environment
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/notebook-venv"
+          "$RUNNER_TEMP/notebook-venv/bin/python" -m pip install \
+            --require-hashes --no-deps \
+            -r tools/ci/python-requirements.txt
+
+      - name: Execute the notebooks from a fresh kernel
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          # A fixed non-interactive backend, so a figure renders identically
+          # and without a display.
+          MPLBACKEND: Agg
+          PYTHONPATH: ${{ github.workspace }}/zig-out/python
+          PHASER_EXAMPLES: ${{ github.workspace }}/examples
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/notebook-venv/bin/python" tools/ci/run_notebook.py \
+            docs/notebooks/scalar_effective_potential.ipynb
 
       - name: Test deterministic core in Debug
         if: github.event_name == 'pull_request'
