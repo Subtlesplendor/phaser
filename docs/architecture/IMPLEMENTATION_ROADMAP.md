@@ -415,9 +415,10 @@ Common-gate items: the specifications this milestone implements were reviewed
 in the preceding decision and specification changes; supported and unsupported
 cases are stated in each; `zig build bench` provides the representative
 measurements, now including one-by-one and dense three-by-three one-loop value
-and fused-derivative workloads whose outputs are verified against the closed
-form before anything is timed; Debug, ReleaseSafe, and ReleaseFast all run in
-continuous integration.
+and fused-derivative workloads, plus the intermediate two-by-two case. Varied
+positive and branch scans are verified against independent known-spectrum or
+analytic-spectrum evaluators and direct C value baselines before anything is
+timed; Debug, ReleaseSafe, and ReleaseFast all run in continuous integration.
 
 ### Requirements satisfied only trivially
 
@@ -447,17 +448,19 @@ Not defects, but measured behavior a later milestone should know about.
 Measured on Apple M4, Zig 0.16.0, ReleaseSafe, seven samples of at least 50 ms
 each; see `zig build bench` for the full table and its variance.
 
-- A one-by-one one-loop value costs roughly 73 ns per point at a single point
-  and 64 ns in a large batch, against 46 ns and 33 ns for the same model's tree
-  value. The one-loop term is therefore about twice the tree cost at this size,
-  most of it the logarithm.
-- A dense three-by-three one-loop value costs roughly 430 ns per point, about
-  six times the one-by-one case for three times the eigenvalues: the cyclic
-  Jacobi sweeps, not the spectral sum, dominate as soon as the direct small-size
-  paths stop applying.
-- Fusing the gradient and Hessian onto the value costs about 2.6x at one-by-one
-  and about 1.6x at three-by-three. The eigensystem is computed once and reused,
-  so the marginal cost of the derivatives falls as the diagonalization grows.
+- Varied large-batch tree values cost roughly 34 ns per point for phi4 and
+  140 ns for the two-coordinate multi-scalar model, against 0.8 ns and 4.5 ns
+  for the direct C expressions. Binding removes repeated parameter work, but
+  the reference interpreter remains dispatch-dominated.
+- One-loop values cost roughly 69 ns, 260 ns, and 470 ns per point for 1x1,
+  2x2, and dense 3x3 fluctuation matrices. Their independent C baselines cost
+  roughly 3.8 ns, 15 ns, and 290 ns. The first two leave substantial
+  interpreter overhead visible; by 3x3, deterministic Jacobi work dominates
+  both paths and narrows the gap.
+- Fusing the gradient and Hessian onto the value costs about 2.6x at 1x1,
+  2.4x at 2x2, and 1.5x at 3x3. The eigensystem is computed once and reused, so
+  the marginal derivative ratio falls as diagonalization becomes more
+  expensive.
 
 ## 8. Milestone 4: experimental public client surfaces
 
