@@ -160,8 +160,8 @@ put to the owner and approved.
 | `appnope` (Darwin only) | 0.1.4 | | `packaging` | 26.2 |
 | `asttokens` | 3.0.2 | | `parso` | 0.8.7 |
 | `attrs` | 26.1.0 | | `pexpect` | 4.9.0 |
-| `comm` | 0.2.3 | | `pillow` | 12.2.0 |
-| `contourpy` | 1.3.2 | | `platformdirs` | 4.11.0 |
+| `comm` | 0.2.3 | | `pillow` | 12.3.0 |
+| `contourpy` | 1.3.3 | | `platformdirs` | 4.11.0 |
 | `cycler` | 0.12.1 | | `prompt-toolkit` | 3.0.53 |
 | `debugpy` | 1.8.21 | | `psutil` | 7.2.2 |
 | `decorator` | 5.3.1 | | `ptyprocess` | 0.7.0 |
@@ -169,7 +169,7 @@ put to the owner and approved.
 | `fastjsonschema` | 2.22.1 | | `pygments` | 2.20.0 |
 | `fonttools` | 4.63.0 | | `pyparsing` | 3.3.2 |
 | **`ipykernel`** | 7.3.0 | | `python-dateutil` | 2.9.0.post0 |
-| `ipython` | 9.15.0 | | `pyzmq` | 26.4.0 |
+| `ipython` | 9.15.0 | | `pyzmq` | 27.1.0 |
 | `ipython-pygments-lexers` | 1.1.1 | | `referencing` | 0.37.0 |
 | `jedi` | 0.20.0 | | `rpds-py` | 2026.6.3 |
 | `jsonschema` | 4.26.0 | | `six` | 1.17.0 |
@@ -180,10 +180,31 @@ put to the owner and approved.
 | **`matplotlib`** | 3.11.1 | | `wcwidth` | 0.8.2 |
 | `matplotlib-inline` | 0.2.2 | | **`nbclient`** | 0.11.0 |
 | `nest-asyncio2` | 1.7.2 | | **`nbformat`** | 5.10.4 |
-| `numpy` | 2.2.6 | | | |
+| `numpy` | 2.5.1 | | | |
 
 The four in bold are the ones this record approved by name. The rest arrive
 through them.
+
+### The resolution's platform tags are part of the pin
+
+The first version of `tools/ci/python-requirements.txt` was resolved for
+`manylinux2014_x86_64` alone, and that silently held four packages back:
+`contourpy`, `numpy`, `pyzmq`, and `pillow`. `pip` selects the newest release
+having a wheel for a tag it was given and takes an older release otherwise,
+without saying so. Pillow's newer releases ship `manylinux_2_28` wheels only, so
+the pin landed on 12.2.0 — a release with thirteen open advisories, ten of them
+high, which GitHub reported against the repository within minutes of the file
+reaching the default branch.
+
+The fix is to resolve against both tags. The runner is Ubuntu 24.04 with glibc
+2.39 and installs either, so the narrower tag bought nothing and cost a security
+patch. The regeneration command in the file's header carries both, and the
+reason is written there rather than only here, because the person regenerating
+it is the one who needs to know.
+
+The general point is worth keeping: hash-pinning bounds *which* artifact you get,
+and says nothing about whether it is the one you should want. A pin is a
+statement that has to be re-examined, not a fact that stays true.
 
 ### One entry that needed a decision of its own
 
