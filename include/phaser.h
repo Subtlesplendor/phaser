@@ -148,6 +148,39 @@ typedef enum phaser_capability {
     PHASER_CAPABILITY_VALUE_GRADIENT_HESSIAN = 2
 } phaser_capability;
 
+/*
+ * A contribution role. Mirrors the internal enum; a conformance test asserts
+ * the two agree by name and by value.
+ *
+ * A client MUST treat an unrecognized value as a role it does not know rather
+ * than as any of the ones below.
+ */
+typedef enum phaser_role {
+    PHASER_ROLE_VACUUM_ENERGY = 0,
+    PHASER_ROLE_SCALAR_TADPOLE = 1,
+    PHASER_ROLE_SCALAR_MASS_SQUARED = 2,
+    PHASER_ROLE_SCALAR_CUBIC = 3,
+    PHASER_ROLE_SCALAR_QUARTIC = 4,
+    PHASER_ROLE_SCALAR_ONE_LOOP = 5
+} phaser_role;
+
+/*
+ * Which part of the artifact a kernel evaluates.
+ *
+ * The default is the complete requested truncation. Selecting one loop order
+ * or one role compiles a kernel for that part alone, which is how a client
+ * obtains a contribution rather than reconstructing it by subtracting two
+ * totals -- a subtraction that is a cancellation wherever the parts are close.
+ */
+typedef enum phaser_selection_kind {
+    /* The complete requested truncation. selection_value must be zero. */
+    PHASER_SELECTION_TOTAL = 0,
+    /* Exactly one loop order; selection_value is that order. */
+    PHASER_SELECTION_LOOP_ORDER = 1,
+    /* Exactly one contribution role; selection_value is a phaser_role. */
+    PHASER_SELECTION_ROLE = 2
+} phaser_selection_kind;
+
 /* Rendering target for symbolic export. */
 typedef enum phaser_export_target {
     /* Compact plain text for terminals and logs. */
@@ -404,17 +437,33 @@ typedef struct phaser_kernel_options {
     uint32_t abi_version;
     /* One of phaser_capability. */
     int32_t capability;
+    /* One of phaser_selection_kind. */
+    int32_t selection_kind;
+    /* The loop order for PHASER_SELECTION_LOOP_ORDER, or a phaser_role for
+       PHASER_SELECTION_ROLE. Must be zero for PHASER_SELECTION_TOTAL, so that
+       a caller cannot describe a selection it did not intend. */
+    uint32_t selection_value;
     uint32_t reserved;
 } phaser_kernel_options;
 
 /*
- * Compiles a kernel. `options` may be NULL for value, gradient, and Hessian.
- * The artifact must outlive the kernel, which does not borrow from it.
+ * Compiles a kernel. `options` may be NULL for value, gradient, and Hessian
+ * over the complete truncation. The artifact must outlive the kernel, which
+ * does not borrow from it.
  *
  * Reports PHASER_STATUS_UNSUPPORTED when the artifact does not carry the
  * requested derivatives -- a distinct outcome from an invalid argument,
  * because the request was well formed and the capability simply was not
  * derived.
+ *
+ * Reports PHASER_STATUS_INVALID_ARGUMENT for an unrecognized selection kind,
+ * for a nonzero selection_value alongside PHASER_SELECTION_TOTAL, and for a
+ * selection_value that is not a phaser_role alongside PHASER_SELECTION_ROLE.
+ * Those are malformed calls.
+ *
+ * Reports PHASER_STATUS_UNSUPPORTED, as for a capability, when the selection
+ * is well formed but names a loop order or role this artifact does not carry.
+ * The request was answerable in principle and this artifact does not answer it.
  */
 PHASER_API phaser_status phaser_kernel_compile(
     phaser_context *context,
@@ -512,6 +561,18 @@ PHASER_API phaser_status phaser_binding_coordinate_count(
 PHASER_API phaser_status phaser_binding_result_type(
     const phaser_binding *binding,
     int32_t *out_result_type);
+/*
+ * Writes one of phaser_capability.
+ *
+ * The capability decides the exact gradient and Hessian lengths evaluation
+ * requires, so a caller holding only a binding needs it to size the output
+ * buffers. Without it the binding's query set would be incomplete: workspace,
+ * coordinate count, and result type describe the call, and this describes what
+ * the call writes.
+ */
+PHASER_API phaser_status phaser_binding_capability(
+    const phaser_binding *binding,
+    int32_t *out_capability);
 
 /* ---------------------------------------------------------------------------
  * Evaluation
