@@ -157,12 +157,34 @@ zig build mutation           # mutation campaign (nightly tier; see below)
 ```
 
 `zig build bench` measures the production `ReleaseSafe` mode by default,
-calibrates each timing to repeated minimum-duration samples, and reports the
-median and observed range. It measures separately compiled value-only and fused
-value/gradient/Hessian kernels and compares value throughput with direct C
-expressions compiled by the pinned Zig toolchain. No system C compiler is
-required. Use `-Dbench-optimize=ReleaseFast` for an explicitly diagnostic
-`ReleaseFast` run.
+calibrates each timing to repeated minimum-duration samples, verifies every
+output before timing, and reports the median and observed range. The bounded
+suite covers varied tree-level scans and scalar one-loop scans with 1x1, 2x2,
+and dense 3x3 fluctuation matrices. Independent direct C baselines cover the
+same value workloads and are compiled by the pinned Zig toolchain with strict
+floating-point behavior; no system C compiler is required.
+
+Runtime rows distinguish:
+
+- `scalar_throughput`, which repeatedly evaluates independent scalar calls and
+  measures reciprocal throughput;
+- `dependent_scalar_latency`, which carries each result into the next bounded
+  input and reports the carrier's cost separately; and
+- `batch_throughput`, which reports nanoseconds per point and points per second
+  through the complete batch contract.
+
+Rows also record the point set, backend, contribution and capability, workspace
+and buffer bytes, binding reuse, calibrated repetitions, and units per
+repetition. Numerical eigensolver and spectral-operation leaves are diagnostic
+measurements; they are not added together as an end-to-end estimate.
+
+Nanoseconds are the primary portable unit. Phaser does not infer cycles from a
+CPU model or advertised clock. A measured frequency can be supplied explicitly
+with `-Dbench-cycles-per-ns=VALUE` to add a clearly derived cycle column.
+`-Dbench-extended=true` adds cache-crossing batches of 16K, 64K, and 1M points;
+the default `1`, `8`, `64`, and `1024` suite remains bounded. Use
+`-Dbench-optimize=ReleaseFast` only for an explicitly diagnostic
+`ReleaseFast` comparison.
 
 Ordinary property runs do not pin a seed. If a property fails, Minish prints the
 selected seed and minimized input; reproduce that stream with:

@@ -481,8 +481,27 @@ pub fn build(b: *std.Build) void {
         "bench-optimize",
         "Optimization mode for benchmarks (default: ReleaseSafe)",
     ) orelse .ReleaseSafe;
+    const bench_extended = b.option(
+        bool,
+        "bench-extended",
+        "Include cache-crossing benchmark batches (default: false)",
+    ) orelse false;
+    const bench_cycles_per_ns = b.option(
+        f64,
+        "bench-cycles-per-ns",
+        "Optional measured CPU cycles per nanosecond for a derived column",
+    ) orelse 0;
+    const bench_options = b.addOptions();
+    bench_options.addOption(bool, "extended", bench_extended);
+    bench_options.addOption(f64, "cycles_per_ns", bench_cycles_per_ns);
+
     const bench_phaser_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+    });
+    const bench_numerics_module = b.createModule(.{
+        .root_source_file = b.path("src/bench_numerics_root.zig"),
         .target = target,
         .optimize = bench_optimize,
     });
@@ -500,6 +519,7 @@ pub fn build(b: *std.Build) void {
         .optimize = bench_optimize,
         .imports = &.{
             .{ .name = "phaser", .module = bench_phaser_module },
+            .{ .name = "bench_options", .module = bench_options.createModule() },
             .{ .name = "example_data", .module = bench_example_data_module },
             .{ .name = "numerical_comparison", .module = numerical_comparison_module },
             // The dense three-by-three one-loop workload needs a model with
@@ -525,21 +545,43 @@ pub fn build(b: *std.Build) void {
             "-ffp-contract=off",
         },
     });
+    bench_module.link_libc = true;
+    if (target.result.os.tag == .linux) {
+        bench_module.linkSystemLibrary("m", .{ .use_pkg_config = .no });
+    }
+    const bench_leaves_module = b.createModule(.{
+        .root_source_file = b.path("tools/bench/leaves.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+        .imports = &.{
+            .{ .name = "bench_numerics", .module = bench_numerics_module },
+        },
+    });
+    const bench_leaves = b.addExecutable(.{
+        .name = "phaser-bench-leaves",
+        .root_module = bench_leaves_module,
+    });
     const bench_tests = b.addTest(.{ .root_module = bench_module });
     const run_bench_tests = b.addRunArtifact(bench_tests);
+    const bench_leaves_tests = b.addTest(.{ .root_module = bench_leaves_module });
+    const run_bench_leaves_tests = b.addRunArtifact(bench_leaves_tests);
     const test_bench_step = b.step(
         "test-bench",
         "Run benchmark-driver unit tests",
     );
     test_bench_step.dependOn(&run_bench_tests.step);
+    test_bench_step.dependOn(&run_bench_leaves_tests.step);
     test_step.dependOn(&run_bench_tests.step);
+    test_step.dependOn(&run_bench_leaves_tests.step);
 
     const run_bench = b.addRunArtifact(bench);
+    const run_bench_leaves = b.addRunArtifact(bench_leaves);
+    run_bench_leaves.step.dependOn(&run_bench.step);
     const bench_step = b.step(
         "bench",
         "Run representative performance measurements (informational)",
     );
-    bench_step.dependOn(&run_bench.step);
+    bench_step.dependOn(&run_bench_leaves.step);
 
     // Corpus maintenance reads the local build cache and the committed corpus,
     // so it runs from the source directory and takes its arguments after `--`.

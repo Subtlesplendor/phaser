@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const phaser = @import("phaser");
+const bench_options = @import("bench_options");
 const example_data = @import("example_data");
 const oracle_fixture = @import("scalar_oracle_fixture");
 const numerical_comparison = @import("numerical_comparison");
@@ -22,7 +23,9 @@ const kernel_module = phaser.kernel;
 const Scalar = kernel_module.Scalar;
 const Complex64 = kernel_module.Complex64;
 
-const batch_sizes = [_]usize{ 1, 8, 64, 1024 };
+const bounded_batch_sizes = [_]usize{ 1, 8, 64, 1024 };
+const extended_batch_sizes = [_]usize{ 16 * 1024, 64 * 1024, 1024 * 1024 };
+const all_batch_sizes = bounded_batch_sizes ++ extended_batch_sizes;
 const measurement_sample_count = 7;
 const minimum_sample_ns = 50_000_000;
 
@@ -64,6 +67,75 @@ extern fn phaser_bench_phi4_magnitude(
 extern fn phaser_bench_multi_scalar_magnitude(
     parameters: [*]const Scalar,
     background: [*]const Scalar,
+) Scalar;
+
+const DirectComplex64 = extern struct {
+    re: Scalar,
+    im: Scalar,
+
+    fn kernel(self: DirectComplex64) Complex64 {
+        return .{ .re = self.re, .im = self.im };
+    }
+};
+
+const DirectLoopStatus = enum(u8) {
+    ok = 0,
+    non_finite = 1,
+    nonconvergent = 2,
+};
+
+extern fn phaser_bench_one_loop_1x1_value(
+    parameters: [*]const Scalar,
+    background: [*]const Scalar,
+    scale: Scalar,
+    result: *DirectComplex64,
+) c_int;
+
+extern fn phaser_bench_one_loop_2x2_value(
+    parameters: [*]const Scalar,
+    background: [*]const Scalar,
+    scale: Scalar,
+    result: *DirectComplex64,
+) c_int;
+
+extern fn phaser_bench_one_loop_3x3_value(
+    parameters: [*]const Scalar,
+    background: [*]const Scalar,
+    scale: Scalar,
+    result: *DirectComplex64,
+) c_int;
+
+extern fn phaser_bench_one_loop_1x1_value_batch(
+    parameters: [*]const Scalar,
+    backgrounds: [*]const Scalar,
+    scale: Scalar,
+    point_count: c_ulonglong,
+    results: [*]DirectComplex64,
+    statuses: [*]u8,
+) void;
+
+extern fn phaser_bench_one_loop_2x2_value_batch(
+    parameters: [*]const Scalar,
+    backgrounds: [*]const Scalar,
+    scale: Scalar,
+    point_count: c_ulonglong,
+    results: [*]DirectComplex64,
+    statuses: [*]u8,
+) void;
+
+extern fn phaser_bench_one_loop_3x3_value_batch(
+    parameters: [*]const Scalar,
+    backgrounds: [*]const Scalar,
+    scale: Scalar,
+    point_count: c_ulonglong,
+    results: [*]DirectComplex64,
+    statuses: [*]u8,
+) void;
+
+extern fn phaser_bench_dependency_carrier(
+    value: Scalar,
+    base: Scalar,
+    span: Scalar,
 ) Scalar;
 
 /// Elapsed-nanosecond timer over the monotonic-while-awake clock.
@@ -184,6 +256,114 @@ const multi_scalar_direct = DirectBaseline{
     },
 };
 
+const DirectLoopKind = enum {
+    one_by_one,
+    two_by_two,
+    three_by_three,
+
+    fn evaluate(
+        self: DirectLoopKind,
+        parameters: [*]const Scalar,
+        background: [*]const Scalar,
+        scale: Scalar,
+        result: *DirectComplex64,
+    ) DirectLoopStatus {
+        const raw = switch (self) {
+            .one_by_one => phaser_bench_one_loop_1x1_value(
+                parameters,
+                background,
+                scale,
+                result,
+            ),
+            .two_by_two => phaser_bench_one_loop_2x2_value(
+                parameters,
+                background,
+                scale,
+                result,
+            ),
+            .three_by_three => phaser_bench_one_loop_3x3_value(
+                parameters,
+                background,
+                scale,
+                result,
+            ),
+        };
+        return @enumFromInt(@as(u8, @intCast(raw)));
+    }
+
+    fn evaluateBatch(
+        self: DirectLoopKind,
+        parameters: [*]const Scalar,
+        backgrounds: [*]const Scalar,
+        scale: Scalar,
+        point_count: usize,
+        results: [*]DirectComplex64,
+        statuses: [*]u8,
+    ) void {
+        const count: c_ulonglong = @intCast(point_count);
+        switch (self) {
+            .one_by_one => phaser_bench_one_loop_1x1_value_batch(
+                parameters,
+                backgrounds,
+                scale,
+                count,
+                results,
+                statuses,
+            ),
+            .two_by_two => phaser_bench_one_loop_2x2_value_batch(
+                parameters,
+                backgrounds,
+                scale,
+                count,
+                results,
+                statuses,
+            ),
+            .three_by_three => phaser_bench_one_loop_3x3_value_batch(
+                parameters,
+                backgrounds,
+                scale,
+                count,
+                results,
+                statuses,
+            ),
+        }
+    }
+};
+
+const DirectLoopBaseline = struct {
+    kind: DirectLoopKind,
+    parameter_names: []const []const u8,
+
+    fn verifyChannels(
+        self: DirectLoopBaseline,
+        kernel: *const kernel_module.Kernel,
+    ) !void {
+        if (kernel.parameters.len != self.parameter_names.len) {
+            return error.DirectParameterLayoutMismatch;
+        }
+        for (kernel.parameters, self.parameter_names) |channel, expected| {
+            if (!std.mem.eql(u8, channel.name, expected)) {
+                return error.DirectParameterLayoutMismatch;
+            }
+        }
+    }
+};
+
+const phi4_one_loop_direct = DirectLoopBaseline{
+    .kind = .one_by_one,
+    .parameter_names = &.{ "lambda", "m2", "omega" },
+};
+
+const multi_scalar_one_loop_direct = DirectLoopBaseline{
+    .kind = .two_by_two,
+    .parameter_names = multi_scalar_direct.parameter_names,
+};
+
+const three_scalar_one_loop_direct = DirectLoopBaseline{
+    .kind = .three_by_three,
+    .parameter_names = &.{ "c111", "c112", "c113", "c122", "c123", "c133" },
+};
+
 const StagedRun = struct {
     binding: *const kernel_module.Binding,
     backgrounds: []const Scalar,
@@ -204,6 +384,8 @@ const StagedRun = struct {
                 self.outputs,
             );
         }
+        std.mem.doNotOptimizeAway(self.outputs.values);
+        std.mem.doNotOptimizeAway(self.outputs.statuses);
     }
 };
 
@@ -231,6 +413,8 @@ const UnstagedRun = struct {
                 self.outputs,
             );
         }
+        std.mem.doNotOptimizeAway(self.outputs.values);
+        std.mem.doNotOptimizeAway(self.outputs.statuses);
     }
 };
 
@@ -255,6 +439,8 @@ const ComplexStagedRun = struct {
                 self.outputs,
             );
         }
+        std.mem.doNotOptimizeAway(self.outputs.values);
+        std.mem.doNotOptimizeAway(self.outputs.statuses);
     }
 };
 
@@ -310,6 +496,155 @@ const DirectBatchRun = struct {
             );
         }
         std.mem.doNotOptimizeAway(self.values);
+    }
+};
+
+const DirectLoopRun = struct {
+    baseline: DirectLoopBaseline,
+    parameters: []const Scalar,
+    backgrounds: []const Scalar,
+    scale: Scalar,
+    point_count: usize,
+    coordinate_count: usize,
+    sink: DirectComplex64 = .{ .re = 0, .im = 0 },
+
+    fn unitCount(self: *const DirectLoopRun) usize {
+        return self.point_count;
+    }
+
+    fn execute(self: *DirectLoopRun, repetitions: usize) !void {
+        std.debug.assert(
+            self.backgrounds.len == self.point_count * self.coordinate_count,
+        );
+        for (0..repetitions) |_| {
+            for (0..self.point_count) |point_index| {
+                const background =
+                    self.backgrounds.ptr + point_index * self.coordinate_count;
+                if (self.baseline.kind.evaluate(
+                    self.parameters.ptr,
+                    background,
+                    self.scale,
+                    &self.sink,
+                ) != .ok) {
+                    return error.DirectOneLoopFailed;
+                }
+            }
+        }
+        std.mem.doNotOptimizeAway(self.sink);
+    }
+};
+
+const DirectLoopBatchRun = struct {
+    baseline: DirectLoopBaseline,
+    parameters: []const Scalar,
+    backgrounds: []const Scalar,
+    scale: Scalar,
+    point_count: usize,
+    values: []DirectComplex64,
+    statuses: []u8,
+
+    fn unitCount(self: *const DirectLoopBatchRun) usize {
+        return self.point_count;
+    }
+
+    fn execute(self: *const DirectLoopBatchRun, repetitions: usize) !void {
+        std.debug.assert(self.values.len == self.point_count);
+        std.debug.assert(self.statuses.len == self.point_count);
+        for (0..repetitions) |_| {
+            self.baseline.kind.evaluateBatch(
+                self.parameters.ptr,
+                self.backgrounds.ptr,
+                self.scale,
+                self.point_count,
+                self.values.ptr,
+                self.statuses.ptr,
+            );
+        }
+        std.mem.doNotOptimizeAway(self.values);
+        std.mem.doNotOptimizeAway(self.statuses);
+    }
+};
+
+const CarrierRun = struct {
+    state: Scalar,
+    base: Scalar,
+    span: Scalar,
+
+    fn unitCount(_: *const CarrierRun) usize {
+        return 1;
+    }
+
+    fn execute(self: *CarrierRun, repetitions: usize) !void {
+        for (0..repetitions) |_| {
+            self.state = phaser_bench_dependency_carrier(
+                self.state,
+                self.base,
+                self.span,
+            );
+        }
+        std.mem.doNotOptimizeAway(self.state);
+    }
+};
+
+const StagedDependentRun = struct {
+    binding: *const kernel_module.Binding,
+    background: []Scalar,
+    workspace: []u8,
+    values: []Scalar,
+    statuses: []kernel_module.Status,
+    base: Scalar,
+    span: Scalar,
+
+    fn unitCount(_: *const StagedDependentRun) usize {
+        return 1;
+    }
+
+    fn execute(self: *StagedDependentRun, repetitions: usize) !void {
+        for (0..repetitions) |_| {
+            try self.binding.evaluate(
+                self.background,
+                1,
+                self.workspace,
+                .{ .values = self.values, .statuses = self.statuses },
+            );
+            if (self.statuses[0] != .ok) return error.DependentEvaluationFailed;
+            self.background[0] = phaser_bench_dependency_carrier(
+                self.values[0],
+                self.base,
+                self.span,
+            );
+        }
+        std.mem.doNotOptimizeAway(self.background);
+        std.mem.doNotOptimizeAway(self.values);
+    }
+};
+
+const DirectDependentRun = struct {
+    baseline: DirectBaseline,
+    parameters: []const Scalar,
+    background: []Scalar,
+    base: Scalar,
+    span: Scalar,
+    sink: Scalar = 0,
+
+    fn unitCount(_: *const DirectDependentRun) usize {
+        return 1;
+    }
+
+    fn execute(self: *DirectDependentRun, repetitions: usize) !void {
+        for (0..repetitions) |_| {
+            self.sink = self.baseline.kind.evaluate(
+                self.parameters.ptr,
+                self.background.ptr,
+            );
+            self.background[0] = phaser_bench_dependency_carrier(
+                self.sink,
+                self.base,
+                self.span,
+            );
+        }
+        std.mem.doNotOptimizeAway(self.background);
+        std.mem.doNotOptimizeAway(self.sink);
     }
 };
 
@@ -378,6 +713,92 @@ const BindRun = struct {
     }
 };
 
+const ValidationRun = struct {
+    kernel: *const kernel_module.Kernel,
+    parameters: []const Scalar,
+    scales: []const Scalar,
+    workspace: []u8,
+
+    fn unitCount(_: *const ValidationRun) usize {
+        return 1;
+    }
+
+    fn execute(self: *const ValidationRun, repetitions: usize) !void {
+        for (0..repetitions) |_| {
+            try self.kernel.evaluate(
+                .{
+                    .parameters = self.parameters,
+                    .scales = self.scales,
+                    .backgrounds = &.{},
+                },
+                0,
+                self.workspace,
+                .{ .values = &.{}, .statuses = &.{} },
+            );
+        }
+        std.mem.doNotOptimizeAway(self.workspace);
+    }
+};
+
+const ParameterStageRun = struct {
+    program: *const kernel_module.Program,
+    parameters: []const Scalar,
+    scales: []const Scalar,
+    frame: []align(@alignOf(Scalar)) u8,
+    scratch: []u8,
+    sink: kernel_module.Status = .ok,
+
+    fn unitCount(_: *const ParameterStageRun) usize {
+        return 1;
+    }
+
+    fn execute(self: *ParameterStageRun, repetitions: usize) !void {
+        for (0..repetitions) |_| {
+            self.sink = kernel_module.runParameterStage(
+                self.program,
+                .{
+                    .parameters = self.parameters,
+                    .scales = self.scales,
+                    .backgrounds = &.{},
+                },
+                self.frame,
+                self.scratch,
+            );
+        }
+        std.mem.doNotOptimizeAway(self.frame);
+        std.mem.doNotOptimizeAway(self.sink);
+    }
+};
+
+const PublicationRun = struct {
+    candidates: []const Complex64,
+    values: []Complex64,
+    statuses: []kernel_module.Status,
+
+    fn unitCount(self: *const PublicationRun) usize {
+        return self.candidates.len;
+    }
+
+    fn execute(self: *const PublicationRun, repetitions: usize) !void {
+        for (0..repetitions) |_| {
+            for (self.candidates, self.values, self.statuses) |
+                candidate,
+                *value,
+                *status,
+            | {
+                if (candidate.isFinite()) {
+                    status.* = .ok;
+                    value.* = candidate;
+                } else {
+                    status.* = .non_finite;
+                }
+            }
+        }
+        std.mem.doNotOptimizeAway(self.values);
+        std.mem.doNotOptimizeAway(self.statuses);
+    }
+};
+
 const Measurement = struct {
     repetitions: usize,
     units_per_repetition: usize,
@@ -386,7 +807,27 @@ const Measurement = struct {
     maximum_picoseconds_per_unit: u64,
 };
 
+const RuntimeMetadata = struct {
+    model: []const u8,
+    point_set: []const u8,
+    contribution: []const u8,
+    capability: []const u8,
+    backend: []const u8,
+    shape: []const u8,
+    points: usize,
+    workspace_bytes: usize,
+    workspace_alignment: usize,
+    buffer_bytes: usize,
+    binding_reused: bool,
+};
+
 pub fn main(init: std.process.Init) !void {
+    if (!std.math.isFinite(bench_options.cycles_per_ns) or
+        bench_options.cycles_per_ns < 0)
+    {
+        return error.InvalidBenchmarkCyclesPerNanosecond;
+    }
+
     var stdout_buffer: [16 * 1024]u8 = undefined;
     var file_writer: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
     const out = &file_writer.interface;
@@ -416,6 +857,7 @@ pub fn main(init: std.process.Init) !void {
     for (one_loop_workloads) |workload| {
         try reportOneLoop(init.gpa, init.io, out, workload);
     }
+    try reportPublicationLeaf(init.gpa, init.io, out);
     try out.flush();
 }
 
@@ -433,13 +875,41 @@ fn writePreamble(out: *std.Io.Writer) !void {
         "# samples {d}, minimum {d} ms/sample\n",
         .{ measurement_sample_count, minimum_sample_ns / 1_000_000 },
     );
+    try out.print("# extended {s}\n", .{if (bench_options.extended) "yes" else "no"});
+    if (bench_options.cycles_per_ns > 0) {
+        try out.print(
+            "# derived_cycles_per_ns {d:.6} (user supplied)\n",
+            .{bench_options.cycles_per_ns},
+        );
+    } else {
+        try out.writeAll("# derived_cycles disabled\n");
+    }
     try out.writeAll(
         \\# direct_c flags: -O3 -fno-fast-math -ffp-contract=off
+        \\# scalar_throughput means independent reciprocal throughput.
+        \\# dependent_scalar_latency carries each result into the next input.
+        \\# Nanoseconds are primary; any cycle values are user-supplied derivatives.
+        \\# backend optimized_interpreter unsupported: not implemented
+        \\# backend aot_prototype unsupported: not implemented
         \\#
         \\# Timings are informational. They are not a merge gate and a hosted
         \\# runner is too noisy for small differences to be meaningful.
         \\
     );
+}
+
+fn largestBatchSize() usize {
+    if (bench_options.extended) {
+        return extended_batch_sizes[extended_batch_sizes.len - 1];
+    }
+    return bounded_batch_sizes[bounded_batch_sizes.len - 1];
+}
+
+fn selectedBatchSizes() []const usize {
+    return if (bench_options.extended)
+        all_batch_sizes[0..]
+    else
+        bounded_batch_sizes[0..];
 }
 
 fn context(allocator: std.mem.Allocator) phaser.Context {
@@ -608,7 +1078,7 @@ fn reportModel(
     try reportProgram(out, "value", &value_kernel.program);
     try reportProgram(out, "fused", &fused_kernel.program);
 
-    const largest = batch_sizes[batch_sizes.len - 1];
+    const largest = largestBatchSize();
     const points = try allocator.alloc(Scalar, largest * coordinates);
     defer allocator.free(points);
     for (points, 0..) |*slot, index| {
@@ -689,9 +1159,7 @@ fn reportModel(
         );
     }
 
-    try out.writeAll(
-        "measurement\tmedian ns/unit\tmin ns/unit\tmax ns/unit\trepetitions\tunits/repetition\n",
-    );
+    try writeRuntimeHeader(out);
 
     var direct_scalar = DirectRun{
         .baseline = direct,
@@ -700,24 +1168,19 @@ fn reportModel(
         .point_count = 1,
         .coordinate_count = coordinates,
     };
-    try reportMeasurement(
-        out,
-        "direct_c_scalar_value",
-        try measure(io, &direct_scalar),
-    );
-
-    var direct_batch = DirectBatchRun{
-        .baseline = direct,
-        .parameters = value_binding.parameters,
-        .backgrounds = points,
-        .point_count = largest,
-        .values = direct_values,
-    };
-    try reportMeasurement(
-        out,
-        "direct_c_batch_value",
-        try measure(io, &direct_batch),
-    );
+    try reportRuntimeMeasurement(out, .{
+        .model = name,
+        .point_set = "varied_scan",
+        .contribution = "total",
+        .capability = "value",
+        .backend = "direct_c",
+        .shape = "scalar_throughput",
+        .points = 1,
+        .workspace_bytes = 0,
+        .workspace_alignment = 1,
+        .buffer_bytes = directTreeBufferBytes(1, coordinates, direct.parameter_names.len),
+        .binding_reused = true,
+    }, try measure(io, &direct_scalar));
 
     var scalar_value = StagedRun{
         .binding = &value_binding,
@@ -729,11 +1192,19 @@ fn reportModel(
             .statuses = statuses[0..1],
         },
     };
-    try reportMeasurement(
-        out,
-        "scalar_value",
-        try measure(io, &scalar_value),
-    );
+    try reportRuntimeMeasurement(out, .{
+        .model = name,
+        .point_set = "varied_scan",
+        .contribution = "total",
+        .capability = "value",
+        .backend = "reference_interpreter",
+        .shape = "scalar_throughput",
+        .points = 1,
+        .workspace_bytes = value_layout.bytes,
+        .workspace_alignment = value_layout.alignment,
+        .buffer_bytes = realBufferBytes(1, coordinates, .value, 0),
+        .binding_reused = true,
+    }, try measure(io, &scalar_value));
 
     var scalar_fused = StagedRun{
         .binding = &fused_binding,
@@ -747,16 +1218,123 @@ fn reportModel(
             .statuses = fused_statuses[0..1],
         },
     };
-    try reportMeasurement(
+    try reportRuntimeMeasurement(out, .{
+        .model = name,
+        .point_set = "varied_scan",
+        .contribution = "total",
+        .capability = "value_gradient_hessian",
+        .backend = "reference_interpreter",
+        .shape = "scalar_throughput",
+        .points = 1,
+        .workspace_bytes = fused_layout.bytes,
+        .workspace_alignment = fused_layout.alignment,
+        .buffer_bytes = realBufferBytes(
+            1,
+            coordinates,
+            .value_gradient_hessian,
+            0,
+        ),
+        .binding_reused = true,
+    }, try measure(io, &scalar_fused));
+
+    const dependent_phaser_background = try allocator.dupe(
+        Scalar,
+        points[0..coordinates],
+    );
+    defer allocator.free(dependent_phaser_background);
+    const dependent_direct_background = try allocator.dupe(
+        Scalar,
+        points[0..coordinates],
+    );
+    defer allocator.free(dependent_direct_background);
+    const carrier_base: Scalar = 10;
+    const carrier_span: Scalar = 90;
+    var carrier = CarrierRun{
+        .state = points[0],
+        .base = carrier_base,
+        .span = carrier_span,
+    };
+    const carrier_measurement = try measure(io, &carrier);
+
+    var staged_dependent = StagedDependentRun{
+        .binding = &value_binding,
+        .background = dependent_phaser_background,
+        .workspace = workspace,
+        .values = values[0..1],
+        .statuses = statuses[0..1],
+        .base = carrier_base,
+        .span = carrier_span,
+    };
+    const staged_latency = try measure(io, &staged_dependent);
+    try reportRuntimeMeasurement(out, .{
+        .model = name,
+        .point_set = "carrier_scan",
+        .contribution = "total",
+        .capability = "value",
+        .backend = "reference_interpreter",
+        .shape = "dependent_scalar_latency",
+        .points = 1,
+        .workspace_bytes = value_layout.bytes,
+        .workspace_alignment = value_layout.alignment,
+        .buffer_bytes = realBufferBytes(1, coordinates, .value, 0),
+        .binding_reused = true,
+    }, staged_latency);
+
+    var direct_dependent = DirectDependentRun{
+        .baseline = direct,
+        .parameters = value_binding.parameters,
+        .background = dependent_direct_background,
+        .base = carrier_base,
+        .span = carrier_span,
+    };
+    const direct_latency = try measure(io, &direct_dependent);
+    try reportRuntimeMeasurement(out, .{
+        .model = name,
+        .point_set = "carrier_scan",
+        .contribution = "total",
+        .capability = "value",
+        .backend = "direct_c",
+        .shape = "dependent_scalar_latency",
+        .points = 1,
+        .workspace_bytes = 0,
+        .workspace_alignment = 1,
+        .buffer_bytes = directTreeBufferBytes(1, coordinates, direct.parameter_names.len),
+        .binding_reused = true,
+    }, direct_latency);
+    try reportLatencyCarrier(
         out,
-        "scalar_value_gradient_hessian",
-        try measure(io, &scalar_fused),
+        name,
+        carrier_measurement,
+        staged_latency,
+        direct_latency,
     );
 
-    try out.writeAll(
-        "\nbatch_size\tpath\tmedian ns/point\tmin ns/point\tmax ns/point\trepetitions\n",
-    );
-    for (batch_sizes) |size| {
+    for (selectedBatchSizes()) |size| {
+        var direct_batch = DirectBatchRun{
+            .baseline = direct,
+            .parameters = value_binding.parameters,
+            .backgrounds = points[0 .. size * coordinates],
+            .point_count = size,
+            .values = direct_values[0..size],
+        };
+        try reportRuntimeMeasurement(out, .{
+            .model = name,
+            .point_set = "varied_scan",
+            .contribution = "total",
+            .capability = "value",
+            .backend = "direct_c",
+            .shape = "batch_throughput",
+            .points = size,
+            .workspace_bytes = 0,
+            .workspace_alignment = 1,
+            .buffer_bytes = directTreeBufferBytes(
+                size,
+                coordinates,
+                direct.parameter_names.len,
+            ),
+            .binding_reused = true,
+        }, try measure(io, &direct_batch));
+
         var staged = StagedRun{
             .binding = &value_binding,
             .backgrounds = points[0 .. size * coordinates],
@@ -767,12 +1345,19 @@ fn reportModel(
                 .statuses = statuses[0..size],
             },
         };
-        try reportBatchMeasurement(
-            out,
-            size,
-            "staged",
-            try measure(io, &staged),
-        );
+        try reportRuntimeMeasurement(out, .{
+            .model = name,
+            .point_set = "varied_scan",
+            .contribution = "total",
+            .capability = "value",
+            .backend = "reference_interpreter",
+            .shape = "batch_throughput",
+            .points = size,
+            .workspace_bytes = value_layout.bytes,
+            .workspace_alignment = value_layout.alignment,
+            .buffer_bytes = realBufferBytes(size, coordinates, .value, 0),
+            .binding_reused = true,
+        }, try measure(io, &staged));
 
         var unstaged = UnstagedRun{
             .kernel = &value_kernel,
@@ -785,12 +1370,55 @@ fn reportModel(
                 .statuses = statuses[0..size],
             },
         };
-        try reportBatchMeasurement(
-            out,
-            size,
-            "unstaged",
-            try measure(io, &unstaged),
-        );
+        try reportRuntimeMeasurement(out, .{
+            .model = name,
+            .point_set = "varied_scan",
+            .contribution = "total",
+            .capability = "value",
+            .backend = "reference_interpreter",
+            .shape = "batch_throughput",
+            .points = size,
+            .workspace_bytes = value_layout.bytes,
+            .workspace_alignment = value_layout.alignment,
+            .buffer_bytes = realBufferBytes(
+                size,
+                coordinates,
+                .value,
+                value_binding.parameters.len + value_binding.scales.len,
+            ),
+            .binding_reused = false,
+        }, try measure(io, &unstaged));
+
+        var fused = StagedRun{
+            .binding = &fused_binding,
+            .backgrounds = points[0 .. size * coordinates],
+            .point_count = size,
+            .workspace = workspace,
+            .outputs = .{
+                .values = fused_values[0..size],
+                .gradients = gradients[0 .. size * coordinates],
+                .hessians = hessians[0 .. size * coordinates * coordinates],
+                .statuses = fused_statuses[0..size],
+            },
+        };
+        try reportRuntimeMeasurement(out, .{
+            .model = name,
+            .point_set = "varied_scan",
+            .contribution = "total",
+            .capability = "value_gradient_hessian",
+            .backend = "reference_interpreter",
+            .shape = "batch_throughput",
+            .points = size,
+            .workspace_bytes = fused_layout.bytes,
+            .workspace_alignment = fused_layout.alignment,
+            .buffer_bytes = realBufferBytes(
+                size,
+                coordinates,
+                .value_gradient_hessian,
+                0,
+            ),
+            .binding_reused = true,
+        }, try measure(io, &fused));
     }
 
     try out.writeAll(
@@ -828,23 +1456,187 @@ fn reportModel(
         "binding",
         try measure(io, &binding),
     );
+
+    try out.writeAll(
+        "\nleaf\tshape\tmedian ns/unit\tmin ns/unit\tmax ns/unit\trepetitions\tunits/repetition\n",
+    );
+    var validation = ValidationRun{
+        .kernel = &value_kernel,
+        .parameters = value_binding.parameters,
+        .scales = value_binding.scales,
+        .workspace = workspace,
+    };
+    try reportLeafMeasurement(
+        out,
+        "complete_call_validation",
+        "zero_point_valid_call",
+        try measure(io, &validation),
+    );
+
+    const parameter_frame = try allocator.alignedAlloc(
+        u8,
+        .of(Scalar),
+        value_kernel.program.frame_bytes,
+    );
+    defer allocator.free(parameter_frame);
+    const parameter_scratch = try allocator.alignedAlloc(
+        u8,
+        .of(Scalar),
+        value_kernel.program.scratch_bytes,
+    );
+    defer allocator.free(parameter_scratch);
+    var parameter_stage = ParameterStageRun{
+        .program = &value_kernel.program,
+        .parameters = value_binding.parameters,
+        .scales = value_binding.scales,
+        .frame = parameter_frame,
+        .scratch = parameter_scratch,
+    };
+    try reportLeafMeasurement(
+        out,
+        "parameter_stage_execution",
+        "validated_program",
+        try measure(io, &parameter_stage),
+    );
+
+    const diagnostic_batch = bounded_batch_sizes[
+        bounded_batch_sizes.len - 1
+    ];
+    var background_stage = StagedRun{
+        .binding = &value_binding,
+        .backgrounds = points[0 .. diagnostic_batch * coordinates],
+        .point_count = diagnostic_batch,
+        .workspace = workspace,
+        .outputs = .{
+            .values = values[0..diagnostic_batch],
+            .statuses = statuses[0..diagnostic_batch],
+        },
+    };
+    try reportLeafMeasurement(
+        out,
+        "bound_background_stage",
+        "points=1024_includes_call_validation_and_publication",
+        try measure(io, &background_stage),
+    );
 }
 
-/// The one-loop workloads: a one-by-one mass matrix and a dense three-by-three
-/// one, each timed for value only and for the fused value, gradient, and
-/// Hessian.
-///
-/// The dense case is the one that reaches the cyclic Jacobi sweeps, so the two
-/// sizes bracket the eigensolver's direct and iterative paths.
+const PointSet = enum {
+    positive_scan,
+    branch_scan,
+};
+
+const OneLoopCase = enum {
+    one_by_one,
+    two_by_two,
+    three_by_three,
+
+    fn fillPoint(
+        self: OneLoopCase,
+        set: PointSet,
+        index: usize,
+        point: []Scalar,
+    ) void {
+        switch (self) {
+            .one_by_one => {
+                point[0] = switch (set) {
+                    .positive_scan => 1.25 +
+                        @as(Scalar, @floatFromInt(index % 257)) / 128.0,
+                    .branch_scan => ([_]Scalar{
+                        0, 0.5, 1, 1.5, -0.5, -1, -1.5,
+                    })[index % 7],
+                };
+            },
+            .two_by_two => switch (set) {
+                .positive_scan => {
+                    point[0] = 280 +
+                        @as(Scalar, @floatFromInt(index % 257)) * 0.5;
+                    point[1] = 40 +
+                        @as(Scalar, @floatFromInt((index * 17) % 193)) * 0.25;
+                },
+                .branch_scan => {
+                    point[0] = -60 +
+                        @as(Scalar, @floatFromInt(index % 241)) * 0.5;
+                    point[1] = -45 +
+                        @as(Scalar, @floatFromInt((index * 29) % 181)) * 0.5;
+                },
+            },
+            .three_by_three => {
+                point[0] = switch (set) {
+                    .positive_scan => 0.25 +
+                        @as(Scalar, @floatFromInt(index % 257)) / 64.0,
+                    .branch_scan => ([_]Scalar{
+                        -2, -1, -0.5, 0, 0.5, 1, 2,
+                    })[index % 7],
+                };
+            },
+        }
+    }
+
+    fn spectrum(
+        self: OneLoopCase,
+        parameters: []const Scalar,
+        background: []const Scalar,
+        storage: *[3]Scalar,
+    ) []const Scalar {
+        switch (self) {
+            .one_by_one => {
+                storage[0] = parameters[1] +
+                    (0.5 * parameters[0]) * background[0] * background[0];
+                return storage[0..1];
+            },
+            .two_by_two => {
+                const h = background[0];
+                const s = background[1];
+                const hh =
+                    parameters[9] +
+                    parameters[0] * h +
+                    parameters[1] * s +
+                    (0.5 * parameters[7]) * h * h +
+                    (parameters[6] * h) * s +
+                    (0.5 * parameters[5]) * s * s;
+                const hs =
+                    parameters[10] +
+                    parameters[1] * h +
+                    parameters[2] * s +
+                    (0.5 * parameters[6]) * h * h +
+                    (parameters[5] * h) * s +
+                    (0.5 * parameters[4]) * s * s;
+                const ss =
+                    parameters[11] +
+                    parameters[2] * h +
+                    parameters[3] * s +
+                    (0.5 * parameters[5]) * h * h +
+                    (parameters[4] * h) * s +
+                    (0.5 * parameters[8]) * s * s;
+                const middle = 0.5 * (hh + ss);
+                const radius = std.math.hypot(0.5 * (hh - ss), hs);
+                storage[0] = middle - radius;
+                storage[1] = middle + radius;
+                return storage[0..2];
+            },
+            .three_by_three => {
+                const b = background[0];
+                if (b >= 0) {
+                    storage.* = .{ 9 * b, 36 * b, 81 * b };
+                } else {
+                    storage.* = .{ 81 * b, 36 * b, 9 * b };
+                }
+                return storage[0..3];
+            },
+        }
+    }
+};
+
+/// Representative scalar one-loop matrix sizes. Each uses varied positive and
+/// branch-covering scans; the 2x2 fixture fills the gap between the direct 1x1
+/// path and cyclic-Jacobi 3x3 path.
 const OneLoopWorkload = struct {
     name: []const u8,
+    case: OneLoopCase,
     model_source: []const u8,
     request_source: []const u8,
     point_source: []const u8,
-    /// The exact spectrum of the mass matrix at background one, which the
-    /// verification pass below reproduces independently of the eigensolver.
-    spectrum: []const Scalar,
-    /// The point file's reference scale, restated so the closed form can use it.
+    direct: DirectLoopBaseline,
     scale: Scalar,
 };
 
@@ -853,6 +1645,14 @@ const OneLoopWorkload = struct {
 const three_scalar_slice_request =
     \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
     \\"background":{"mode":"component_slice","coordinates":[{"id":"b","scalar":"r"}]},
+    \\"environment":{"kind":"vacuum"},
+    \\"renormalization":{"scheme":"MSbar"},
+    \\"orders":{"loop":{"through":1}}}
+;
+
+const multi_scalar_one_loop_request =
+    \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+    \\"background":{"mode":"full_scalar_space"},
     \\"environment":{"kind":"vacuum"},
     \\"renormalization":{"scheme":"MSbar"},
     \\"orders":{"loop":{"through":1}}}
@@ -868,30 +1668,41 @@ const three_scalar_point =
     \\"c122":44.0,"c123":-22.0,"c133":29.0}}
 ;
 
-/// `m2 = 1`, `lambda = 2`, so the one-by-one mass matrix is `1 + phi^2` and its
-/// spectrum at background one is `{2}`.
+/// `m2 = -1`, `lambda = 2`, so the one-by-one spectrum `phi^2 - 1`
+/// crosses the negative, exact-zero, and positive branches in one fixed model.
 const phi4_one_loop_point =
     \\{"schema":"phaser.parameter-point/0.1",
     \\"units":{"mass":"GeV"},
     \\"renormalization":{"scheme":"MSbar","reference_scale":2.0},
-    \\"values":{"lambda":2.0,"m2":1.0,"omega":0.0}}
+    \\"values":{"lambda":2.0,"m2":-1.0,"omega":0.0}}
 ;
 
 const one_loop_workloads = [_]OneLoopWorkload{
     .{
         .name = "phi4_one_loop_1x1",
+        .case = .one_by_one,
         .model_source = example_data.phi4_model,
         .request_source = example_data.phi4_one_loop_request,
         .point_source = phi4_one_loop_point,
-        .spectrum = &.{2},
+        .direct = phi4_one_loop_direct,
         .scale = 2,
     },
     .{
+        .name = "multi_scalar_one_loop_2x2",
+        .case = .two_by_two,
+        .model_source = example_data.multi_scalar_model,
+        .request_source = multi_scalar_one_loop_request,
+        .point_source = example_data.multi_scalar_point,
+        .direct = multi_scalar_one_loop_direct,
+        .scale = 125,
+    },
+    .{
         .name = "three_scalar_one_loop_3x3",
+        .case = .three_by_three,
         .model_source = oracle_fixture.three_scalar_model,
         .request_source = three_scalar_slice_request,
         .point_source = three_scalar_point,
-        .spectrum = &.{ 9, 36, 81 },
+        .direct = three_scalar_one_loop_direct,
         .scale = 3,
     },
 };
@@ -974,19 +1785,22 @@ fn reportOneLoop(
         &point,
     );
     defer fused_binding.deinit();
+    try workload.direct.verifyChannels(&value_kernel);
+    if (value_binding.scales.len != 1 or value_binding.scales[0] != workload.scale) {
+        return error.OneLoopScaleMismatch;
+    }
 
     const coordinates = value_kernel.coordinateCount();
     try reportProgram(out, "value", &value_kernel.program);
     try reportProgram(out, "fused", &fused_kernel.program);
 
-    const largest = batch_sizes[batch_sizes.len - 1];
-    const points = try allocator.alloc(Scalar, largest * coordinates);
-    defer allocator.free(points);
-    // Every point is a background of one in the first coordinate, so the whole
-    // batch shares the workload's exact spectrum and one closed form verifies
-    // all of it.
-    @memset(points, 0);
-    for (0..largest) |index| points[index * coordinates] = 1;
+    const largest = largestBatchSize();
+    const positive_points = try allocator.alloc(Scalar, largest * coordinates);
+    defer allocator.free(positive_points);
+    const branch_points = try allocator.alloc(Scalar, largest * coordinates);
+    defer allocator.free(branch_points);
+    fillOneLoopPoints(workload.case, .positive_scan, coordinates, positive_points);
+    fillOneLoopPoints(workload.case, .branch_scan, coordinates, branch_points);
 
     const value_layout = value_binding.workspaceLayout(largest);
     const fused_layout = fused_binding.workspaceLayout(largest);
@@ -1017,60 +1831,119 @@ fn reportOneLoop(
     defer allocator.free(statuses);
     const fused_statuses = try allocator.alloc(kernel_module.Status, largest);
     defer allocator.free(fused_statuses);
+    const direct_values = try allocator.alloc(DirectComplex64, largest);
+    defer allocator.free(direct_values);
+    const direct_statuses = try allocator.alloc(u8, largest);
+    defer allocator.free(direct_statuses);
 
-    try value_binding.evaluateComplex(points, largest, workspace, .{
+    try value_binding.evaluateComplex(positive_points, largest, workspace, .{
         .values = values,
         .statuses = statuses,
     });
-    try fused_binding.evaluateComplex(points, largest, workspace, .{
+    try fused_binding.evaluateComplex(positive_points, largest, workspace, .{
         .values = fused_values,
         .gradients = gradients,
         .hessians = hessians,
         .statuses = fused_statuses,
     });
-
-    const expected = oneLoopClosedForm(workload.spectrum, workload.scale);
-    for (0..largest) |index| {
-        if (statuses[index] != .ok or fused_statuses[index] != .ok) {
-            return error.StatusVerificationFailed;
-        }
-        if (values[index].re != fused_values[index].re or
-            values[index].im != fused_values[index].im)
-        {
-            return error.FusedValueVerificationFailed;
-        }
-        try numerical_comparison.spectral_value_known_spectrum.expectCloseAt(
-            expected.value.re,
-            values[index].re,
-            .{ .magnitude = expected.unsigned.re },
-        );
-        try numerical_comparison.spectral_value_known_spectrum.expectCloseAt(
-            expected.value.im,
-            values[index].im,
-            .{ .magnitude = expected.unsigned.im },
-        );
-    }
-
-    try out.writeAll(
-        "measurement\tmedian ns/unit\tmin ns/unit\tmax ns/unit\trepetitions\tunits/repetition\n",
+    workload.direct.kind.evaluateBatch(
+        value_binding.parameters.ptr,
+        positive_points.ptr,
+        workload.scale,
+        largest,
+        direct_values.ptr,
+        direct_statuses.ptr,
     );
+    try verifyOneLoopBatch(
+        workload,
+        value_binding.parameters,
+        positive_points,
+        coordinates,
+        values,
+        statuses,
+        direct_values,
+        direct_statuses,
+        fused_values,
+        fused_statuses,
+    );
+
+    try value_binding.evaluateComplex(branch_points, largest, workspace, .{
+        .values = values,
+        .statuses = statuses,
+    });
+    workload.direct.kind.evaluateBatch(
+        value_binding.parameters.ptr,
+        branch_points.ptr,
+        workload.scale,
+        largest,
+        direct_values.ptr,
+        direct_statuses.ptr,
+    );
+    try verifyOneLoopBatch(
+        workload,
+        value_binding.parameters,
+        branch_points,
+        coordinates,
+        values,
+        statuses,
+        direct_values,
+        direct_statuses,
+        null,
+        null,
+    );
+
+    try writeRuntimeHeader(out);
+
+    var direct_scalar = DirectLoopRun{
+        .baseline = workload.direct,
+        .parameters = value_binding.parameters,
+        .backgrounds = positive_points[0..coordinates],
+        .scale = workload.scale,
+        .point_count = 1,
+        .coordinate_count = coordinates,
+    };
+    try reportRuntimeMeasurement(out, .{
+        .model = workload.name,
+        .point_set = "positive_scan",
+        .contribution = "scalar_one_loop",
+        .capability = "value",
+        .backend = "direct_c",
+        .shape = "scalar_throughput",
+        .points = 1,
+        .workspace_bytes = 0,
+        .workspace_alignment = 1,
+        .buffer_bytes = directLoopBufferBytes(
+            1,
+            coordinates,
+            workload.direct.parameter_names.len,
+        ),
+        .binding_reused = true,
+    }, try measure(io, &direct_scalar));
 
     var scalar_value = ComplexStagedRun{
         .binding = &value_binding,
-        .backgrounds = points[0..coordinates],
+        .backgrounds = positive_points[0..coordinates],
         .point_count = 1,
         .workspace = workspace,
         .outputs = .{ .values = values[0..1], .statuses = statuses[0..1] },
     };
-    try reportMeasurement(
-        out,
-        "scalar_one_loop_value",
-        try measure(io, &scalar_value),
-    );
+    try reportRuntimeMeasurement(out, .{
+        .model = workload.name,
+        .point_set = "positive_scan",
+        .contribution = "scalar_one_loop",
+        .capability = "value",
+        .backend = "reference_interpreter",
+        .shape = "scalar_throughput",
+        .points = 1,
+        .workspace_bytes = value_layout.bytes,
+        .workspace_alignment = value_layout.alignment,
+        .buffer_bytes = complexBufferBytes(1, coordinates, .value),
+        .binding_reused = true,
+    }, try measure(io, &scalar_value));
 
     var scalar_fused = ComplexStagedRun{
         .binding = &fused_binding,
-        .backgrounds = points[0..coordinates],
+        .backgrounds = positive_points[0..coordinates],
         .point_count = 1,
         .workspace = workspace,
         .outputs = .{
@@ -1080,52 +1953,272 @@ fn reportOneLoop(
             .statuses = fused_statuses[0..1],
         },
     };
-    try reportMeasurement(
-        out,
-        "scalar_one_loop_value_gradient_hessian",
-        try measure(io, &scalar_fused),
-    );
+    try reportRuntimeMeasurement(out, .{
+        .model = workload.name,
+        .point_set = "positive_scan",
+        .contribution = "scalar_one_loop",
+        .capability = "value_gradient_hessian",
+        .backend = "reference_interpreter",
+        .shape = "scalar_throughput",
+        .points = 1,
+        .workspace_bytes = fused_layout.bytes,
+        .workspace_alignment = fused_layout.alignment,
+        .buffer_bytes = complexBufferBytes(
+            1,
+            coordinates,
+            .value_gradient_hessian,
+        ),
+        .binding_reused = true,
+    }, try measure(io, &scalar_fused));
 
-    try out.writeAll(
-        "\nbatch_size\tpath\tmedian ns/point\tmin ns/point\tmax ns/point\trepetitions\n",
-    );
-    for (batch_sizes) |size| {
-        var batch_value = ComplexStagedRun{
-            .binding = &value_binding,
-            .backgrounds = points[0 .. size * coordinates],
-            .point_count = size,
-            .workspace = workspace,
-            .outputs = .{
-                .values = values[0..size],
-                .statuses = statuses[0..size],
-            },
+    for ([_]PointSet{ .positive_scan, .branch_scan }) |set| {
+        const points = switch (set) {
+            .positive_scan => positive_points,
+            .branch_scan => branch_points,
         };
-        try reportBatchMeasurement(
-            out,
-            size,
-            "value",
-            try measure(io, &batch_value),
-        );
+        for (selectedBatchSizes()) |size| {
+            var direct_batch = DirectLoopBatchRun{
+                .baseline = workload.direct,
+                .parameters = value_binding.parameters,
+                .backgrounds = points[0 .. size * coordinates],
+                .scale = workload.scale,
+                .point_count = size,
+                .values = direct_values[0..size],
+                .statuses = direct_statuses[0..size],
+            };
+            try reportRuntimeMeasurement(out, .{
+                .model = workload.name,
+                .point_set = @tagName(set),
+                .contribution = "scalar_one_loop",
+                .capability = "value",
+                .backend = "direct_c",
+                .shape = "batch_throughput",
+                .points = size,
+                .workspace_bytes = 0,
+                .workspace_alignment = 1,
+                .buffer_bytes = directLoopBufferBytes(
+                    size,
+                    coordinates,
+                    workload.direct.parameter_names.len,
+                ),
+                .binding_reused = true,
+            }, try measure(io, &direct_batch));
 
-        var batch_fused = ComplexStagedRun{
-            .binding = &fused_binding,
-            .backgrounds = points[0 .. size * coordinates],
-            .point_count = size,
-            .workspace = workspace,
-            .outputs = .{
-                .values = fused_values[0..size],
-                .gradients = gradients[0 .. size * coordinates],
-                .hessians = hessians[0 .. size * coordinates * coordinates],
-                .statuses = fused_statuses[0..size],
-            },
-        };
-        try reportBatchMeasurement(
-            out,
-            size,
-            "fused",
-            try measure(io, &batch_fused),
+            var batch_value = ComplexStagedRun{
+                .binding = &value_binding,
+                .backgrounds = points[0 .. size * coordinates],
+                .point_count = size,
+                .workspace = workspace,
+                .outputs = .{
+                    .values = values[0..size],
+                    .statuses = statuses[0..size],
+                },
+            };
+            try reportRuntimeMeasurement(out, .{
+                .model = workload.name,
+                .point_set = @tagName(set),
+                .contribution = "scalar_one_loop",
+                .capability = "value",
+                .backend = "reference_interpreter",
+                .shape = "batch_throughput",
+                .points = size,
+                .workspace_bytes = value_layout.bytes,
+                .workspace_alignment = value_layout.alignment,
+                .buffer_bytes = complexBufferBytes(size, coordinates, .value),
+                .binding_reused = true,
+            }, try measure(io, &batch_value));
+
+            if (set == .positive_scan) {
+                var batch_fused = ComplexStagedRun{
+                    .binding = &fused_binding,
+                    .backgrounds = points[0 .. size * coordinates],
+                    .point_count = size,
+                    .workspace = workspace,
+                    .outputs = .{
+                        .values = fused_values[0..size],
+                        .gradients = gradients[0 .. size * coordinates],
+                        .hessians = hessians[0 .. size * coordinates * coordinates],
+                        .statuses = fused_statuses[0..size],
+                    },
+                };
+                try reportRuntimeMeasurement(out, .{
+                    .model = workload.name,
+                    .point_set = @tagName(set),
+                    .contribution = "scalar_one_loop",
+                    .capability = "value_gradient_hessian",
+                    .backend = "reference_interpreter",
+                    .shape = "batch_throughput",
+                    .points = size,
+                    .workspace_bytes = fused_layout.bytes,
+                    .workspace_alignment = fused_layout.alignment,
+                    .buffer_bytes = complexBufferBytes(
+                        size,
+                        coordinates,
+                        .value_gradient_hessian,
+                    ),
+                    .binding_reused = true,
+                }, try measure(io, &batch_fused));
+            }
+        }
+    }
+}
+
+fn fillOneLoopPoints(
+    case: OneLoopCase,
+    set: PointSet,
+    coordinate_count: usize,
+    points: []Scalar,
+) void {
+    std.debug.assert(points.len % coordinate_count == 0);
+    for (0..points.len / coordinate_count) |index| {
+        case.fillPoint(
+            set,
+            index,
+            points[index * coordinate_count ..][0..coordinate_count],
         );
     }
+}
+
+fn verifyOneLoopBatch(
+    workload: OneLoopWorkload,
+    parameters: []const Scalar,
+    points: []const Scalar,
+    coordinate_count: usize,
+    values: []const Complex64,
+    statuses: []const kernel_module.Status,
+    direct_values: []const DirectComplex64,
+    direct_statuses: []const u8,
+    fused_values: ?[]const Complex64,
+    fused_statuses: ?[]const kernel_module.Status,
+) !void {
+    const point_count = values.len;
+    if (statuses.len != point_count or
+        direct_values.len != point_count or
+        direct_statuses.len != point_count)
+    {
+        return error.OneLoopVerificationShapeMismatch;
+    }
+    if (fused_values) |fused| {
+        if (fused.len != point_count or fused_statuses.?.len != point_count) {
+            return error.OneLoopVerificationShapeMismatch;
+        }
+    }
+
+    for (0..point_count) |index| {
+        if (statuses[index] != .ok or direct_statuses[index] != 0) {
+            return error.StatusVerificationFailed;
+        }
+        if (fused_statuses) |fused| {
+            if (fused[index] != .ok) return error.StatusVerificationFailed;
+            if (values[index].re != fused_values.?[index].re or
+                values[index].im != fused_values.?[index].im)
+            {
+                return error.FusedValueVerificationFailed;
+            }
+        }
+
+        const background =
+            points[index * coordinate_count ..][0..coordinate_count];
+        var direct_scalar = DirectComplex64{ .re = 0, .im = 0 };
+        if (workload.direct.kind.evaluate(
+            parameters.ptr,
+            background.ptr,
+            workload.scale,
+            &direct_scalar,
+        ) != .ok) {
+            return error.DirectOneLoopFailed;
+        }
+        if (direct_scalar.re != direct_values[index].re or
+            direct_scalar.im != direct_values[index].im)
+        {
+            return error.DirectBatchVerificationFailed;
+        }
+
+        var spectrum_storage: [3]Scalar = undefined;
+        const eigenvalues = workload.case.spectrum(
+            parameters,
+            background,
+            &spectrum_storage,
+        );
+        const expected = oneLoopClosedForm(eigenvalues, workload.scale);
+        for ([_]struct { expected: Scalar, phaser: Scalar, direct: Scalar, scale: Scalar }{
+            .{
+                .expected = expected.value.re,
+                .phaser = values[index].re,
+                .direct = direct_values[index].re,
+                .scale = expected.unsigned.re,
+            },
+            .{
+                .expected = expected.value.im,
+                .phaser = values[index].im,
+                .direct = direct_values[index].im,
+                .scale = expected.unsigned.im,
+            },
+        }) |component| {
+            try numerical_comparison.spectral_value_known_spectrum.expectCloseAt(
+                component.expected,
+                component.phaser,
+                .{ .magnitude = component.scale },
+            );
+            try numerical_comparison.spectral_value_known_spectrum.expectCloseAt(
+                component.expected,
+                component.direct,
+                .{ .magnitude = component.scale },
+            );
+        }
+    }
+}
+
+fn reportPublicationLeaf(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+) !void {
+    try out.writeAll(
+        "\n## publication leaf\n" ++
+            "# Leaf rows are diagnostic and are not summed into an end-to-end estimate.\n" ++
+            "leaf\tshape\tmedian ns/unit\tmin ns/unit\tmax ns/unit" ++
+            "\trepetitions\tunits/repetition\n",
+    );
+
+    const publication_count = bounded_batch_sizes[
+        bounded_batch_sizes.len - 1
+    ];
+    const candidates = try allocator.alloc(Complex64, publication_count);
+    defer allocator.free(candidates);
+    const published = try allocator.alloc(Complex64, publication_count);
+    defer allocator.free(published);
+    const statuses = try allocator.alloc(
+        kernel_module.Status,
+        publication_count,
+    );
+    defer allocator.free(statuses);
+    for (candidates, 0..) |*candidate, index| {
+        candidate.* = .{
+            .re = @floatFromInt(index),
+            .im = -@as(Scalar, @floatFromInt(index % 17)),
+        };
+    }
+    var publication = PublicationRun{
+        .candidates = candidates,
+        .values = published,
+        .statuses = statuses,
+    };
+    try publication.execute(1);
+    for (candidates, published, statuses) |candidate, value, status| {
+        if (status != .ok or
+            candidate.re != value.re or
+            candidate.im != value.im)
+        {
+            return error.PublicationLeafVerificationFailed;
+        }
+    }
+    try reportLeafMeasurement(
+        out,
+        "finite_status_and_publication",
+        "complex_value_points=1024_benchmark_adapter",
+        try measure(io, &publication),
+    );
 }
 
 fn reportProgram(
@@ -1144,6 +2237,32 @@ fn reportProgram(
             program.parameter_stage_count,
         },
     );
+    var parameter_counts =
+        [_]usize{0} ** std.meta.fields(kernel_module.Opcode).len;
+    var background_counts =
+        [_]usize{0} ** std.meta.fields(kernel_module.Opcode).len;
+    for (program.instructions, 0..) |instruction, index| {
+        const opcode_index: usize = @intFromEnum(std.meta.activeTag(instruction));
+        if (index < program.parameter_stage_count) {
+            parameter_counts[opcode_index] += 1;
+        } else {
+            background_counts[opcode_index] += 1;
+        }
+    }
+    try out.writeAll("program\topcode\tparameter_stage\tbackground_stage\n");
+    inline for (std.meta.fields(kernel_module.Opcode), 0..) |field, index| {
+        if (parameter_counts[index] != 0 or background_counts[index] != 0) {
+            try out.print(
+                "{s}\t{s}\t{d}\t{d}\n",
+                .{
+                    name,
+                    field.name,
+                    parameter_counts[index],
+                    background_counts[index],
+                },
+            );
+        }
+    }
 }
 
 fn measure(
@@ -1161,9 +2280,11 @@ fn measure(
         var timer = Timer.begin(io);
         try run.execute(repetitions);
         const elapsed = timer.read();
-        if (elapsed >= minimum_sample_ns) break;
-        repetitions = std.math.mul(usize, repetitions, 2) catch
-            return error.MeasurementRepetitionOverflow;
+        repetitions = (try nextCalibrationRepetitions(
+            elapsed,
+            minimum_sample_ns,
+            repetitions,
+        )) orelse break;
     }
 
     var samples: [measurement_sample_count]u64 = undefined;
@@ -1185,6 +2306,16 @@ fn measure(
         .minimum_picoseconds_per_unit = samples[0],
         .maximum_picoseconds_per_unit = samples[measurement_sample_count - 1],
     };
+}
+
+fn nextCalibrationRepetitions(
+    elapsed_ns: u64,
+    minimum_ns: u64,
+    repetitions: usize,
+) !?usize {
+    if (elapsed_ns >= minimum_ns) return null;
+    return std.math.mul(usize, repetitions, 2) catch
+        error.MeasurementRepetitionOverflow;
 }
 
 fn picosecondsPerUnit(
@@ -1223,12 +2354,162 @@ fn writeNanoseconds(out: *std.Io.Writer, picoseconds: u64) !void {
     );
 }
 
-fn reportMeasurement(
+fn writeRuntimeHeader(out: *std.Io.Writer) !void {
+    try out.writeAll(
+        "model\tpoint_set\tcontribution\tcapability\tbackend\tshape\tpoints" ++
+            "\tworkspace_bytes\tworkspace_alignment\tbuffer_bytes" ++
+            "\tbinding_reused\tmedian_ns_per_unit\tmin_ns_per_unit" ++
+            "\tmax_ns_per_unit\tunits_per_second\tderived_cycles_per_unit" ++
+            "\trepetitions\tunits_per_repetition\n",
+    );
+}
+
+fn reportRuntimeMeasurement(
     out: *std.Io.Writer,
-    name: []const u8,
+    metadata: RuntimeMetadata,
     measurement: Measurement,
 ) !void {
-    try out.print("{s}\t", .{name});
+    try out.print(
+        "{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{d}\t{d}\t{d}\t{d}\t{s}\t",
+        .{
+            metadata.model,
+            metadata.point_set,
+            metadata.contribution,
+            metadata.capability,
+            metadata.backend,
+            metadata.shape,
+            metadata.points,
+            metadata.workspace_bytes,
+            metadata.workspace_alignment,
+            metadata.buffer_bytes,
+            if (metadata.binding_reused) "yes" else "no",
+        },
+    );
+    try writeNanoseconds(out, measurement.median_picoseconds_per_unit);
+    try out.writeByte('\t');
+    try writeNanoseconds(out, measurement.minimum_picoseconds_per_unit);
+    try out.writeByte('\t');
+    try writeNanoseconds(out, measurement.maximum_picoseconds_per_unit);
+    const units_per_second = if (measurement.median_picoseconds_per_unit == 0)
+        0
+    else
+        1_000_000_000_000 / measurement.median_picoseconds_per_unit;
+    try out.print("\t{d}\t", .{units_per_second});
+    if (bench_options.cycles_per_ns > 0) {
+        const nanoseconds =
+            @as(Scalar, @floatFromInt(measurement.median_picoseconds_per_unit)) /
+            1000.0;
+        try out.print("{d:.3}", .{nanoseconds * bench_options.cycles_per_ns});
+    } else {
+        try out.writeByte('-');
+    }
+    try out.print(
+        "\t{d}\t{d}\n",
+        .{ measurement.repetitions, measurement.units_per_repetition },
+    );
+    try out.flush();
+}
+
+fn reportLatencyCarrier(
+    out: *std.Io.Writer,
+    model: []const u8,
+    carrier: Measurement,
+    staged: Measurement,
+    direct: Measurement,
+) !void {
+    try out.writeAll(
+        "# latency_components model backend total_ns carrier_ns net_ns\n",
+    );
+    for ([_]struct { backend: []const u8, total: Measurement }{
+        .{ .backend = "reference_interpreter", .total = staged },
+        .{ .backend = "direct_c", .total = direct },
+    }) |entry| {
+        try out.print(
+            "# latency_components {s} {s} ",
+            .{ model, entry.backend },
+        );
+        try writeNanoseconds(out, entry.total.median_picoseconds_per_unit);
+        try out.writeByte(' ');
+        try writeNanoseconds(out, carrier.median_picoseconds_per_unit);
+        try out.writeByte(' ');
+        if (entry.total.minimum_picoseconds_per_unit >
+            carrier.maximum_picoseconds_per_unit)
+        {
+            try writeNanoseconds(
+                out,
+                entry.total.median_picoseconds_per_unit -
+                    carrier.median_picoseconds_per_unit,
+            );
+        } else {
+            try out.writeAll(
+                "not_reported_overlapping_ranges",
+            );
+        }
+        try out.writeByte('\n');
+    }
+}
+
+fn directTreeBufferBytes(
+    point_count: usize,
+    coordinate_count: usize,
+    parameter_count: usize,
+) usize {
+    return (parameter_count + point_count * coordinate_count + point_count) *
+        @sizeOf(Scalar);
+}
+
+fn directLoopBufferBytes(
+    point_count: usize,
+    coordinate_count: usize,
+    parameter_count: usize,
+) usize {
+    return (parameter_count + 1 + point_count * coordinate_count) *
+        @sizeOf(Scalar) +
+        point_count * (@sizeOf(DirectComplex64) + @sizeOf(u8));
+}
+
+fn realBufferBytes(
+    point_count: usize,
+    coordinate_count: usize,
+    capability: kernel_module.Capability,
+    extra_scalar_inputs: usize,
+) usize {
+    var scalar_count =
+        extra_scalar_inputs + point_count * coordinate_count + point_count;
+    if (capability.includesGradient()) {
+        scalar_count += point_count * coordinate_count;
+    }
+    if (capability.includesHessian()) {
+        scalar_count += point_count * coordinate_count * coordinate_count;
+    }
+    return scalar_count * @sizeOf(Scalar) +
+        point_count * @sizeOf(kernel_module.Status);
+}
+
+fn complexBufferBytes(
+    point_count: usize,
+    coordinate_count: usize,
+    capability: kernel_module.Capability,
+) usize {
+    var complex_count: usize = point_count;
+    if (capability.includesGradient()) {
+        complex_count += point_count * coordinate_count;
+    }
+    if (capability.includesHessian()) {
+        complex_count += point_count * coordinate_count * coordinate_count;
+    }
+    return point_count * coordinate_count * @sizeOf(Scalar) +
+        complex_count * @sizeOf(Complex64) +
+        point_count * @sizeOf(kernel_module.Status);
+}
+
+fn reportLeafMeasurement(
+    out: *std.Io.Writer,
+    name: []const u8,
+    shape: []const u8,
+    measurement: Measurement,
+) !void {
+    try out.print("{s}\t{s}\t", .{ name, shape });
     try writeNanoseconds(out, measurement.median_picoseconds_per_unit);
     try out.writeByte('\t');
     try writeNanoseconds(out, measurement.minimum_picoseconds_per_unit);
@@ -1238,22 +2519,6 @@ fn reportMeasurement(
         "\t{d}\t{d}\n",
         .{ measurement.repetitions, measurement.units_per_repetition },
     );
-    try out.flush();
-}
-
-fn reportBatchMeasurement(
-    out: *std.Io.Writer,
-    size: usize,
-    path: []const u8,
-    measurement: Measurement,
-) !void {
-    try out.print("{d}\t{s}\t", .{ size, path });
-    try writeNanoseconds(out, measurement.median_picoseconds_per_unit);
-    try out.writeByte('\t');
-    try writeNanoseconds(out, measurement.minimum_picoseconds_per_unit);
-    try out.writeByte('\t');
-    try writeNanoseconds(out, measurement.maximum_picoseconds_per_unit);
-    try out.print("\t{d}\n", .{measurement.repetitions});
     try out.flush();
 }
 
@@ -1292,5 +2557,129 @@ test "measurement normalization accounts for repetitions and batch units" {
     try std.testing.expectEqual(
         @as(u64, 2500),
         try picosecondsPerUnit(10, 2, 2),
+    );
+}
+
+test "calibration stops at the minimum and detects repetition overflow" {
+    try std.testing.expectEqual(
+        @as(?usize, null),
+        try nextCalibrationRepetitions(50, 50, 8),
+    );
+    try std.testing.expectEqual(
+        @as(?usize, 16),
+        try nextCalibrationRepetitions(49, 50, 8),
+    );
+    try std.testing.expectError(
+        error.MeasurementRepetitionOverflow,
+        nextCalibrationRepetitions(0, 1, std.math.maxInt(usize)),
+    );
+}
+
+test "dependency carrier is deterministic and remains within its interval" {
+    for ([_]Scalar{
+        0,
+        -0.0,
+        1,
+        -1,
+        std.math.inf(Scalar),
+        -std.math.inf(Scalar),
+        std.math.nan(Scalar),
+    }) |value| {
+        const first = phaser_bench_dependency_carrier(value, 10, 90);
+        const second = phaser_bench_dependency_carrier(value, 10, 90);
+        try std.testing.expectEqual(first, second);
+        try std.testing.expect(first >= 10);
+        try std.testing.expect(first < 100);
+    }
+}
+
+test "one-loop point sets are deterministic and positive scans stay positive" {
+    var first: [2]Scalar = undefined;
+    var second: [2]Scalar = undefined;
+    OneLoopCase.two_by_two.fillPoint(.positive_scan, 71, &first);
+    OneLoopCase.two_by_two.fillPoint(.positive_scan, 71, &second);
+    try std.testing.expectEqualSlices(Scalar, &first, &second);
+
+    const parameters = [_]Scalar{
+        25,      -5,  2.5,  10, 0.05, 0.1, -0.02, 0.26, 0.3,
+        -7812.5, 500, 2500, 0,  0,    0,
+    };
+    var spectrum_storage: [3]Scalar = undefined;
+    const spectrum = OneLoopCase.two_by_two.spectrum(
+        &parameters,
+        &first,
+        &spectrum_storage,
+    );
+    try std.testing.expect(spectrum[0] > 0);
+    try std.testing.expect(spectrum[1] > spectrum[0]);
+}
+
+test "direct one-by-one scalar and batch paths preserve branches and zero" {
+    const parameters = [_]Scalar{ 2, -1, 0 };
+    const backgrounds = [_]Scalar{ 0, 1, 2 };
+    var batch_values: [3]DirectComplex64 = undefined;
+    var statuses: [3]u8 = undefined;
+    DirectLoopKind.one_by_one.evaluateBatch(
+        &parameters,
+        &backgrounds,
+        2,
+        backgrounds.len,
+        &batch_values,
+        &statuses,
+    );
+
+    for (backgrounds, 0..) |background, index| {
+        try std.testing.expectEqual(@as(u8, 0), statuses[index]);
+        var scalar_value = DirectComplex64{ .re = 0, .im = 0 };
+        try std.testing.expectEqual(
+            DirectLoopStatus.ok,
+            DirectLoopKind.one_by_one.evaluate(
+                &parameters,
+                @ptrCast(&background),
+                2,
+                &scalar_value,
+            ),
+        );
+        try std.testing.expectEqual(scalar_value.re, batch_values[index].re);
+        try std.testing.expectEqual(scalar_value.im, batch_values[index].im);
+
+        const eigenvalue = -1 + background * background;
+        const expected = oneLoopClosedForm(&.{eigenvalue}, 2);
+        try numerical_comparison.spectral_value_known_spectrum.expectCloseAt(
+            expected.value.re,
+            scalar_value.re,
+            .{ .magnitude = expected.unsigned.re },
+        );
+        try numerical_comparison.spectral_value_known_spectrum.expectCloseAt(
+            expected.value.im,
+            scalar_value.im,
+            .{ .magnitude = expected.unsigned.im },
+        );
+    }
+}
+
+test "direct three-by-three baseline retains negative multiplicity" {
+    const parameters = [_]Scalar{ 53, 26, -4, 44, -22, 29 };
+    const background = [_]Scalar{-1};
+    var direct = DirectComplex64{ .re = 0, .im = 0 };
+    try std.testing.expectEqual(
+        DirectLoopStatus.ok,
+        DirectLoopKind.three_by_three.evaluate(
+            &parameters,
+            &background,
+            3,
+            &direct,
+        ),
+    );
+    const expected = oneLoopClosedForm(&.{ -81, -36, -9 }, 3);
+    try numerical_comparison.spectral_value_known_spectrum.expectCloseAt(
+        expected.value.re,
+        direct.re,
+        .{ .magnitude = expected.unsigned.re },
+    );
+    try numerical_comparison.spectral_value_known_spectrum.expectCloseAt(
+        expected.value.im,
+        direct.im,
+        .{ .magnitude = expected.unsigned.im },
     );
 }
