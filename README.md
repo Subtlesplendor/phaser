@@ -171,12 +171,18 @@ Runtime rows distinguish:
 - `dependent_scalar_latency`, which carries each result into the next bounded
   input and reports the carrier's cost separately; and
 - `batch_throughput`, which reports nanoseconds per point and points per second
-  through the complete batch contract.
+  through the complete batch contract; and
+- `caller_parallel_scalar` and `caller_parallel_batch`, which use deterministic
+  disjoint chunks, one workspace per caller-owned worker, and record the worker
+  count explicitly.
 
 Rows also record the point set, backend, contribution and capability, workspace
-and buffer bytes, binding reuse, calibrated repetitions, and units per
-repetition. Numerical eigensolver and spectral-operation leaves are diagnostic
-measurements; they are not added together as an end-to-end estimate.
+and buffer bytes, binding reuse, worker count, calibrated repetitions, and
+units per repetition. `reference_interpreter` and `optimized_interpreter` rows
+are separate; the latter uses its declared four-point block width on ARM64 and
+x86-64 and never silently falls back. Numerical eigensolver and
+spectral-operation leaves are diagnostic measurements; they are not added
+together as an end-to-end estimate.
 
 Nanoseconds are the primary portable unit. Phaser does not infer cycles from a
 CPU model or advertised clock. A measured frequency can be supplied explicitly

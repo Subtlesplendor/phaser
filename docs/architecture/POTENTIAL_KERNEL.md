@@ -102,7 +102,34 @@ The reference backend:
 Performance optimization MAY improve instruction dispatch, layouts, contraction
 plans, and numerical operations without changing those semantics.
 
-### 3.2 Deferred code generation
+### 3.2 Optimized interpreted backend
+
+The optimized interpreted backend selected by
+[Decision 0017](../decisions/0017-optimized-interpreter-backend.md) derives an
+immutable predecoded execution plan from the same validated instruction
+program. It resolves slot offsets and fixed numerical-operation shapes once,
+stores a compact live parameter prologue, and executes point batches in bounded
+slot-major blocks.
+
+Backend selection is explicit:
+
+```text
+reference_interpreter
+optimized_interpreter
+```
+
+The effective backend and preferred block width are immutable metadata.
+Requesting `optimized_interpreter` never silently constructs or executes the
+reference backend. A structured operation that executes the validated scalar
+numerical leaf once per active block lane remains part of the optimized backend
+and is reported as such.
+
+The complete call boundary remains checked. Runtime safety may be disabled only
+inside the reviewed predecoded arithmetic leaves after program, shape, alias,
+workspace, and alignment validation. The safe interpreter remains the
+differential oracle.
+
+### 3.3 Deferred code generation
 
 Ahead-of-time generated Zig or native code MAY be added as a later backend. It
 MUST consume the same validated kernel configuration and preserve the same
@@ -136,6 +163,10 @@ to [Content Fingerprints and Deferred Caching](CONTENT_IDENTITY_AND_CACHING.md).
 There are no undocumented kernel-configuration defaults. A frontend MAY provide
 named profiles, but each profile resolves to a complete configuration recorded
 by the kernel.
+
+The internal Zig configuration defaults to `reference_interpreter`. A caller
+that requests `optimized_interpreter` can inspect that identity and its preferred
+block width before binding or evaluation.
 
 ## 5. Capabilities
 
@@ -602,6 +633,9 @@ subregions or per-worker constraints.
 Workspace may include:
 
 - typed real and `Complex64` numerical temporary slots;
+- a backend-private slot-major block frame and scalar remainder frame;
+- compact parameter-prologue materialization;
+- independent per-lane status state;
 - authoritative and materialized real-symmetric matrices;
 - real eigenvalues, scaled working matrices, eigenvectors or equivalent
   transformation state, and residual scratch;
@@ -845,7 +879,7 @@ This specification deliberately does not fix:
 - public configuration syntax;
 - C ABI handles and function signatures;
 - Python class and method names;
-- the first optimized or AOT backend;
+- the first AOT backend;
 - JIT support;
 - scalar types beyond complete `f64` support;
 - complex inputs and result types beyond `Complex64`;

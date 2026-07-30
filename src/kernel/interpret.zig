@@ -182,7 +182,7 @@ pub fn evaluateComplex(
     return evaluateTyped(.complex64, program, inputs, point_count, workspace, outputs);
 }
 
-fn Buffers(comptime result_type: program_module.ResultType) type {
+pub fn Buffers(comptime result_type: program_module.ResultType) type {
     return switch (result_type) {
         .real64 => OutputBuffers,
         .complex64 => ComplexOutputBuffers,
@@ -207,6 +207,7 @@ fn evaluateTyped(
         inputs,
         &.{},
         point_count,
+        program.workspaceLayout(point_count),
         workspace,
         outputs,
         .direct,
@@ -318,6 +319,7 @@ fn evaluateStagedTyped(
         .{ .parameters = &.{}, .backgrounds = backgrounds },
         prologue,
         point_count,
+        program.workspaceLayout(point_count),
         workspace,
         outputs,
         .staged,
@@ -704,14 +706,15 @@ pub fn integerPower(base: Scalar, exponent: u32) Scalar {
     return result;
 }
 
-const CallKind = enum { direct, staged };
+pub const CallKind = enum { direct, staged };
 
-fn validateCall(
+pub fn validateCall(
     comptime result_type: program_module.ResultType,
     program: *const Program,
     inputs: Inputs,
     prologue: []const u8,
     point_count: usize,
+    layout: program_module.WorkspaceLayout,
     workspace: []const u8,
     outputs: Buffers(result_type),
     kind: CallKind,
@@ -720,7 +723,6 @@ fn validateCall(
     // checked before any buffer is read or written.
     if (program.result_type != result_type) return error.ResultTypeMismatch;
 
-    const layout = program.workspaceLayout(point_count);
     if (workspace.len < layout.bytes) return error.WorkspaceTooSmall;
     if (@intFromPtr(workspace.ptr) % layout.alignment != 0) {
         return error.WorkspaceMisaligned;

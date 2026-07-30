@@ -131,11 +131,19 @@ const Fixture = struct {
     request: calculation.Request,
     artifact: calculation.Artifact,
     kernel: kernel_module.Kernel,
-    workspace: []align(@alignOf(Scalar)) u8,
+    workspace: []align(@alignOf(@Vector(2, Scalar))) u8,
 
     fn init(
         model_source: []const u8,
         capability: kernel_module.Capability,
+    ) !Fixture {
+        return initBackend(model_source, capability, .reference_interpreter);
+    }
+
+    fn initBackend(
+        model_source: []const u8,
+        capability: kernel_module.Capability,
+        backend: kernel_module.Backend,
     ) !Fixture {
         var model = try loadModel(model_source);
         errdefer model.deinit();
@@ -145,11 +153,12 @@ const Fixture = struct {
         errdefer artifact.deinit();
         var kernel = try kernel_module.compile(test_allocator.allocator, &artifact, .{
             .capability = capability,
+            .backend = backend,
         });
         errdefer kernel.deinit();
         const workspace = try test_allocator.allocator.alignedAlloc(
             u8,
-            .of(Scalar),
+            .of(@Vector(2, Scalar)),
             kernel.workspaceLayout(8).bytes,
         );
         return .{
@@ -233,10 +242,14 @@ test "staged and unstaged evaluation agree bitwise" {
     );
 }
 
-test "a parameter-stage division status survives binding" {
-    var fixture = try Fixture.init(divided_parameter_model, .value);
+test "optimized binding agrees with direct blocked execution" {
+    var fixture = try Fixture.initBackend(
+        example_data.multi_scalar_model,
+        .value,
+        .optimized_interpreter,
+    );
     defer fixture.deinit();
-    var point = try parsePoint(zero_divisor_point);
+    var point = try parsePoint(multi_scalar_point);
     defer point.deinit();
     var binding = try kernel_module.bind(
         test_allocator.allocator,
@@ -246,51 +259,101 @@ test "a parameter-stage division status survives binding" {
     );
     defer binding.deinit();
 
-    // `evaluate`'s documented contract is that a point whose status is not
-    // `.ok` leaves its output buffers untouched (interpret.zig), and every
-    // point here is expected to fail with `division_by_zero`. `values` is
-    // therefore seeded with a sentinel rather than left `undefined`: comparing
-    // two independently `undefined` buffers only happened to pass because
-    // Debug and ReleaseSafe poison-fill undefined memory with the same
-    // pattern. ReleaseFast and ReleaseSmall do not, so the comparison read
-    // whatever was already on the stack at each call site and failed --
-    // platform-dependently, since the leftover bits differ by call history and
-    // target. See the same pattern in
-    // `test/conformance/one_loop_derivatives.zig`.
-    const sentinel: Scalar = -12345.5;
-    var staged_values = [_]Scalar{sentinel} ** 2;
-    var staged_statuses: [2]kernel_module.Status = undefined;
-    try binding.evaluate(&.{}, 2, fixture.workspace, .{
+    try std.testing.expectEqual(
+        kernel_module.Backend.optimized_interpreter,
+        binding.backendKind(),
+    );
+    const point_count = 5;
+    const backgrounds = [_]Scalar{
+        -100, 55,
+        -25,  10,
+        0,    0,
+        25,   -10,
+        100,  -55,
+    };
+    var staged_values: [point_count]Scalar = undefined;
+    var direct_values: [point_count]Scalar = undefined;
+    var staged_statuses: [point_count]kernel_module.Status = undefined;
+    var direct_statuses: [point_count]kernel_module.Status = undefined;
+    try binding.evaluate(&backgrounds, point_count, fixture.workspace, .{
         .values = &staged_values,
         .statuses = &staged_statuses,
     });
-
-    var direct_values = [_]Scalar{sentinel} ** 2;
-    var direct_statuses: [2]kernel_module.Status = undefined;
     try fixture.kernel.evaluate(
-        .{ .parameters = binding.parameters, .backgrounds = &.{} },
-        2,
+        .{
+            .parameters = binding.parameters,
+            .backgrounds = &backgrounds,
+        },
+        point_count,
         fixture.workspace,
-        .{ .values = &direct_values, .statuses = &direct_statuses },
+        .{
+            .values = &direct_values,
+            .statuses = &direct_statuses,
+        },
     );
 
+    try std.testing.expectEqualSlices(Scalar, &direct_values, &staged_values);
     try std.testing.expectEqualSlices(
         kernel_module.Status,
         &direct_statuses,
         &staged_statuses,
     );
-    try std.testing.expectEqual(
-        kernel_module.Status.division_by_zero,
-        staged_statuses[0],
-    );
-    try std.testing.expectEqual(
-        kernel_module.Status.division_by_zero,
-        staged_statuses[1],
-    );
-    try std.testing.expectEqual(sentinel, staged_values[0]);
-    try std.testing.expectEqual(sentinel, staged_values[1]);
-    try std.testing.expectEqual(sentinel, direct_values[0]);
-    try std.testing.expectEqual(sentinel, direct_values[1]);
+}
+
+test "a parameter-stage division status survives binding" {
+    for ([_]kernel_module.Backend{
+        .reference_interpreter,
+        .optimized_interpreter,
+    }) |backend| {
+        var fixture = try Fixture.initBackend(divided_parameter_model, .value, backend);
+        defer fixture.deinit();
+        var point = try parsePoint(zero_divisor_point);
+        defer point.deinit();
+        var binding = try kernel_module.bind(
+            test_allocator.allocator,
+            &fixture.kernel,
+            &fixture.model,
+            &point,
+        );
+        defer binding.deinit();
+
+        // A point whose status is not `.ok` leaves its output untouched. Seed
+        // the buffers explicitly so this remains defined in every build mode.
+        const sentinel: Scalar = -12345.5;
+        var staged_values = [_]Scalar{sentinel} ** 2;
+        var staged_statuses: [2]kernel_module.Status = undefined;
+        try binding.evaluate(&.{}, 2, fixture.workspace, .{
+            .values = &staged_values,
+            .statuses = &staged_statuses,
+        });
+
+        var direct_values = [_]Scalar{sentinel} ** 2;
+        var direct_statuses: [2]kernel_module.Status = undefined;
+        try fixture.kernel.evaluate(
+            .{ .parameters = binding.parameters, .backgrounds = &.{} },
+            2,
+            fixture.workspace,
+            .{ .values = &direct_values, .statuses = &direct_statuses },
+        );
+
+        try std.testing.expectEqualSlices(
+            kernel_module.Status,
+            &direct_statuses,
+            &staged_statuses,
+        );
+        try std.testing.expectEqual(
+            kernel_module.Status.division_by_zero,
+            staged_statuses[0],
+        );
+        try std.testing.expectEqual(
+            kernel_module.Status.division_by_zero,
+            staged_statuses[1],
+        );
+        try std.testing.expectEqual(sentinel, staged_values[0]);
+        try std.testing.expectEqual(sentinel, staged_values[1]);
+        try std.testing.expectEqual(sentinel, direct_values[0]);
+        try std.testing.expectEqual(sentinel, direct_values[1]);
+    }
 }
 
 test "the parameter stage is a nonempty prefix that reads no coordinate" {

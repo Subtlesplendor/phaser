@@ -66,6 +66,10 @@ pub fn packedEntryCount(n: usize) error{SizeOverflow}!usize {
 /// the complete eigenvector matrix, and candidate eigenvalues. All regions are
 /// `f64`-aligned and their checked arithmetic is completed before evaluation.
 pub fn workspaceLayout(n: usize) error{SizeOverflow}!WorkspaceLayout {
+    if (n <= 2) {
+        return .{ .bytes = 0, .alignment = @alignOf(Scalar) };
+    }
+
     const matrix_entries = std.math.mul(usize, n, n) catch
         return error.SizeOverflow;
     const matrix_storage = std.math.mul(usize, matrix_entries, 3) catch
@@ -113,7 +117,135 @@ pub fn solve(
     }
     try validateDisjoint(packed_upper, workspace, outputs);
 
-    if (n == 0) return .ok;
+    return solveValidated(.{
+        .dimension = n,
+        .packed_upper = packed_upper,
+        .workspace = workspace[0..layout.bytes],
+        .outputs = outputs,
+    });
+}
+
+/// A request whose shapes, workspace, alignment, and aliasing were established
+/// by a checked wrapper or a validated kernel execution plan.
+///
+/// This type is internal to Phaser's numerical data plane. Constructing it
+/// without proving the checked `solve` contract is a programmer error.
+pub const ValidatedRequest = struct {
+    dimension: usize,
+    packed_upper: []const Scalar,
+    workspace: []u8,
+    outputs: Outputs,
+};
+
+/// Diagonalizes a structurally validated request without repeating call-level
+/// shape, workspace, alignment, or alias checks.
+pub fn solveValidated(request: ValidatedRequest) Status {
+    const n = request.dimension;
+    const packed_upper = request.packed_upper;
+    const workspace = request.workspace;
+    const outputs = request.outputs;
+    const packed_count = packedEntryCount(n) catch unreachable;
+    const matrix_entries = std.math.mul(usize, n, n) catch unreachable;
+    const layout = workspaceLayout(n) catch unreachable;
+
+    std.debug.assert(packed_upper.len == packed_count);
+    std.debug.assert(outputs.eigenvalues.len == n);
+    if (outputs.eigenvectors) |vectors| {
+        std.debug.assert(vectors.len == matrix_entries);
+    }
+    std.debug.assert(workspace.len >= layout.bytes);
+    std.debug.assert(layout.bytes == 0 or
+        @intFromPtr(workspace.ptr) % layout.alignment == 0);
+
+    return switch (n) {
+        0 => .ok,
+        1 => solveOne(packed_upper, outputs),
+        2 => solveTwo(packed_upper, outputs),
+        else => solveGeneral(n, packed_upper, workspace, outputs),
+    };
+}
+
+fn solveOne(packed_upper: []const Scalar, outputs: Outputs) Status {
+    const value = packed_upper[0];
+    if (!std.math.isFinite(value)) return .non_finite;
+
+    outputs.eigenvalues[0] = value;
+    if (outputs.eigenvectors) |vectors| vectors[0] = 1;
+    return .ok;
+}
+
+fn solveTwo(packed_upper: []const Scalar, outputs: Outputs) Status {
+    for (packed_upper) |entry| {
+        if (!std.math.isFinite(entry)) return .non_finite;
+    }
+
+    const diagonal_left = packed_upper[0];
+    const off_diagonal = packed_upper[1];
+    const diagonal_right = packed_upper[2];
+    var vectors = [_]Scalar{ 1, 0, 0, 1 };
+    var values: [2]Scalar = undefined;
+
+    if (off_diagonal == 0) {
+        values = .{ diagonal_left, diagonal_right };
+        stableSort(&values, &vectors, 2);
+        normalizeSigns(&vectors, 2);
+    } else {
+        const maximum = @max(
+            @max(@abs(diagonal_left), @abs(off_diagonal)),
+            @abs(diagonal_right),
+        );
+        const rescale_exponent = std.math.frexp(maximum).exponent;
+        const input_scale_exponent = -rescale_exponent;
+        const scaled_left = std.math.ldexp(diagonal_left, input_scale_exponent);
+        const scaled_off = std.math.ldexp(off_diagonal, input_scale_exponent);
+        const scaled_right = std.math.ldexp(diagonal_right, input_scale_exponent);
+        if ((diagonal_left != 0 and scaled_left == 0) or
+            (off_diagonal != 0 and scaled_off == 0) or
+            (diagonal_right != 0 and scaled_right == 0))
+        {
+            return .nonconvergent;
+        }
+
+        const original = [_]Scalar{
+            scaled_left,
+            scaled_off,
+            scaled_off,
+            scaled_right,
+        };
+        var working = original;
+        rotate(&working, &vectors, 2, 0, 1);
+        values = .{ working[0], working[3] };
+        stableSort(&values, &vectors, 2);
+        normalizeSigns(&vectors, 2);
+
+        if (!allFinite(&values) or !allFinite(&vectors)) return .non_finite;
+        if (!postconditionsHold(&original, &values, &vectors, 2)) {
+            return .nonconvergent;
+        }
+        for (&values) |*value| {
+            const scaled = value.*;
+            value.* = std.math.ldexp(scaled, rescale_exponent);
+            if (!std.math.isFinite(value.*)) return .non_finite;
+            if (scaled != 0 and value.* == 0) return .nonconvergent;
+        }
+    }
+
+    @memcpy(outputs.eigenvalues, &values);
+    if (outputs.eigenvectors) |output_vectors| {
+        @memcpy(output_vectors, &vectors);
+    }
+    return .ok;
+}
+
+fn solveGeneral(
+    n: usize,
+    packed_upper: []const Scalar,
+    workspace: []u8,
+    outputs: Outputs,
+) Status {
+    std.debug.assert(n >= 3);
+    const matrix_entries = std.math.mul(usize, n, n) catch unreachable;
+    const layout = workspaceLayout(n) catch unreachable;
 
     var maximum: Scalar = 0;
     var has_off_diagonal = false;
@@ -165,14 +297,8 @@ pub fn solve(
     }
     setIdentity(vectors, n);
 
-    if (n == 2) {
-        if (has_off_diagonal) {
-            rotate(working, vectors, n, 0, 1);
-        }
-    } else if (n >= 3) {
-        diagonalize(working, vectors, n) catch
-            return .nonconvergent;
-    }
+    diagonalize(working, vectors, n) catch
+        return .nonconvergent;
 
     for (0..n) |index| values[index] = working[index * n + index];
     stableSort(values, vectors, n);
@@ -541,10 +667,33 @@ fn expectSpectrum(
 }
 
 test "empty, scalar, zero, and stable two by two paths" {
+    try std.testing.expectEqual(@as(usize, 0), (try workspaceLayout(0)).bytes);
+    try std.testing.expectEqual(@as(usize, 0), (try workspaceLayout(1)).bytes);
+    try std.testing.expectEqual(@as(usize, 0), (try workspaceLayout(2)).bytes);
     try expectSpectrum(0, &.{}, &.{});
     try expectSpectrum(1, &.{-7}, &.{-7});
+    try expectSpectrum(
+        1,
+        &.{std.math.floatMax(Scalar)},
+        &.{std.math.floatMax(Scalar)},
+    );
+    try expectSpectrum(
+        1,
+        &.{std.math.floatTrueMin(Scalar)},
+        &.{std.math.floatTrueMin(Scalar)},
+    );
     try expectSpectrum(2, &.{ 3, 0, -2 }, &.{ -2, 3 });
     try expectSpectrum(2, &.{ 1, 1, 1 }, &.{ 0, 2 });
+    const extreme_large = std.math.ldexp(@as(Scalar, 1), 900);
+    const extreme_small = std.math.ldexp(@as(Scalar, 1), -900);
+    try expectSpectrum(2, &.{ 2 * extreme_large, extreme_large, 2 * extreme_large }, &.{
+        extreme_large,
+        3 * extreme_large,
+    });
+    try expectSpectrum(2, &.{ 2 * extreme_small, extreme_small, 2 * extreme_small }, &.{
+        extreme_small,
+        3 * extreme_small,
+    });
     try expectSpectrum(3, &.{ 0, 0, 0, 0, 0, 0 }, &.{ 0, 0, 0 });
 
     const small = 0x1p-40;
@@ -559,6 +708,50 @@ test "empty, scalar, zero, and stable two by two paths" {
         },
         &.{ small, 1 },
     );
+
+    var signed_zero_value = [_]Scalar{1};
+    var signed_zero_vector = [_]Scalar{0};
+    try std.testing.expectEqual(
+        Status.ok,
+        try solve(
+            1,
+            &.{-0.0},
+            &.{},
+            .{
+                .eigenvalues = &signed_zero_value,
+                .eigenvectors = &signed_zero_vector,
+            },
+        ),
+    );
+    try std.testing.expectEqual(
+        @as(u64, @bitCast(@as(Scalar, -0.0))),
+        @as(u64, @bitCast(signed_zero_value[0])),
+    );
+    try std.testing.expectEqual(@as(Scalar, 1), signed_zero_vector[0]);
+
+    for ([_]Scalar{ std.math.nan(Scalar), std.math.inf(Scalar) }) |non_finite| {
+        var scalar_output = [_]Scalar{-101};
+        try std.testing.expectEqual(
+            Status.non_finite,
+            try solve(1, &.{non_finite}, &.{}, .{
+                .eigenvalues = &scalar_output,
+            }),
+        );
+        try std.testing.expectEqual(@as(Scalar, -101), scalar_output[0]);
+
+        var pair_output = [_]Scalar{ -102, -103 };
+        try std.testing.expectEqual(
+            Status.non_finite,
+            try solve(2, &.{ 1, non_finite, 2 }, &.{}, .{
+                .eigenvalues = &pair_output,
+            }),
+        );
+        try std.testing.expectEqualSlices(
+            Scalar,
+            &[_]Scalar{ -102, -103 },
+            &pair_output,
+        );
+    }
 }
 
 test "exact-spectrum catalog covers dense, repeated, zero, and indefinite matrices" {

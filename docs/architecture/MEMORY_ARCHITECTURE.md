@@ -281,6 +281,13 @@ implementation explicitly supports concurrent partitioning. Concurrent
 evaluations normally share an immutable kernel and binding while using distinct
 workspaces.
 
+The optimized interpreter's layout includes a bounded slot-major block frame, a
+scalar remainder and structured-operation frame, lane status state, and shared
+numerical scratch. Its binding owns a compact immutable parameter prologue
+rather than a complete point frame. Both sizes and the preferred block width are
+fixed by the validated execution plan; evaluation neither grows them nor
+performs lazy initialization.
+
 A high-level frontend MAY own reusable workspace objects, grow them before a
 call, and retain separate scalar and batch capacities. It MUST NOT delay scalar
 calls to create hidden batches.

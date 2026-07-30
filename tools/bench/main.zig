@@ -389,6 +389,119 @@ const StagedRun = struct {
     }
 };
 
+const maximum_benchmark_workers = 64;
+
+const ParallelShape = enum {
+    scalar_calls,
+    batch,
+};
+
+const ParallelWorker = struct {
+    binding: *const kernel_module.Binding,
+    backgrounds: []const Scalar,
+    coordinate_count: usize,
+    shape: ParallelShape,
+    repetitions: usize,
+    workspace: []u8,
+    values: []Scalar,
+    statuses: []kernel_module.Status,
+    failure: ?anyerror = null,
+};
+
+fn runParallelWorker(worker: *ParallelWorker) void {
+    for (0..worker.repetitions) |_| {
+        switch (worker.shape) {
+            .scalar_calls => {
+                for (0..worker.values.len) |point| {
+                    worker.binding.evaluate(
+                        worker.backgrounds[point * worker.coordinate_count ..][0..worker.coordinate_count],
+                        1,
+                        worker.workspace,
+                        .{
+                            .values = worker.values[point..][0..1],
+                            .statuses = worker.statuses[point..][0..1],
+                        },
+                    ) catch |failure| {
+                        worker.failure = failure;
+                        return;
+                    };
+                }
+            },
+            .batch => {
+                worker.binding.evaluate(
+                    worker.backgrounds,
+                    worker.values.len,
+                    worker.workspace,
+                    .{ .values = worker.values, .statuses = worker.statuses },
+                ) catch |failure| {
+                    worker.failure = failure;
+                    return;
+                };
+            },
+        }
+    }
+}
+
+/// Caller-owned worker scaling. Threads are created by the benchmark harness,
+/// not by Phaser, and each receives disjoint outputs plus one workspace.
+const ParallelStagedRun = struct {
+    binding: *const kernel_module.Binding,
+    backgrounds: []const Scalar,
+    point_count: usize,
+    coordinate_count: usize,
+    worker_count: usize,
+    shape: ParallelShape,
+    workspace_storage: []u8,
+    workspace_stride: usize,
+    values: []Scalar,
+    statuses: []kernel_module.Status,
+
+    fn unitCount(self: *const ParallelStagedRun) usize {
+        return self.point_count;
+    }
+
+    fn execute(self: *const ParallelStagedRun, repetitions: usize) !void {
+        std.debug.assert(self.worker_count > 0);
+        std.debug.assert(self.worker_count <= maximum_benchmark_workers);
+        var workers: [maximum_benchmark_workers]ParallelWorker = undefined;
+        var threads: [maximum_benchmark_workers]std.Thread = undefined;
+        var started: usize = 0;
+        for (0..self.worker_count) |worker_index| {
+            const chunk = try kernel_module.chunkForWorker(
+                self.point_count,
+                self.worker_count,
+                worker_index,
+            );
+            const workspace_start = worker_index * self.workspace_stride;
+            workers[worker_index] = .{
+                .binding = self.binding,
+                .backgrounds = self.backgrounds[chunk.start * self.coordinate_count ..][0 .. chunk.len * self.coordinate_count],
+                .coordinate_count = self.coordinate_count,
+                .shape = self.shape,
+                .repetitions = repetitions,
+                .workspace = self.workspace_storage[workspace_start..][0..self.workspace_stride],
+                .values = self.values[chunk.start..chunk.end()],
+                .statuses = self.statuses[chunk.start..chunk.end()],
+            };
+            threads[worker_index] = std.Thread.spawn(
+                .{},
+                runParallelWorker,
+                .{&workers[worker_index]},
+            ) catch |failure| {
+                for (threads[0..started]) |thread| thread.join();
+                return failure;
+            };
+            started += 1;
+        }
+        for (threads[0..started]) |thread| thread.join();
+        for (workers[0..started]) |worker| {
+            if (worker.failure) |failure| return failure;
+        }
+        std.mem.doNotOptimizeAway(self.values);
+        std.mem.doNotOptimizeAway(self.statuses);
+    }
+};
+
 const UnstagedRun = struct {
     kernel: *const kernel_module.Kernel,
     parameters: []const Scalar,
@@ -819,6 +932,7 @@ const RuntimeMetadata = struct {
     workspace_alignment: usize,
     buffer_bytes: usize,
     binding_reused: bool,
+    workers: usize = 1,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -884,12 +998,15 @@ fn writePreamble(out: *std.Io.Writer) !void {
     } else {
         try out.writeAll("# derived_cycles disabled\n");
     }
+    try out.print(
+        "# optimized_interpreter block_width {d}\n",
+        .{kernel_module.optimizedBlockWidth},
+    );
     try out.writeAll(
         \\# direct_c flags: -O3 -fno-fast-math -ffp-contract=off
         \\# scalar_throughput means independent reciprocal throughput.
         \\# dependent_scalar_latency carries each result into the next input.
         \\# Nanoseconds are primary; any cycle values are user-supplied derivatives.
-        \\# backend optimized_interpreter unsupported: not implemented
         \\# backend aot_prototype unsupported: not implemented
         \\#
         \\# Timings are informational. They are not a merge gate and a hosted
@@ -1048,6 +1165,16 @@ fn reportModel(
         .capability = .value_gradient_hessian,
     });
     defer fused_kernel.deinit();
+    var optimized_value_kernel = try kernel_module.compile(allocator, &artifact, .{
+        .capability = .value,
+        .backend = .optimized_interpreter,
+    });
+    defer optimized_value_kernel.deinit();
+    var optimized_fused_kernel = try kernel_module.compile(allocator, &artifact, .{
+        .capability = .value_gradient_hessian,
+        .backend = .optimized_interpreter,
+    });
+    defer optimized_fused_kernel.deinit();
 
     var point = switch (try phaser.parseParameterPoint(context(allocator), .{
         .source_id = try phaser.SourceId.fromUsize(2),
@@ -1072,6 +1199,20 @@ fn reportModel(
         &point,
     );
     defer fused_binding.deinit();
+    var optimized_value_binding = try kernel_module.bind(
+        allocator,
+        &optimized_value_kernel,
+        &model,
+        &point,
+    );
+    defer optimized_value_binding.deinit();
+    var optimized_fused_binding = try kernel_module.bind(
+        allocator,
+        &optimized_fused_kernel,
+        &model,
+        &point,
+    );
+    defer optimized_fused_binding.deinit();
     try direct.verifyChannels(&value_kernel);
 
     const coordinates = value_kernel.coordinateCount();
@@ -1087,6 +1228,8 @@ fn reportModel(
 
     const value_layout = value_binding.workspaceLayout(largest);
     const fused_layout = fused_binding.workspaceLayout(largest);
+    const optimized_value_layout = optimized_value_binding.workspaceLayout(largest);
+    const optimized_fused_layout = optimized_fused_binding.workspaceLayout(largest);
     const workspace_bytes = @max(value_layout.bytes, fused_layout.bytes);
     if (value_layout.alignment > @alignOf(Scalar) or
         fused_layout.alignment > @alignOf(Scalar))
@@ -1099,24 +1242,60 @@ fn reportModel(
         workspace_bytes,
     );
     defer allocator.free(workspace);
+    const optimized_workspace = try allocator.alignedAlloc(
+        u8,
+        .of(@Vector(2, Scalar)),
+        @max(optimized_value_layout.bytes, optimized_fused_layout.bytes),
+    );
+    defer allocator.free(optimized_workspace);
+    const parallel_workspace_stride = std.mem.alignForward(
+        usize,
+        optimized_value_layout.bytes,
+        optimized_value_layout.alignment,
+    );
+    const parallel_workspace = try allocator.alignedAlloc(
+        u8,
+        .of(@Vector(2, Scalar)),
+        try std.math.mul(
+            usize,
+            parallel_workspace_stride,
+            maximum_benchmark_workers,
+        ),
+    );
+    defer allocator.free(parallel_workspace);
 
     const values = try allocator.alloc(Scalar, largest);
     defer allocator.free(values);
     const fused_values = try allocator.alloc(Scalar, largest);
     defer allocator.free(fused_values);
+    const optimized_values = try allocator.alloc(Scalar, largest);
+    defer allocator.free(optimized_values);
+    const optimized_fused_values = try allocator.alloc(Scalar, largest);
+    defer allocator.free(optimized_fused_values);
     const direct_values = try allocator.alloc(Scalar, largest);
     defer allocator.free(direct_values);
     const gradients = try allocator.alloc(Scalar, largest * coordinates);
     defer allocator.free(gradients);
+    const optimized_gradients = try allocator.alloc(Scalar, largest * coordinates);
+    defer allocator.free(optimized_gradients);
     const hessians = try allocator.alloc(
         Scalar,
         largest * coordinates * coordinates,
     );
     defer allocator.free(hessians);
+    const optimized_hessians = try allocator.alloc(
+        Scalar,
+        largest * coordinates * coordinates,
+    );
+    defer allocator.free(optimized_hessians);
     const statuses = try allocator.alloc(kernel_module.Status, largest);
     defer allocator.free(statuses);
     const fused_statuses = try allocator.alloc(kernel_module.Status, largest);
     defer allocator.free(fused_statuses);
+    const optimized_statuses = try allocator.alloc(kernel_module.Status, largest);
+    defer allocator.free(optimized_statuses);
+    const optimized_fused_statuses = try allocator.alloc(kernel_module.Status, largest);
+    defer allocator.free(optimized_fused_statuses);
 
     try value_binding.evaluate(points, largest, workspace, .{
         .values = values,
@@ -1128,6 +1307,16 @@ fn reportModel(
         .hessians = hessians,
         .statuses = fused_statuses,
     });
+    try optimized_value_binding.evaluate(points, largest, optimized_workspace, .{
+        .values = optimized_values,
+        .statuses = optimized_statuses,
+    });
+    try optimized_fused_binding.evaluate(points, largest, optimized_workspace, .{
+        .values = optimized_fused_values,
+        .gradients = optimized_gradients,
+        .hessians = optimized_hessians,
+        .statuses = optimized_fused_statuses,
+    });
     direct.kind.evaluateBatch(
         value_binding.parameters.ptr,
         points.ptr,
@@ -1137,6 +1326,26 @@ fn reportModel(
     for (0..largest) |index| {
         if (statuses[index] != .ok or fused_statuses[index] != .ok) {
             return error.StatusVerificationFailed;
+        }
+        if (optimized_statuses[index] != statuses[index] or
+            optimized_fused_statuses[index] != fused_statuses[index] or
+            optimized_values[index] != values[index] or
+            optimized_fused_values[index] != fused_values[index])
+        {
+            return error.OptimizedVerificationFailed;
+        }
+        const gradient_start = index * coordinates;
+        const hessian_start = index * coordinates * coordinates;
+        if (!std.mem.eql(
+            Scalar,
+            gradients[gradient_start..][0..coordinates],
+            optimized_gradients[gradient_start..][0..coordinates],
+        ) or !std.mem.eql(
+            Scalar,
+            hessians[hessian_start..][0 .. coordinates * coordinates],
+            optimized_hessians[hessian_start..][0 .. coordinates * coordinates],
+        )) {
+            return error.OptimizedVerificationFailed;
         }
         if (values[index] != fused_values[index]) {
             return error.FusedValueVerificationFailed;
@@ -1206,6 +1415,30 @@ fn reportModel(
         .binding_reused = true,
     }, try measure(io, &scalar_value));
 
+    var optimized_scalar_value = StagedRun{
+        .binding = &optimized_value_binding,
+        .backgrounds = points[0..coordinates],
+        .point_count = 1,
+        .workspace = optimized_workspace,
+        .outputs = .{
+            .values = optimized_values[0..1],
+            .statuses = optimized_statuses[0..1],
+        },
+    };
+    try reportRuntimeMeasurement(out, .{
+        .model = name,
+        .point_set = "varied_scan",
+        .contribution = "total",
+        .capability = "value",
+        .backend = "optimized_interpreter",
+        .shape = "scalar_throughput",
+        .points = 1,
+        .workspace_bytes = optimized_value_layout.bytes,
+        .workspace_alignment = optimized_value_layout.alignment,
+        .buffer_bytes = realBufferBytes(1, coordinates, .value, 0),
+        .binding_reused = true,
+    }, try measure(io, &optimized_scalar_value));
+
     var scalar_fused = StagedRun{
         .binding = &fused_binding,
         .backgrounds = points[0..coordinates],
@@ -1237,11 +1470,47 @@ fn reportModel(
         .binding_reused = true,
     }, try measure(io, &scalar_fused));
 
+    var optimized_scalar_fused = StagedRun{
+        .binding = &optimized_fused_binding,
+        .backgrounds = points[0..coordinates],
+        .point_count = 1,
+        .workspace = optimized_workspace,
+        .outputs = .{
+            .values = optimized_fused_values[0..1],
+            .gradients = optimized_gradients[0..coordinates],
+            .hessians = optimized_hessians[0 .. coordinates * coordinates],
+            .statuses = optimized_fused_statuses[0..1],
+        },
+    };
+    try reportRuntimeMeasurement(out, .{
+        .model = name,
+        .point_set = "varied_scan",
+        .contribution = "total",
+        .capability = "value_gradient_hessian",
+        .backend = "optimized_interpreter",
+        .shape = "scalar_throughput",
+        .points = 1,
+        .workspace_bytes = optimized_fused_layout.bytes,
+        .workspace_alignment = optimized_fused_layout.alignment,
+        .buffer_bytes = realBufferBytes(
+            1,
+            coordinates,
+            .value_gradient_hessian,
+            0,
+        ),
+        .binding_reused = true,
+    }, try measure(io, &optimized_scalar_fused));
+
     const dependent_phaser_background = try allocator.dupe(
         Scalar,
         points[0..coordinates],
     );
     defer allocator.free(dependent_phaser_background);
+    const dependent_optimized_background = try allocator.dupe(
+        Scalar,
+        points[0..coordinates],
+    );
+    defer allocator.free(dependent_optimized_background);
     const dependent_direct_background = try allocator.dupe(
         Scalar,
         points[0..coordinates],
@@ -1279,6 +1548,29 @@ fn reportModel(
         .buffer_bytes = realBufferBytes(1, coordinates, .value, 0),
         .binding_reused = true,
     }, staged_latency);
+
+    var optimized_dependent = StagedDependentRun{
+        .binding = &optimized_value_binding,
+        .background = dependent_optimized_background,
+        .workspace = optimized_workspace,
+        .values = optimized_values[0..1],
+        .statuses = optimized_statuses[0..1],
+        .base = carrier_base,
+        .span = carrier_span,
+    };
+    try reportRuntimeMeasurement(out, .{
+        .model = name,
+        .point_set = "carrier_scan",
+        .contribution = "total",
+        .capability = "value",
+        .backend = "optimized_interpreter",
+        .shape = "dependent_scalar_latency",
+        .points = 1,
+        .workspace_bytes = optimized_value_layout.bytes,
+        .workspace_alignment = optimized_value_layout.alignment,
+        .buffer_bytes = realBufferBytes(1, coordinates, .value, 0),
+        .binding_reused = true,
+    }, try measure(io, &optimized_dependent));
 
     var direct_dependent = DirectDependentRun{
         .baseline = direct,
@@ -1359,6 +1651,30 @@ fn reportModel(
             .binding_reused = true,
         }, try measure(io, &staged));
 
+        var optimized_staged = StagedRun{
+            .binding = &optimized_value_binding,
+            .backgrounds = points[0 .. size * coordinates],
+            .point_count = size,
+            .workspace = optimized_workspace,
+            .outputs = .{
+                .values = optimized_values[0..size],
+                .statuses = optimized_statuses[0..size],
+            },
+        };
+        try reportRuntimeMeasurement(out, .{
+            .model = name,
+            .point_set = "varied_scan",
+            .contribution = "total",
+            .capability = "value",
+            .backend = "optimized_interpreter",
+            .shape = "batch_throughput",
+            .points = size,
+            .workspace_bytes = optimized_value_layout.bytes,
+            .workspace_alignment = optimized_value_layout.alignment,
+            .buffer_bytes = realBufferBytes(size, coordinates, .value, 0),
+            .binding_reused = true,
+        }, try measure(io, &optimized_staged));
+
         var unstaged = UnstagedRun{
             .kernel = &value_kernel,
             .parameters = value_binding.parameters,
@@ -1419,6 +1735,93 @@ fn reportModel(
             ),
             .binding_reused = true,
         }, try measure(io, &fused));
+
+        var optimized_fused = StagedRun{
+            .binding = &optimized_fused_binding,
+            .backgrounds = points[0 .. size * coordinates],
+            .point_count = size,
+            .workspace = optimized_workspace,
+            .outputs = .{
+                .values = optimized_fused_values[0..size],
+                .gradients = optimized_gradients[0 .. size * coordinates],
+                .hessians = optimized_hessians[0 .. size * coordinates * coordinates],
+                .statuses = optimized_fused_statuses[0..size],
+            },
+        };
+        try reportRuntimeMeasurement(out, .{
+            .model = name,
+            .point_set = "varied_scan",
+            .contribution = "total",
+            .capability = "value_gradient_hessian",
+            .backend = "optimized_interpreter",
+            .shape = "batch_throughput",
+            .points = size,
+            .workspace_bytes = optimized_fused_layout.bytes,
+            .workspace_alignment = optimized_fused_layout.alignment,
+            .buffer_bytes = realBufferBytes(
+                size,
+                coordinates,
+                .value_gradient_hessian,
+                0,
+            ),
+            .binding_reused = true,
+        }, try measure(io, &optimized_fused));
+    }
+
+    const detected_workers = std.Thread.getCpuCount() catch 1;
+    const oversubscribed_workers = if (detected_workers <= maximum_benchmark_workers / 2)
+        detected_workers * 2
+    else
+        maximum_benchmark_workers;
+    var worker_counts: [3]usize = undefined;
+    var worker_count_len: usize = 0;
+    for ([_]usize{
+        2,
+        @min(detected_workers, maximum_benchmark_workers),
+        oversubscribed_workers,
+    }) |candidate| {
+        if (candidate <= 1 or candidate > largest) continue;
+        var duplicate = false;
+        for (worker_counts[0..worker_count_len]) |existing| {
+            duplicate = duplicate or existing == candidate;
+        }
+        if (!duplicate) {
+            worker_counts[worker_count_len] = candidate;
+            worker_count_len += 1;
+        }
+    }
+    for ([_]ParallelShape{ .scalar_calls, .batch }) |parallel_shape| {
+        for (worker_counts[0..worker_count_len]) |workers| {
+            var parallel = ParallelStagedRun{
+                .binding = &optimized_value_binding,
+                .backgrounds = points,
+                .point_count = largest,
+                .coordinate_count = coordinates,
+                .worker_count = workers,
+                .shape = parallel_shape,
+                .workspace_storage = parallel_workspace[0 .. parallel_workspace_stride * workers],
+                .workspace_stride = parallel_workspace_stride,
+                .values = optimized_values,
+                .statuses = optimized_statuses,
+            };
+            try reportRuntimeMeasurement(out, .{
+                .model = name,
+                .point_set = "varied_scan",
+                .contribution = "total",
+                .capability = "value",
+                .backend = "optimized_interpreter",
+                .shape = switch (parallel_shape) {
+                    .scalar_calls => "caller_parallel_scalar",
+                    .batch => "caller_parallel_batch",
+                },
+                .points = largest,
+                .workspace_bytes = parallel_workspace_stride * workers,
+                .workspace_alignment = optimized_value_layout.alignment,
+                .buffer_bytes = realBufferBytes(largest, coordinates, .value, 0),
+                .binding_reused = true,
+                .workers = workers,
+            }, try measure(io, &parallel));
+        }
     }
 
     try out.writeAll(
@@ -1761,6 +2164,18 @@ fn reportOneLoop(
         .selection = .{ .role = .scalar_one_loop },
     });
     defer fused_kernel.deinit();
+    var optimized_value_kernel = try kernel_module.compile(allocator, &artifact, .{
+        .capability = .value,
+        .selection = .{ .role = .scalar_one_loop },
+        .backend = .optimized_interpreter,
+    });
+    defer optimized_value_kernel.deinit();
+    var optimized_fused_kernel = try kernel_module.compile(allocator, &artifact, .{
+        .capability = .value_gradient_hessian,
+        .selection = .{ .role = .scalar_one_loop },
+        .backend = .optimized_interpreter,
+    });
+    defer optimized_fused_kernel.deinit();
 
     var point = switch (try phaser.parseParameterPoint(context(allocator), .{
         .source_id = try phaser.SourceId.fromUsize(2),
@@ -1785,6 +2200,20 @@ fn reportOneLoop(
         &point,
     );
     defer fused_binding.deinit();
+    var optimized_value_binding = try kernel_module.bind(
+        allocator,
+        &optimized_value_kernel,
+        &model,
+        &point,
+    );
+    defer optimized_value_binding.deinit();
+    var optimized_fused_binding = try kernel_module.bind(
+        allocator,
+        &optimized_fused_kernel,
+        &model,
+        &point,
+    );
+    defer optimized_fused_binding.deinit();
     try workload.direct.verifyChannels(&value_kernel);
     if (value_binding.scales.len != 1 or value_binding.scales[0] != workload.scale) {
         return error.OneLoopScaleMismatch;
@@ -1804,6 +2233,8 @@ fn reportOneLoop(
 
     const value_layout = value_binding.workspaceLayout(largest);
     const fused_layout = fused_binding.workspaceLayout(largest);
+    const optimized_value_layout = optimized_value_binding.workspaceLayout(largest);
+    const optimized_fused_layout = optimized_fused_binding.workspaceLayout(largest);
     if (value_layout.alignment > @alignOf(Scalar) or
         fused_layout.alignment > @alignOf(Scalar))
     {
@@ -1815,22 +2246,43 @@ fn reportOneLoop(
         @max(value_layout.bytes, fused_layout.bytes),
     );
     defer allocator.free(workspace);
+    const optimized_workspace = try allocator.alignedAlloc(
+        u8,
+        .of(@Vector(2, Scalar)),
+        @max(optimized_value_layout.bytes, optimized_fused_layout.bytes),
+    );
+    defer allocator.free(optimized_workspace);
 
     const values = try allocator.alloc(Complex64, largest);
     defer allocator.free(values);
     const fused_values = try allocator.alloc(Complex64, largest);
     defer allocator.free(fused_values);
+    const optimized_values = try allocator.alloc(Complex64, largest);
+    defer allocator.free(optimized_values);
+    const optimized_fused_values = try allocator.alloc(Complex64, largest);
+    defer allocator.free(optimized_fused_values);
     const gradients = try allocator.alloc(Complex64, largest * coordinates);
     defer allocator.free(gradients);
+    const optimized_gradients = try allocator.alloc(Complex64, largest * coordinates);
+    defer allocator.free(optimized_gradients);
     const hessians = try allocator.alloc(
         Complex64,
         largest * coordinates * coordinates,
     );
     defer allocator.free(hessians);
+    const optimized_hessians = try allocator.alloc(
+        Complex64,
+        largest * coordinates * coordinates,
+    );
+    defer allocator.free(optimized_hessians);
     const statuses = try allocator.alloc(kernel_module.Status, largest);
     defer allocator.free(statuses);
     const fused_statuses = try allocator.alloc(kernel_module.Status, largest);
     defer allocator.free(fused_statuses);
+    const optimized_statuses = try allocator.alloc(kernel_module.Status, largest);
+    defer allocator.free(optimized_statuses);
+    const optimized_fused_statuses = try allocator.alloc(kernel_module.Status, largest);
+    defer allocator.free(optimized_fused_statuses);
     const direct_values = try allocator.alloc(DirectComplex64, largest);
     defer allocator.free(direct_values);
     const direct_statuses = try allocator.alloc(u8, largest);
@@ -1846,6 +2298,26 @@ fn reportOneLoop(
         .hessians = hessians,
         .statuses = fused_statuses,
     });
+    try optimized_value_binding.evaluateComplex(
+        positive_points,
+        largest,
+        optimized_workspace,
+        .{
+            .values = optimized_values,
+            .statuses = optimized_statuses,
+        },
+    );
+    try optimized_fused_binding.evaluateComplex(
+        positive_points,
+        largest,
+        optimized_workspace,
+        .{
+            .values = optimized_fused_values,
+            .gradients = optimized_gradients,
+            .hessians = optimized_hessians,
+            .statuses = optimized_fused_statuses,
+        },
+    );
     workload.direct.kind.evaluateBatch(
         value_binding.parameters.ptr,
         positive_points.ptr,
@@ -1866,11 +2338,38 @@ fn reportOneLoop(
         fused_values,
         fused_statuses,
     );
+    if (!complexSlicesEqual(values, optimized_values) or
+        !complexSlicesEqual(fused_values, optimized_fused_values) or
+        !complexSlicesEqual(gradients, optimized_gradients) or
+        !complexSlicesEqual(hessians, optimized_hessians) or
+        !std.mem.eql(kernel_module.Status, statuses, optimized_statuses) or
+        !std.mem.eql(
+            kernel_module.Status,
+            fused_statuses,
+            optimized_fused_statuses,
+        ))
+    {
+        return error.OptimizedVerificationFailed;
+    }
 
     try value_binding.evaluateComplex(branch_points, largest, workspace, .{
         .values = values,
         .statuses = statuses,
     });
+    try optimized_value_binding.evaluateComplex(
+        branch_points,
+        largest,
+        optimized_workspace,
+        .{
+            .values = optimized_values,
+            .statuses = optimized_statuses,
+        },
+    );
+    if (!complexSlicesEqual(values, optimized_values) or
+        !std.mem.eql(kernel_module.Status, statuses, optimized_statuses))
+    {
+        return error.OptimizedVerificationFailed;
+    }
     workload.direct.kind.evaluateBatch(
         value_binding.parameters.ptr,
         branch_points.ptr,
@@ -1941,6 +2440,30 @@ fn reportOneLoop(
         .binding_reused = true,
     }, try measure(io, &scalar_value));
 
+    var optimized_scalar_value = ComplexStagedRun{
+        .binding = &optimized_value_binding,
+        .backgrounds = positive_points[0..coordinates],
+        .point_count = 1,
+        .workspace = optimized_workspace,
+        .outputs = .{
+            .values = optimized_values[0..1],
+            .statuses = optimized_statuses[0..1],
+        },
+    };
+    try reportRuntimeMeasurement(out, .{
+        .model = workload.name,
+        .point_set = "positive_scan",
+        .contribution = "scalar_one_loop",
+        .capability = "value",
+        .backend = "optimized_interpreter",
+        .shape = "scalar_throughput",
+        .points = 1,
+        .workspace_bytes = optimized_value_layout.bytes,
+        .workspace_alignment = optimized_value_layout.alignment,
+        .buffer_bytes = complexBufferBytes(1, coordinates, .value),
+        .binding_reused = true,
+    }, try measure(io, &optimized_scalar_value));
+
     var scalar_fused = ComplexStagedRun{
         .binding = &fused_binding,
         .backgrounds = positive_points[0..coordinates],
@@ -1970,6 +2493,36 @@ fn reportOneLoop(
         ),
         .binding_reused = true,
     }, try measure(io, &scalar_fused));
+
+    var optimized_scalar_fused = ComplexStagedRun{
+        .binding = &optimized_fused_binding,
+        .backgrounds = positive_points[0..coordinates],
+        .point_count = 1,
+        .workspace = optimized_workspace,
+        .outputs = .{
+            .values = optimized_fused_values[0..1],
+            .gradients = optimized_gradients[0..coordinates],
+            .hessians = optimized_hessians[0 .. coordinates * coordinates],
+            .statuses = optimized_fused_statuses[0..1],
+        },
+    };
+    try reportRuntimeMeasurement(out, .{
+        .model = workload.name,
+        .point_set = "positive_scan",
+        .contribution = "scalar_one_loop",
+        .capability = "value_gradient_hessian",
+        .backend = "optimized_interpreter",
+        .shape = "scalar_throughput",
+        .points = 1,
+        .workspace_bytes = optimized_fused_layout.bytes,
+        .workspace_alignment = optimized_fused_layout.alignment,
+        .buffer_bytes = complexBufferBytes(
+            1,
+            coordinates,
+            .value_gradient_hessian,
+        ),
+        .binding_reused = true,
+    }, try measure(io, &optimized_scalar_fused));
 
     for ([_]PointSet{ .positive_scan, .branch_scan }) |set| {
         const points = switch (set) {
@@ -2028,6 +2581,30 @@ fn reportOneLoop(
                 .binding_reused = true,
             }, try measure(io, &batch_value));
 
+            var optimized_batch_value = ComplexStagedRun{
+                .binding = &optimized_value_binding,
+                .backgrounds = points[0 .. size * coordinates],
+                .point_count = size,
+                .workspace = optimized_workspace,
+                .outputs = .{
+                    .values = optimized_values[0..size],
+                    .statuses = optimized_statuses[0..size],
+                },
+            };
+            try reportRuntimeMeasurement(out, .{
+                .model = workload.name,
+                .point_set = @tagName(set),
+                .contribution = "scalar_one_loop",
+                .capability = "value",
+                .backend = "optimized_interpreter",
+                .shape = "batch_throughput",
+                .points = size,
+                .workspace_bytes = optimized_value_layout.bytes,
+                .workspace_alignment = optimized_value_layout.alignment,
+                .buffer_bytes = complexBufferBytes(size, coordinates, .value),
+                .binding_reused = true,
+            }, try measure(io, &optimized_batch_value));
+
             if (set == .positive_scan) {
                 var batch_fused = ComplexStagedRun{
                     .binding = &fused_binding,
@@ -2058,9 +2635,47 @@ fn reportOneLoop(
                     ),
                     .binding_reused = true,
                 }, try measure(io, &batch_fused));
+
+                var optimized_batch_fused = ComplexStagedRun{
+                    .binding = &optimized_fused_binding,
+                    .backgrounds = points[0 .. size * coordinates],
+                    .point_count = size,
+                    .workspace = optimized_workspace,
+                    .outputs = .{
+                        .values = optimized_fused_values[0..size],
+                        .gradients = optimized_gradients[0 .. size * coordinates],
+                        .hessians = optimized_hessians[0 .. size * coordinates * coordinates],
+                        .statuses = optimized_fused_statuses[0..size],
+                    },
+                };
+                try reportRuntimeMeasurement(out, .{
+                    .model = workload.name,
+                    .point_set = @tagName(set),
+                    .contribution = "scalar_one_loop",
+                    .capability = "value_gradient_hessian",
+                    .backend = "optimized_interpreter",
+                    .shape = "batch_throughput",
+                    .points = size,
+                    .workspace_bytes = optimized_fused_layout.bytes,
+                    .workspace_alignment = optimized_fused_layout.alignment,
+                    .buffer_bytes = complexBufferBytes(
+                        size,
+                        coordinates,
+                        .value_gradient_hessian,
+                    ),
+                    .binding_reused = true,
+                }, try measure(io, &optimized_batch_fused));
             }
         }
     }
+}
+
+fn complexSlicesEqual(left: []const Complex64, right: []const Complex64) bool {
+    return left.len == right.len and std.mem.eql(
+        u8,
+        std.mem.sliceAsBytes(left),
+        std.mem.sliceAsBytes(right),
+    );
 }
 
 fn fillOneLoopPoints(
@@ -2358,7 +2973,7 @@ fn writeRuntimeHeader(out: *std.Io.Writer) !void {
     try out.writeAll(
         "model\tpoint_set\tcontribution\tcapability\tbackend\tshape\tpoints" ++
             "\tworkspace_bytes\tworkspace_alignment\tbuffer_bytes" ++
-            "\tbinding_reused\tmedian_ns_per_unit\tmin_ns_per_unit" ++
+            "\tbinding_reused\tworkers\tmedian_ns_per_unit\tmin_ns_per_unit" ++
             "\tmax_ns_per_unit\tunits_per_second\tderived_cycles_per_unit" ++
             "\trepetitions\tunits_per_repetition\n",
     );
@@ -2370,7 +2985,7 @@ fn reportRuntimeMeasurement(
     measurement: Measurement,
 ) !void {
     try out.print(
-        "{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{d}\t{d}\t{d}\t{d}\t{s}\t",
+        "{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{d}\t{d}\t{d}\t{d}\t{s}\t{d}\t",
         .{
             metadata.model,
             metadata.point_set,
@@ -2383,6 +2998,7 @@ fn reportRuntimeMeasurement(
             metadata.workspace_alignment,
             metadata.buffer_bytes,
             if (metadata.binding_reused) "yes" else "no",
+            metadata.workers,
         },
     );
     try writeNanoseconds(out, measurement.median_picoseconds_per_unit);

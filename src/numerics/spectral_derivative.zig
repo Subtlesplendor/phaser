@@ -46,6 +46,51 @@ pub const WorkspaceLayout = struct {
     alignment: usize,
 };
 
+/// Structural facts proved once by a checked wrapper or kernel execution-plan
+/// compiler and reused by the numerical leaf at every point.
+pub const Prepared = struct {
+    dimension: usize,
+    coordinate_count: usize,
+    order: Order,
+    triangle: usize,
+    coordinate_pairs: usize,
+    square: usize,
+    output_entries: usize,
+    regions: Regions,
+    layout: WorkspaceLayout,
+};
+
+pub fn prepare(
+    dimension: u32,
+    coordinate_count: u32,
+    order: Order,
+) error{SizeOverflow}!Prepared {
+    const n: usize = dimension;
+    const coordinates: usize = coordinate_count;
+    const triangle = try eigensolver.packedEntryCount(n);
+    const coordinate_pairs = try eigensolver.packedEntryCount(coordinates);
+    const square = std.math.mul(usize, n, n) catch return error.SizeOverflow;
+    const output_entries = switch (order) {
+        .gradient => coordinates,
+        .hessian => std.math.mul(usize, coordinates, coordinates) catch
+            return error.SizeOverflow,
+    };
+    const regions = try Regions.of(n, coordinates, order);
+    const bytes = std.math.mul(usize, regions.scalars, @sizeOf(Scalar)) catch
+        return error.SizeOverflow;
+    return .{
+        .dimension = n,
+        .coordinate_count = coordinates,
+        .order = order,
+        .triangle = triangle,
+        .coordinate_pairs = coordinate_pairs,
+        .square = square,
+        .output_entries = output_entries,
+        .regions = regions,
+        .layout = .{ .bytes = bytes, .alignment = @alignOf(Scalar) },
+    };
+}
+
 /// Which derivative order one call evaluates.
 ///
 /// The two orders are separate operations because a caller may want a gradient
@@ -158,10 +203,7 @@ pub fn workspaceLayout(
     coordinate_count: u32,
     order: Order,
 ) error{SizeOverflow}!WorkspaceLayout {
-    const regions = try Regions.of(dimension, coordinate_count, order);
-    const bytes = std.math.mul(usize, regions.scalars, @sizeOf(Scalar)) catch
-        return error.SizeOverflow;
-    return .{ .bytes = bytes, .alignment = @alignOf(Scalar) };
+    return (try prepare(dimension, coordinate_count, order)).layout;
 }
 
 /// Evaluates one derivative order without allocating.
@@ -181,46 +223,79 @@ pub fn evaluate(
     workspace: []u8,
     outputs: Outputs,
 ) CallError!Status {
-    const n: usize = request.dimension;
-    const coordinates: usize = request.coordinate_count;
-    const triangle = try eigensolver.packedEntryCount(n);
-    const pairs = try eigensolver.packedEntryCount(coordinates);
-    const square = std.math.mul(usize, n, n) catch return error.SizeOverflow;
-    const regions = try Regions.of(n, coordinates, request.order);
-    const layout = try workspaceLayout(
+    const prepared = try prepare(
         request.dimension,
         request.coordinate_count,
         request.order,
     );
 
-    if (request.eigenvalues.len != n) return error.ShapeMismatch;
-    if (request.eigenvectors.len != square) return error.ShapeMismatch;
+    if (request.eigenvalues.len != prepared.dimension) return error.ShapeMismatch;
+    if (request.eigenvectors.len != prepared.square) return error.ShapeMismatch;
     switch (request.order) {
         .gradient => {
-            if (outputs.gradient.len != coordinates) return error.ShapeMismatch;
+            if (outputs.gradient.len != prepared.output_entries) {
+                return error.ShapeMismatch;
+            }
             if (outputs.hessian.len != 0) return error.ShapeMismatch;
         },
         .hessian => {
-            const entries = std.math.mul(usize, coordinates, coordinates) catch
-                return error.SizeOverflow;
-            if (outputs.hessian.len != entries) return error.ShapeMismatch;
+            if (outputs.hessian.len != prepared.output_entries) {
+                return error.ShapeMismatch;
+            }
             if (outputs.gradient.len != 0) return error.ShapeMismatch;
         },
     }
-    if (workspace.len < layout.bytes) return error.WorkspaceTooSmall;
-    if (layout.bytes != 0 and
-        @intFromPtr(workspace.ptr) % layout.alignment != 0)
+    if (workspace.len < prepared.layout.bytes) return error.WorkspaceTooSmall;
+    if (prepared.layout.bytes != 0 and
+        @intFromPtr(workspace.ptr) % prepared.layout.alignment != 0)
     {
         return error.WorkspaceMisaligned;
     }
-    for (0..coordinates) |index| {
-        if (matrices.first(index).len != triangle) return error.ShapeMismatch;
-    }
-    if (request.order == .hessian) {
-        for (0..pairs) |index| {
-            if (matrices.second(index).len != triangle) return error.ShapeMismatch;
+    for (0..prepared.coordinate_count) |index| {
+        if (matrices.first(index).len != prepared.triangle) {
+            return error.ShapeMismatch;
         }
     }
+    if (request.order == .hessian) {
+        for (0..prepared.coordinate_pairs) |index| {
+            if (matrices.second(index).len != prepared.triangle) {
+                return error.ShapeMismatch;
+            }
+        }
+    }
+
+    return evaluateValidated(
+        prepared,
+        request,
+        matrices,
+        workspace[0..prepared.layout.bytes],
+        outputs,
+    );
+}
+
+/// Evaluates a request whose structural shapes and workspace contract were
+/// established by `prepare` and a checked wrapper or validated execution plan.
+pub fn evaluateValidated(
+    prepared: Prepared,
+    request: Request,
+    matrices: anytype,
+    workspace: []u8,
+    outputs: Outputs,
+) Status {
+    std.debug.assert(request.dimension == prepared.dimension);
+    std.debug.assert(request.coordinate_count == prepared.coordinate_count);
+    std.debug.assert(request.order == prepared.order);
+    std.debug.assert(request.eigenvalues.len == prepared.dimension);
+    std.debug.assert(request.eigenvectors.len == prepared.square);
+    std.debug.assert(workspace.len >= prepared.layout.bytes);
+    std.debug.assert(prepared.layout.bytes == 0 or
+        @intFromPtr(workspace.ptr) % prepared.layout.alignment == 0);
+    std.debug.assert(switch (prepared.order) {
+        .gradient => outputs.gradient.len == prepared.output_entries and
+            outputs.hessian.len == 0,
+        .hessian => outputs.hessian.len == prepared.output_entries and
+            outputs.gradient.len == 0,
+    });
 
     // Binding validated the scale before any point executed, so an invalid one
     // here would be an internal inconsistency rather than a point outcome.
@@ -230,28 +305,35 @@ pub fn evaluate(
     // non-finite input is reported without leaving candidate entries behind.
     if (!allFinite(request.eigenvalues)) return .non_finite;
     if (!allFinite(request.eigenvectors)) return .non_finite;
-    for (0..coordinates) |index| {
+    for (0..prepared.coordinate_count) |index| {
+        std.debug.assert(matrices.first(index).len == prepared.triangle);
         if (!allFinite(matrices.first(index))) return .non_finite;
     }
     if (request.order == .hessian) {
-        for (0..pairs) |index| {
+        for (0..prepared.coordinate_pairs) |index| {
+            std.debug.assert(matrices.second(index).len == prepared.triangle);
             if (!allFinite(matrices.second(index))) return .non_finite;
         }
     }
 
-    const aligned: []align(@alignOf(Scalar)) u8 = @alignCast(workspace[0..layout.bytes]);
+    const aligned: []align(@alignOf(Scalar)) u8 =
+        @alignCast(workspace[0..prepared.layout.bytes]);
     const storage = std.mem.bytesAsSlice(Scalar, aligned);
     const working = Working{
         .request = request,
-        .triangle = triangle,
-        .dense = storage[regions.dense..][0..square],
-        .product = storage[regions.product..][0..square],
-        .rotated = storage[regions.rotated..][0..(regions.stored_matrices * triangle)],
-        .representative = storage[regions.representative..][0..n],
-        .coefficient = complexRegion(storage, regions.coefficient, n),
-        .divided = complexRegion(storage, regions.divided, switch (request.order) {
+        .triangle = prepared.triangle,
+        .dense = storage[prepared.regions.dense..][0..prepared.square],
+        .product = storage[prepared.regions.product..][0..prepared.square],
+        .rotated = storage[prepared.regions.rotated..][0..(prepared.regions.stored_matrices * prepared.triangle)],
+        .representative = storage[prepared.regions.representative..][0..prepared.dimension],
+        .coefficient = complexRegion(
+            storage,
+            prepared.regions.coefficient,
+            prepared.dimension,
+        ),
+        .divided = complexRegion(storage, prepared.regions.divided, switch (request.order) {
             .gradient => 0,
-            .hessian => triangle,
+            .hessian => prepared.triangle,
         }),
     };
 

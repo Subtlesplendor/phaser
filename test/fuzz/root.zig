@@ -901,19 +901,38 @@ fn fuzzKernel(_: void, smith: *std.testing.Smith) !void {
     // A published program always satisfies every validation rule.
     try program.validate(iteration_allocator, 64);
 
-    const layout = program.workspaceLayout(2);
+    const batch_points = phaser.kernel.optimizedBlockWidth + 1;
+    const layout = program.workspaceLayout(batch_points);
     const workspace = try iteration_allocator.alignedAlloc(
         u8,
         .of(phaser.kernel.Scalar),
         layout.bytes,
     );
     defer iteration_allocator.free(workspace);
+    var optimized_plan = try phaser.kernel.optimized_plan.compile(
+        iteration_allocator,
+        &program,
+    );
+    defer optimized_plan.deinit();
+    const optimized_layout = optimized_plan.workspaceLayout(batch_points);
+    const optimized_workspace = try iteration_allocator.alignedAlloc(
+        u8,
+        .of(@Vector(2, phaser.kernel.Scalar)),
+        optimized_layout.bytes,
+    );
+    defer iteration_allocator.free(optimized_workspace);
 
     var parameters: [8]phaser.kernel.Scalar = undefined;
     for (&parameters, 0..) |*slot, index| {
         slot.* = 0.5 + @as(phaser.kernel.Scalar, @floatFromInt(index)) * 0.25;
     }
-    const backgrounds = [_]phaser.kernel.Scalar{ 1.25, -0.75, 2.5, 0.5 };
+    const backgrounds = [_]phaser.kernel.Scalar{
+        1.25, -0.75,
+        2.5,  0.5,
+        -3,   1,
+        0,    0,
+        4.5,  -2.25,
+    };
     // The scale channel exists exactly when the lowered program reads it, and
     // it must be finite and positive.
     var scales: [1]phaser.kernel.Scalar = .{2.5};
@@ -933,6 +952,9 @@ fn fuzzKernel(_: void, smith: *std.testing.Smith) !void {
             backgrounds[0..],
             workspace,
             layout,
+            &optimized_plan,
+            optimized_workspace,
+            optimized_layout,
         ),
         .complex64 => try expectKernelAgreement(
             phaser.kernel.Complex64,
@@ -941,6 +963,9 @@ fn fuzzKernel(_: void, smith: *std.testing.Smith) !void {
             backgrounds[0..],
             workspace,
             layout,
+            &optimized_plan,
+            optimized_workspace,
+            optimized_layout,
         ),
     }
 }
@@ -953,25 +978,55 @@ fn expectKernelAgreement(
     backgrounds: []const phaser.kernel.Scalar,
     workspace: []align(@alignOf(phaser.kernel.Scalar)) u8,
     layout: phaser.kernel.WorkspaceLayout,
+    optimized_plan: *const phaser.kernel.ExecutionPlan,
+    optimized_workspace: []align(@alignOf(@Vector(2, phaser.kernel.Scalar))) u8,
+    optimized_layout: phaser.kernel.WorkspaceLayout,
 ) !void {
     const complex = Element == phaser.kernel.Complex64;
     const sentinel: Element = if (complex) .{ .re = -98765, .im = -56789 } else -98765;
+    const batch_points = phaser.kernel.optimizedBlockWidth + 1;
 
-    var values = [_]Element{sentinel} ** 2;
-    var statuses: [2]phaser.kernel.Status = undefined;
+    var values = [_]Element{sentinel} ** batch_points;
+    var statuses: [batch_points]phaser.kernel.Status = undefined;
     const run = if (complex)
-        phaser.kernel.evaluateComplex(program, inputs, 2, workspace, .{
+        phaser.kernel.evaluateComplex(program, inputs, batch_points, workspace, .{
             .values = &values,
             .statuses = &statuses,
         })
     else
-        phaser.kernel.evaluate(program, inputs, 2, workspace, .{
+        phaser.kernel.evaluate(program, inputs, batch_points, workspace, .{
             .values = &values,
             .statuses = &statuses,
         });
     try run;
 
-    for (0..2) |point| {
+    var optimized_values = [_]Element{sentinel} ** batch_points;
+    var optimized_statuses: [batch_points]phaser.kernel.Status = undefined;
+    const optimized_run = if (complex)
+        phaser.kernel.optimized_interpreter.evaluateComplex(
+            optimized_plan,
+            inputs,
+            batch_points,
+            optimized_workspace,
+            .{ .values = &optimized_values, .statuses = &optimized_statuses },
+        )
+    else
+        phaser.kernel.optimized_interpreter.evaluate(
+            optimized_plan,
+            inputs,
+            batch_points,
+            optimized_workspace,
+            .{ .values = &optimized_values, .statuses = &optimized_statuses },
+        );
+    try optimized_run;
+    try std.testing.expectEqualSlices(
+        phaser.kernel.Status,
+        &statuses,
+        &optimized_statuses,
+    );
+    try std.testing.expectEqualSlices(Element, &values, &optimized_values);
+
+    for (0..batch_points) |point| {
         var single = [_]Element{sentinel};
         var single_status: [1]phaser.kernel.Status = undefined;
         const point_inputs = phaser.kernel.Inputs{
@@ -1006,34 +1061,54 @@ fn expectKernelAgreement(
     if (layout.bytes > 0) {
         const short = workspace[0 .. layout.bytes - 1];
         const rejected = if (complex)
-            phaser.kernel.evaluateComplex(program, inputs, 2, short, .{
+            phaser.kernel.evaluateComplex(program, inputs, batch_points, short, .{
                 .values = &values,
                 .statuses = &statuses,
             })
         else
-            phaser.kernel.evaluate(program, inputs, 2, short, .{
+            phaser.kernel.evaluate(program, inputs, batch_points, short, .{
                 .values = &values,
                 .statuses = &statuses,
             });
+        try std.testing.expectError(error.WorkspaceTooSmall, rejected);
+    }
+    if (optimized_layout.bytes > 0) {
+        const short = optimized_workspace[0 .. optimized_layout.bytes - 1];
+        const rejected = if (complex)
+            phaser.kernel.optimized_interpreter.evaluateComplex(
+                optimized_plan,
+                inputs,
+                batch_points,
+                short,
+                .{ .values = &optimized_values, .statuses = &optimized_statuses },
+            )
+        else
+            phaser.kernel.optimized_interpreter.evaluate(
+                optimized_plan,
+                inputs,
+                batch_points,
+                short,
+                .{ .values = &optimized_values, .statuses = &optimized_statuses },
+            );
         try std.testing.expectError(error.WorkspaceTooSmall, rejected);
     }
 
     // Calling with the other element type is a call-level error, never a
     // reinterpretation of the caller's buffers.
     if (complex) {
-        var real_values: [2]phaser.kernel.Scalar = undefined;
+        var real_values: [batch_points]phaser.kernel.Scalar = undefined;
         try std.testing.expectError(
             error.ResultTypeMismatch,
-            phaser.kernel.evaluate(program, inputs, 2, workspace, .{
+            phaser.kernel.evaluate(program, inputs, batch_points, workspace, .{
                 .values = &real_values,
                 .statuses = &statuses,
             }),
         );
     } else {
-        var complex_values: [2]phaser.kernel.Complex64 = undefined;
+        var complex_values: [batch_points]phaser.kernel.Complex64 = undefined;
         try std.testing.expectError(
             error.ResultTypeMismatch,
-            phaser.kernel.evaluateComplex(program, inputs, 2, workspace, .{
+            phaser.kernel.evaluateComplex(program, inputs, batch_points, workspace, .{
                 .values = &complex_values,
                 .statuses = &statuses,
             }),

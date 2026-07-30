@@ -472,6 +472,19 @@ pub fn build(b: *std.Build) void {
         .root_module = example_module,
     });
     const run_model_inspection = b.addRunArtifact(model_inspection);
+    const parallel_scan_module = b.createModule(.{
+        .root_source_file = b.path("examples/parallel_scan.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phaser", .module = phaser_module },
+        },
+    });
+    const parallel_scan = b.addExecutable(.{
+        .name = "phaser-parallel-scan",
+        .root_module = parallel_scan_module,
+    });
+    const run_parallel_scan = b.addRunArtifact(parallel_scan);
     // A module retains its own optimization mode when imported. The benchmark
     // therefore needs benchmark-specific Phaser and fixture modules: importing
     // the ordinary modules above would silently benchmark their default Debug
@@ -653,6 +666,7 @@ pub fn build(b: *std.Build) void {
 
     const examples_step = b.step("examples", "Run public example workflows");
     examples_step.dependOn(&run_model_inspection.step);
+    examples_step.dependOn(&run_parallel_scan.step);
 
     // Drive the installed client over the committed example inputs, so the
     // executable itself cannot silently decay.
