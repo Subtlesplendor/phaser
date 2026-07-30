@@ -545,6 +545,10 @@ pub fn build(b: *std.Build) void {
             "-ffp-contract=off",
         },
     });
+    bench_module.link_libc = true;
+    if (target.result.os.tag == .linux) {
+        bench_module.linkSystemLibrary("m", .{ .use_pkg_config = .no });
+    }
     const bench_leaves_module = b.createModule(.{
         .root_source_file = b.path("tools/bench/leaves.zig"),
         .target = target,
