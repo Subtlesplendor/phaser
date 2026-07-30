@@ -677,6 +677,40 @@ test "significant digit and exponent bounds are enforced" {
     try expectDiagnostic(source, .capacity_exceeded);
 }
 
+test "the exponent magnitude bound is enforced independent of significant digits" {
+    // A scientific-notation number that is within `f64` range but whose
+    // exponent exceeds a tight custom limit must still be rejected. If the
+    // parser mistook the digits after `e` for ordinary significant digits
+    // instead of exponent digits, the exponent-magnitude check below would
+    // never run, and `1e50` would be accepted outright.
+    var limits = PointLimits{};
+    limits.decimal_exponent = 2;
+    const source =
+        \\{"schema":"phaser.parameter-point/0.1","units":{"mass":"GeV"},
+        \\"renormalization":{"scheme":"MSbar","reference_scale":100},
+        \\"values":{"a":1e50}}
+    ;
+    const result = try parseParameterPoint(testContext(), .{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = source,
+    }, .{ .limits = limits });
+    switch (result) {
+        .point => |point| {
+            var owned = point;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            defer owned.deinit();
+            try std.testing.expectEqual(
+                foundation.Code.capacity_exceeded,
+                owned.items[0].code,
+            );
+        },
+    }
+}
+
 test "JSON token and nesting limits are enforced" {
     var token_limits = PointLimits{};
     token_limits.json_tokens = 1;

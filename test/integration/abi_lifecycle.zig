@@ -1154,6 +1154,32 @@ test "a malformed selection is rejected rather than resolved to the total" {
     }
 }
 
+test "an options struct predating the capability field gets the default capability" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    // The prologue alone (struct_size and abi_version) does not reach the
+    // capability field, so a narrower capability set in memory the caller
+    // never declared must not be read; the default full capability applies.
+    var options = kernelOptions();
+    options.struct_size = 8;
+    options.capability = 0; // value only; beyond struct_size, must not be read
+
+    var kernel: ?*PhaserKernel = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_compile(chain.context, chain.artifact, &options, &kernel),
+    );
+    defer phaser_kernel_destroy(kernel);
+
+    var capability: i32 = -1;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_capability(kernel, &capability),
+    );
+    try std.testing.expectEqual(@as(i32, 2), capability); // value_gradient_hessian
+}
+
 test "an options struct predating the selection fields still compiles the total" {
     var chain = try derive(one_loop_request);
     defer chain.deinit();

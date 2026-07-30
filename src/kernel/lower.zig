@@ -824,6 +824,19 @@ test "an unrepresentable constant fails rather than losing the value" {
     );
 }
 
+test "a non-finite denominator fails even when the numerator is exactly zero" {
+    // A zero numerator makes the quotient zero regardless of the
+    // denominator, so the later "quotient lost the value" checks below the
+    // finiteness check never trip for this case. Only the finiteness check
+    // itself rejects it, per the declared policy of failing whenever either
+    // part overflows to infinity.
+    const huge = "1" ++ ("0" ** 400);
+    try std.testing.expectError(
+        error.ConstantNotRepresentable,
+        rationalToScalar(.{ .numerator = "0", .denominator = huge }),
+    );
+}
+
 test "lowering shares an interned subexpression as one instruction" {
     var builder = try value.Builder.init(std.testing.allocator, .{});
     const phi = try builder.background(0, "phi", 1);
@@ -882,6 +895,38 @@ test "a product by minus one lowers to the negate opcode" {
         if (instruction == .negate) negations += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), negations);
+}
+
+test "a product by a positive integer is not treated as negation" {
+    // `isMinusOne` must require both a numerator of exactly "-1" and a
+    // denominator of exactly "1". A plain positive constant like 5 satisfies
+    // the denominator half alone, so a factor of 5 must not lower to the
+    // negate opcode the way multiplying by exactly -1 does above.
+    var builder = try value.Builder.init(std.testing.allocator, .{});
+    const a = try builder.parameter(0, "a", 0);
+    const five = try builder.integer(5, 0);
+    const product = try builder.multiply(&.{ a, five });
+    var graph = try builder.finish();
+    defer graph.deinit();
+
+    var program = try lower(std.testing.allocator, .{
+        .graph = &graph,
+        .capability = .value,
+        .value_root = product,
+        .gradient_roots = &.{},
+        .hessian_roots = &.{},
+        .parameter_count = 1,
+        .background_count = 0,
+        .coordinate_count = 0,
+    }, .{});
+    defer program.deinit();
+    try program.validate(std.testing.allocator, 64);
+
+    var negations: usize = 0;
+    for (program.instructions) |instruction| {
+        if (instruction == .negate) negations += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), negations);
 }
 
 test "temporary slots are reused once their value is dead" {

@@ -578,6 +578,22 @@ fn overlaps(left: []const u8, right: []const u8) bool {
 
 // -- tests -----------------------------------------------------------------
 
+test "the scaled sum of squares matches the direct Euclidean norm" {
+    // 3-4-5 exercises both branches of `add`: the first value always sets
+    // `scale` from zero, and the second lands on the "grows the scale" branch
+    // in one order and the "folds into the running sum" branch in the other.
+    // Both must still reconstruct the same exact norm.
+    var ascending: ScaledSumSquares = .{};
+    ascending.add(3);
+    ascending.add(4);
+    try std.testing.expectApproxEqAbs(@as(Scalar, 5), ascending.norm(), 1e-12);
+
+    var descending: ScaledSumSquares = .{};
+    descending.add(4);
+    descending.add(3);
+    try std.testing.expectApproxEqAbs(@as(Scalar, 5), descending.norm(), 1e-12);
+}
+
 test "overlaps detects touching and disjoint byte ranges by address" {
     var buffer: [16]u8 = undefined;
 
