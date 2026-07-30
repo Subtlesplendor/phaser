@@ -689,8 +689,34 @@ const KernelOptions = extern struct {
     struct_size: u32,
     abi_version: u32,
     capability: i32,
+    selection_kind: i32,
+    selection_value: u32,
     reserved: u32,
 };
+
+/// Decodes the selection an options struct describes.
+///
+/// Returns null for anything this version does not publish, which the caller
+/// turns into `invalid_argument`. A selection is never resolved to `total` on
+/// a value that was not understood: choosing silently would answer a different
+/// question than the caller asked.
+fn decodeSelection(options: *const KernelOptions) ?kernel_module.Selection {
+    return switch (options.selection_kind) {
+        // A payload alongside `total` means the caller described something it
+        // did not get, so it is rejected rather than ignored.
+        @intFromEnum(status_module.SelectionKind.total) => if (options.selection_value == 0)
+            .total
+        else
+            null,
+        @intFromEnum(status_module.SelectionKind.loop_order) => .{
+            .loop_order = options.selection_value,
+        },
+        @intFromEnum(status_module.SelectionKind.role) => .{
+            .role = status_module.toRole(options.selection_value) orelse return null,
+        },
+        else => null,
+    };
+}
 
 export fn phaser_kernel_compile(
     context_pointer: ?*Context,
@@ -705,6 +731,7 @@ export fn phaser_kernel_compile(
     const out = out_kernel orelse return .invalid_argument;
 
     var capability: kernel_module.Capability = .value_gradient_hessian;
+    var selection: kernel_module.Selection = .total;
     if (options) |supplied| {
         if (!prologueValid(supplied.struct_size, @sizeOf(KernelOptions))) {
             return .invalid_argument;
@@ -720,12 +747,19 @@ export fn phaser_kernel_compile(
                 else => return .invalid_argument,
             };
         }
+        // Both selection fields are read together or not at all: a struct
+        // carrying a kind without its value would describe half a selection.
+        if (supplied.struct_size >= @offsetOf(KernelOptions, "selection_value") +
+            @sizeOf(u32))
+        {
+            selection = decodeSelection(supplied) orelse return .invalid_argument;
+        }
     }
 
     const compiled = kernel_module.compile(
         context.backing.allocator(),
         &artifact.value,
-        .{ .capability = capability },
+        .{ .capability = capability, .selection = selection },
     ) catch |err| return switch (err) {
         error.OutOfMemory => .out_of_memory,
         // The request was well formed; the artifact simply does not carry what
@@ -971,6 +1005,22 @@ export fn phaser_binding_coordinate_count(
     const binding = checkedBinding(binding_pointer) orelse return .invalid_argument;
     const out = out_count orelse return .invalid_argument;
     out.* = binding.value.coordinateCount();
+    return .ok;
+}
+
+/// The capability decides the exact gradient and Hessian lengths evaluation
+/// requires, so a caller holding only a binding needs it to size the output
+/// buffers. It is read from the binding's compiled program rather than taken
+/// on trust from whichever kernel the caller believes it used.
+export fn phaser_binding_capability(
+    binding_pointer: ?*const Binding,
+    out_capability: ?*i32,
+) callconv(.c) Status {
+    const binding = checkedBinding(binding_pointer) orelse return .invalid_argument;
+    const out = out_capability orelse return .invalid_argument;
+    out.* = @intFromEnum(
+        status_module.fromCapability(binding.value.program.capability),
+    );
     return .ok;
 }
 

@@ -662,6 +662,56 @@ class TestGoldenAgreement(unittest.TestCase):
                 correction = total_results.value(index) - tree_results.value(index)
                 self.assertEqual(correction.imag, total_results.value(index).imag)
 
+    def test_a_selected_loop_order_matches_the_committed_contribution(self):
+        """The reason `phaser_kernel_options` grew a selection.
+
+        Before it, the one-loop contribution could only be reached by
+        subtracting the tree from the total -- a cancellation about `1.3e-11`
+        away from the command line's directly summed value, with no comparison
+        policy covering the pair. Selecting the loop order asks the core the
+        same question the command line asks, so the answer is the same bits.
+        """
+        context = phaser.Context()
+        model = phaser.Model(self.read("model.json"), context=context)
+        request = phaser.Request(self.read("request_one_loop.json"), context=context)
+        point = phaser.ParameterPoint(self.read("point.json"), context=context)
+        artifact = model.derive(request)
+
+        binding = artifact.compile(selection=("loop_order", 1)).bind(point)
+        self.assertEqual(binding.result_type, "complex64")
+
+        backgrounds, rows = self.scan("scan_one_loop.tsv")
+        results = binding.evaluate(backgrounds)
+
+        for index, (phi, row) in enumerate(zip(backgrounds, rows)):
+            with self.subTest(phi=phi):
+                value_re, value_im, gradient_re, gradient_im, status = row
+                value = results.value(index)
+                gradient = results.gradient(index)[0]
+                self.assertEqual(value.real, float(value_re))
+                self.assertEqual(value.imag, float(value_im))
+                self.assertEqual(gradient.real, float(gradient_re))
+                self.assertEqual(gradient.imag, float(gradient_im))
+                self.assertEqual(results.status(index), status)
+
+    def test_selecting_the_tree_order_out_of_a_one_loop_artifact_is_real(self):
+        context = phaser.Context()
+        model = phaser.Model(self.read("model.json"), context=context)
+        request = phaser.Request(self.read("request_one_loop.json"), context=context)
+        point = phaser.ParameterPoint(self.read("point.json"), context=context)
+
+        binding = model.derive(request).compile(
+            selection=("loop_order", 0)
+        ).bind(point)
+        self.assertEqual(binding.result_type, "real64")
+
+        backgrounds, rows = self.scan("scan_tree.tsv")
+        results = binding.evaluate(backgrounds)
+        for index, phi in enumerate(backgrounds):
+            with self.subTest(phi=phi):
+                self.assertEqual(results.value(index), float(rows[index][0]))
+                self.assertEqual(results.gradient(index)[0], float(rows[index][1]))
+
     def test_the_scan_crosses_both_branches(self):
         # The agreement above is only worth what it covers, so this asserts the
         # committed scan is not entirely on one side of the sign change.

@@ -407,14 +407,14 @@ authoritative. Every operation marked fallible returns `phaser_status`.
 
 | Group | Operations | Notes |
 |---|---|---|
-| Version | `phaser_abi_version`, `phaser_library_version`, `phaser_capabilities` | Infallible. ABI and library versions are separate, per §5.2. |
+| Version | `phaser_abi_version`, `phaser_abi_experimental`, `phaser_library_version` | Infallible. ABI and library versions are separate, per §5.2. |
 | Context | `phaser_context_create`, `phaser_context_destroy` | Carries limits and allocation policy. No global default context. |
-| Model | `phaser_model_load`, `phaser_model_destroy`, `phaser_model_fingerprint`, `phaser_model_metadata` | Load takes source bytes and length and may produce diagnostics. |
+| Model | `phaser_model_load`, `phaser_model_destroy`, `phaser_model_fingerprint`, `phaser_model_parameter_count`, `phaser_model_scalar_field_count` | Load takes source bytes and length and may produce diagnostics. |
 | Request | `phaser_request_parse`, `phaser_request_destroy`, `phaser_request_loop_order`, `phaser_request_coordinate_count` | The parsed calculation request, reusable across derivations. |
 | Artifact | `phaser_artifact_derive`, `phaser_artifact_destroy`, `phaser_artifact_loop_order`, `phaser_artifact_coordinate_count`, `phaser_artifact_contribution_count`, `phaser_artifact_result_type`, `phaser_artifact_export` | Export renders Phaser notation or LaTeX per [Symbolic Export](SYMBOLIC_EXPORT.md). |
-| Kernel | `phaser_kernel_compile`, `phaser_kernel_destroy`, `phaser_kernel_result_type`, `phaser_kernel_capability`, `phaser_kernel_coordinate_count`, `phaser_kernel_parameter_count` | Typed queries, so no client parses JSON to size a buffer. |
+| Kernel | `phaser_kernel_compile`, `phaser_kernel_destroy`, `phaser_kernel_result_type`, `phaser_kernel_capability`, `phaser_kernel_coordinate_count`, `phaser_kernel_parameter_count` | Typed queries, so no client parses JSON to size a buffer. Compilation takes a capability and a selection. |
 | Point | `phaser_point_parse`, `phaser_point_destroy`, `phaser_point_reference_scale` | A parsed parameter point, bindable more than once. |
-| Binding | `phaser_binding_create`, `phaser_binding_destroy`, `phaser_binding_workspace`, `phaser_binding_coordinate_count`, `phaser_binding_result_type` | Workspace returns exact bytes and alignment for a point count. |
+| Binding | `phaser_binding_create`, `phaser_binding_destroy`, `phaser_binding_workspace`, `phaser_binding_coordinate_count`, `phaser_binding_result_type`, `phaser_binding_capability` | Workspace returns exact bytes and alignment for a point count. The query set is closed under sizing an evaluation: a client holding only a binding can size every output buffer. |
 | Evaluation | `phaser_evaluate`, `phaser_evaluate_complex` | Allocation-free. Separate entry points by result type; no mode flag. |
 | Diagnostics | `phaser_diagnostics_destroy`, `phaser_diagnostics_count`, `phaser_diagnostics_at`, `phaser_diagnostics_render` | Typed access is primary; rendering is a convenience over it. |
 
@@ -443,9 +443,17 @@ Requirements on this surface:
   enough buffer is filled exactly, and no null terminator is written. A short
   buffer is a reported failure, never a truncation.
 - An unrecognized enumerator in a caller-supplied field — an export target, a
-  derivative capability — MUST be rejected rather than resolved to a default.
-  Choosing one silently would answer a different question than the caller
-  asked.
+  derivative capability, a selection kind or role — MUST be rejected rather than
+  resolved to a default. Choosing one silently would answer a different question
+  than the caller asked. A selection payload alongside `PHASER_SELECTION_TOTAL`
+  is rejected for the same reason: it describes something the caller did not get.
+
+- A client MUST be able to ask for one loop order or one contribution role
+  directly. Reconstructing a contribution by subtracting two totals is a
+  cancellation wherever the parts are close, and there is no comparison policy
+  under which the reconstruction and the directly summed value agree. Selection
+  is a kernel compile-time property, so it travels in `phaser_kernel_options`
+  rather than in an evaluation flag.
 
 The CLI is not reimplemented over this surface. It continues to call the Zig
 core directly, as §9 permits, and Milestone 4's agreement criterion compares

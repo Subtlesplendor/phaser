@@ -69,6 +69,39 @@ pub const Capability = enum(i32) {
     value_gradient_hessian = 2,
 };
 
+/// Contribution role, mirroring `calculation.Role`.
+pub const Role = enum(i32) {
+    vacuum_energy = 0,
+    scalar_tadpole = 1,
+    scalar_mass_squared = 2,
+    scalar_cubic = 3,
+    scalar_quartic = 4,
+    scalar_one_loop = 5,
+};
+
+/// Which part of the artifact a kernel evaluates, mirroring the tags of
+/// `kernel.Selection`. The union's payloads cross separately, because a C
+/// struct cannot carry a Zig tagged union.
+pub const SelectionKind = enum(i32) {
+    total = 0,
+    loop_order = 1,
+    role = 2,
+};
+
+/// Maps a published role enumerator back to the internal one, rejecting a
+/// value this version does not publish rather than resolving it to a default.
+pub fn toRole(value: u32) ?calculation.Role {
+    return switch (value) {
+        0 => .vacuum_energy,
+        1 => .scalar_tadpole,
+        2 => .scalar_mass_squared,
+        3 => .scalar_cubic,
+        4 => .scalar_quartic,
+        5 => .scalar_one_loop,
+        else => null,
+    };
+}
+
 pub fn fromResultType(result_type: kernel.ResultType) ResultType {
     return switch (result_type) {
         .real64 => .real64,
@@ -170,6 +203,29 @@ comptime {
     assertMirrors(kernel.ResultType, ResultType);
     assertMirrors(kernel.Capability, Capability);
     assertMirrors(calculation.ResultType, ResultType);
+    assertMirrors(calculation.Role, Role);
+    // The selection kinds mirror the union's tags rather than an enum, so the
+    // shared check does not apply and the correspondence is asserted directly.
+    // Adding a variant to the union without publishing it would leave a
+    // selection a client cannot ask for; the reverse would publish one the
+    // core cannot honour.
+    const selection_tags = @typeInfo(kernel.Selection).@"union".fields;
+    const published_tags = @typeInfo(SelectionKind).@"enum".fields;
+    if (selection_tags.len != published_tags.len) {
+        @compileError(
+            "phaser_selection_kind has a different number of tags than " ++
+                "kernel.Selection; adding a variant is an ABI change",
+        );
+    }
+    for (selection_tags, published_tags) |internal, abi| {
+        if (!std.mem.eql(u8, internal.name, abi.name)) {
+            @compileError(
+                "phaser_selection_kind tag '" ++ abi.name ++
+                    "' does not mirror kernel.Selection tag '" ++
+                    internal.name ++ "'",
+            );
+        }
+    }
 }
 
 test "point statuses mirror the kernel statuses they report" {

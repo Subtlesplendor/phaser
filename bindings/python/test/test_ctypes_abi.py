@@ -45,6 +45,27 @@ RESULT_COMPLEX64 = 1
 
 CAPABILITY_VALUE_GRADIENT_HESSIAN = 2
 
+SELECTION_TOTAL = 0
+SELECTION_LOOP_ORDER = 1
+SELECTION_ROLE = 2
+
+ROLE_SCALAR_QUARTIC = 4
+ROLE_SCALAR_ONE_LOOP = 5
+
+
+class KernelOptions(ctypes.Structure):
+    """`phaser_kernel_options`, transcribed field by field from the header."""
+
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("abi_version", ctypes.c_uint32),
+        ("capability", ctypes.c_int32),
+        ("selection_kind", ctypes.c_int32),
+        ("selection_value", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+    ]
+
+
 EXPORT_PHASER = 0
 EXPORT_LATEX = 1
 
@@ -162,7 +183,10 @@ def load():
             [p, ctypes.c_int32, p, ctypes.c_size_t, size_p],
             ctypes.c_int,
         ),
-        "phaser_kernel_compile": ([p, p, p, pp], ctypes.c_int),
+        "phaser_kernel_compile": (
+            [p, p, ctypes.POINTER(KernelOptions), pp],
+            ctypes.c_int,
+        ),
         "phaser_kernel_destroy": ([p], None),
         "phaser_kernel_capability": (
             [p, ctypes.POINTER(ctypes.c_int32)],
@@ -181,6 +205,10 @@ def load():
             ctypes.c_int,
         ),
         "phaser_binding_result_type": (
+            [p, ctypes.POINTER(ctypes.c_int32)],
+            ctypes.c_int,
+        ),
+        "phaser_binding_capability": (
             [p, ctypes.POINTER(ctypes.c_int32)],
             ctypes.c_int,
         ),
@@ -857,6 +885,198 @@ class TestExtensionAgreement(AbiTestCase):
         self.assertEqual(first.source_id, record.primary_source_id)
         self.assertEqual(first.start, record.primary_start)
         self.assertEqual(first.end, record.primary_end)
+
+    def test_a_selected_loop_order_agrees_with_the_extension(self):
+        """Selection, reached from the independent client.
+
+        The extension passes its selection through `phaser_kernel_options`; so
+        does this file, from its own hand-written struct. A field that moved
+        would put the selection kind where the capability belongs, which shows
+        up here as a different answer rather than as a silent reinterpretation.
+        """
+        context = self.context()
+        model = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_model_load(
+                context, VALID_MODEL, len(VALID_MODEL), ctypes.byref(model), None
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_model_destroy, model)
+
+        request = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_request_parse(
+                context,
+                ONE_LOOP_REQUEST,
+                len(ONE_LOOP_REQUEST),
+                ctypes.byref(request),
+                None,
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_request_destroy, request)
+
+        artifact = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_artifact_derive(
+                context, model, request, ctypes.byref(artifact), None
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_artifact_destroy, artifact)
+
+        options = KernelOptions(
+            struct_size=ctypes.sizeof(KernelOptions),
+            abi_version=0,
+            capability=CAPABILITY_VALUE_GRADIENT_HESSIAN,
+            selection_kind=SELECTION_LOOP_ORDER,
+            selection_value=1,
+            reserved=0,
+        )
+        kernel = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_kernel_compile(
+                context, artifact, ctypes.byref(options), ctypes.byref(kernel)
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_kernel_destroy, kernel)
+
+        point = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_point_parse(
+                context,
+                PARAMETER_POINT,
+                len(PARAMETER_POINT),
+                ctypes.byref(point),
+                None,
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_point_destroy, point)
+
+        binding = ctypes.c_void_p()
+        self.assertEqual(
+            self.lib.phaser_binding_create(
+                context, kernel, model, point, ctypes.byref(binding)
+            ),
+            STATUS_OK,
+        )
+        self.own(self.lib.phaser_binding_destroy, binding)
+
+        # The binding reports the capability, so a client holding only it can
+        # size the output buffers below.
+        capability = ctypes.c_int32()
+        self.assertEqual(
+            self.lib.phaser_binding_capability(binding, ctypes.byref(capability)),
+            STATUS_OK,
+        )
+        self.assertEqual(capability.value, CAPABILITY_VALUE_GRADIENT_HESSIAN)
+
+        point_count = 2
+        backgrounds = (ctypes.c_double * 2)(100.0, 500.0)
+        required = ctypes.c_size_t()
+        self.assertEqual(
+            self.lib.phaser_binding_workspace(
+                binding, point_count, ctypes.byref(required), None
+            ),
+            STATUS_OK,
+        )
+        workspace = ctypes.create_string_buffer(required.value)
+
+        values = (Complex * point_count)()
+        gradients = (Complex * point_count)()
+        hessians = (Complex * point_count)()
+        statuses = (ctypes.c_int32 * point_count)()
+        outputs = ComplexOutputs(
+            struct_size=ctypes.sizeof(ComplexOutputs),
+            abi_version=0,
+            values=values,
+            value_count=point_count,
+            gradients=gradients,
+            gradient_count=point_count,
+            hessians=hessians,
+            hessian_count=point_count,
+            statuses=statuses,
+            status_count=point_count,
+        )
+        self.assertEqual(
+            self.lib.phaser_evaluate_complex(
+                binding,
+                backgrounds,
+                point_count,
+                point_count,
+                workspace,
+                required.value,
+                ctypes.byref(outputs),
+            ),
+            STATUS_OK,
+        )
+
+        native_context = phaser.Context()
+        native_model = phaser.Model(VALID_MODEL, context=native_context)
+        native_request = phaser.Request(ONE_LOOP_REQUEST, context=native_context)
+        native_point = phaser.ParameterPoint(PARAMETER_POINT, context=native_context)
+        native_binding = (
+            native_model.derive(native_request)
+            .compile(selection=("loop_order", 1))
+            .bind(native_point)
+        )
+        # The same query this file made through ctypes, from the binding.
+        self.assertEqual(native_binding.capability, "value_gradient_hessian")
+        native = native_binding.evaluate([100.0, 500.0])
+
+        for index in range(point_count):
+            with self.subTest(index=index):
+                value = native.value(index)
+                self.assertEqual(value.real, values[index].re)
+                self.assertEqual(value.imag, values[index].im)
+                gradient = native.gradient(index)[0]
+                self.assertEqual(gradient.real, gradients[index].re)
+                self.assertEqual(gradient.imag, gradients[index].im)
+                self.assertEqual(statuses[index], POINT_OK)
+
+    def test_a_malformed_selection_is_rejected(self):
+        _, _, _ = self.build_binding()
+        context = self.context()
+        model = ctypes.c_void_p()
+        self.lib.phaser_model_load(
+            context, VALID_MODEL, len(VALID_MODEL), ctypes.byref(model), None
+        )
+        self.own(self.lib.phaser_model_destroy, model)
+        request = ctypes.c_void_p()
+        self.lib.phaser_request_parse(
+            context,
+            ONE_LOOP_REQUEST,
+            len(ONE_LOOP_REQUEST),
+            ctypes.byref(request),
+            None,
+        )
+        self.own(self.lib.phaser_request_destroy, request)
+        artifact = ctypes.c_void_p()
+        self.lib.phaser_artifact_derive(
+            context, model, request, ctypes.byref(artifact), None
+        )
+        self.own(self.lib.phaser_artifact_destroy, artifact)
+
+        for kind, value in ((7, 0), (SELECTION_TOTAL, 3), (SELECTION_ROLE, 99)):
+            with self.subTest(kind=kind, value=value):
+                options = KernelOptions(
+                    struct_size=ctypes.sizeof(KernelOptions),
+                    abi_version=0,
+                    capability=CAPABILITY_VALUE_GRADIENT_HESSIAN,
+                    selection_kind=kind,
+                    selection_value=value,
+                    reserved=0,
+                )
+                kernel = ctypes.c_void_p()
+                self.assertEqual(
+                    self.lib.phaser_kernel_compile(
+                        context, artifact, ctypes.byref(options), ctypes.byref(kernel)
+                    ),
+                    STATUS_INVALID_ARGUMENT,
+                )
 
     def test_the_rendered_equations_agree(self):
         artifact, _, _ = self.build_binding()

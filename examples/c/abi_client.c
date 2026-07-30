@@ -297,6 +297,7 @@ static void check_evaluation(phaser_context *context) {
     size_t workspace_alignment = 0;
     void *workspace = NULL;
     int32_t result_type = -1;
+    int32_t binding_capability = -1;
 
     printf("evaluation\n");
 
@@ -327,6 +328,12 @@ static void check_evaluation(phaser_context *context) {
               PHASER_STATUS_OK &&
               result_type == PHASER_RESULT_COMPLEX64,
           "the binding reports a complex result type");
+
+    /* A client holding only a binding sizes its output buffers from this. */
+    check(phaser_binding_capability(binding, &binding_capability) ==
+              PHASER_STATUS_OK &&
+              binding_capability == PHASER_CAPABILITY_VALUE_GRADIENT_HESSIAN,
+          "the binding reports the capability its program carries");
 
     check(phaser_binding_workspace(binding, 2, &workspace_bytes,
                                    &workspace_alignment) ==
