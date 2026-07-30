@@ -27,7 +27,7 @@ one-line summary alone.
 | [CONTENT_IDENTITY_AND_CACHING.md](architecture/CONTENT_IDENTITY_AND_CACHING.md) | Content fingerprints, deferred caching | Implemented for what exists today; the caching sections it specifies remain deferred. |
 | [PARALLELISM.md](architecture/PARALLELISM.md) | Reentrancy and future concurrency | Not yet exercised; core is still serial. |
 | [STRUCTURAL_COMPILATION.md](architecture/STRUCTURAL_COMPILATION.md) | Structural/dynamic compiler | Future (Milestone 6+). |
-| [COMPTIME_AND_AOT.md](architecture/COMPTIME_AND_AOT.md) | Compile-time specialization boundary | Mostly future; no AOT specialization machinery yet. |
+| [COMPTIME_AND_AOT.md](architecture/COMPTIME_AND_AOT.md) | Compile-time specialization boundary | Narrow phi4 tree-value AOT prototype implemented; general generation, packaging, and loading remain future work. |
 | [LANGUAGE_AND_INTEROPERABILITY.md](architecture/LANGUAGE_AND_INTEROPERABILITY.md) | C/C++/Python bindings | Active — §5 is the Milestone 4 C ABI contract and §5.11 fixes its operation set; no client bindings are implemented yet. The C++ sections remain Milestone 5. |
 | [VERIFICATION_AND_TESTING.md](architecture/VERIFICATION_AND_TESTING.md) | Testing policy, oracle strategy | Active — Milestone 1–3 policies are settled and applied; later milestones add tiers rather than change them. |
 | [NUMERICAL_COMPARISON.md](architecture/NUMERICAL_COMPARISON.md) | Numerical agreement policy | Active — the spectral, near-degenerate, and zero-mode policies are measured and named by the Milestone 3 tests; cross-platform evidence is still a continuous-integration measurement. |
@@ -92,4 +92,5 @@ subsystem you're touching rather than the whole set.
 [0014](decisions/0014-public-header-and-toolchain-baseline.md) public header and toolchain baseline ·
 [0015](decisions/0015-phase-b-python-dependencies.md) Milestone 4 Phase B dependencies ·
 [0016](decisions/0016-mutation-rotation-measured-retune.md) measured mutation rotation retune ·
-[0017](decisions/0017-optimized-interpreter-backend.md) predecoded blocked optimized interpreter
+[0017](decisions/0017-optimized-interpreter-backend.md) predecoded blocked optimized interpreter ·
+[0018](decisions/0018-narrow-aot-prototype.md) narrow model-specific AOT prototype

@@ -855,6 +855,114 @@ test "kernel_lowering" {
     });
 }
 
+test "aot_generation" {
+    try std.testing.fuzz({}, leakChecked(fuzzAotGeneration), .{
+        .corpus = &.{
+            @embedFile("../corpus/aot_generation/seed.bin"),
+        },
+    });
+}
+
+/// Generates supported real-scalar graphs, lowers and validates them, then
+/// proves that bounded AOT planning and source emission are deterministic.
+fn fuzzAotGeneration(_: void, smith: *std.testing.Smith) !void {
+    const count = smith.valueRangeLessThan(u16, 0, max_steps + 1);
+    var builder = try phaser.value.Builder.init(iteration_allocator, .{
+        .value_nodes = 512,
+        .value_operands = 64,
+        .exponent_magnitude = 8,
+        .exact_integer_bits = 2048,
+    });
+    errdefer builder.deinit();
+
+    var pool: [pool_capacity]phaser.value.ValueId = undefined;
+    var pool_length: usize = 0;
+    pool[pool_length] = try builder.parameter(0, "lambda", 0);
+    pool_length += 1;
+    pool[pool_length] = try builder.parameter(1, "m2", 2);
+    pool_length += 1;
+    pool[pool_length] = try builder.parameter(2, "omega", 4);
+    pool_length += 1;
+    pool[pool_length] = try builder.background(0, "phi", 1);
+    pool_length += 1;
+
+    for (0..count) |_| {
+        const kind = smith.value(u8);
+        const first = pool[smith.value(u8) % pool_length];
+        const second = pool[smith.value(u8) % pool_length];
+        const third = pool[smith.value(u8) % pool_length];
+        const produced: ?phaser.value.ValueId = switch (kind % 4) {
+            0 => builder.add(&.{ first, second }) catch null,
+            1 => builder.add(&.{ first, second, third }) catch null,
+            2 => builder.multiply(&.{ first, second }) catch null,
+            3 => builder.power(first, smith.value(u8) % 7) catch null,
+            else => unreachable,
+        };
+        if (produced) |node| {
+            if (pool_length < pool.len) {
+                pool[pool_length] = node;
+                pool_length += 1;
+            }
+        }
+    }
+
+    var graph = try builder.finish();
+    defer graph.deinit();
+    const root = phaser.value.ValueId.fromUsize(graph.values.len - 1) catch return;
+    var program = phaser.kernel.lower(iteration_allocator, .{
+        .graph = &graph,
+        .capability = .value,
+        .value_root = root,
+        .gradient_roots = &.{},
+        .hessian_roots = &.{},
+        .parameter_count = 3,
+        .background_count = 1,
+        .coordinate_count = 1,
+    }, .{}) catch |err| switch (err) {
+        error.ConstantNotRepresentable,
+        error.CapacityExceeded,
+        error.UnsupportedOperation,
+        error.SizeOverflow,
+        => return,
+        else => return err,
+    };
+    defer program.deinit();
+    try program.validate(iteration_allocator, 64);
+
+    const parameter_names = [_][]const u8{ "lambda", "m2", "omega" };
+    const background_names = [_][]const u8{"phi"};
+    var plan = phaser.kernel.aot_plan.compile(
+        iteration_allocator,
+        &program,
+        .{
+            .model_fingerprint = [_]u8{0x11} ** 32,
+            .request_fingerprint = [_]u8{0x22} ** 32,
+            .parameter_names = &parameter_names,
+            .background_names = &background_names,
+        },
+        .{
+            .max_instructions = 256,
+            .max_operands = 512,
+        },
+    ) catch |err| switch (err) {
+        error.UnsupportedSlotType, error.UnsupportedOpcode => return,
+        else => return err,
+    };
+    defer plan.deinit();
+
+    const first_source = try phaser.kernel.aot_generate.generateAlloc(
+        iteration_allocator,
+        &plan,
+    );
+    defer iteration_allocator.free(first_source);
+    const second_source = try phaser.kernel.aot_generate.generateAlloc(
+        iteration_allocator,
+        &plan,
+    );
+    defer iteration_allocator.free(second_source);
+    try std.testing.expectEqualSlices(u8, first_source, second_source);
+}
+
 /// Lowers generated value graphs and compares the reference backend against
 /// direct evaluation of the same graph.
 ///

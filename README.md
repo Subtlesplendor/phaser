@@ -153,8 +153,19 @@ zig build test-conformance   # scientific conformance fixtures
 zig build fuzz               # replay corpora, or add --fuzz=N for a campaign
 zig build examples           # public example workflows
 zig build bench              # representative measurements (informational)
+zig build emit-aot-prototype # generate the experimental phi4 AOT module
+zig build test-aot-prototype # regenerate and differentially test it
+zig build bench-aot-prototype # focused AOT/interpreter/direct-C comparison
 zig build mutation           # mutation campaign (nightly tier; see below)
 ```
+
+The AOT commands are an explicit build-time experiment, not part of ordinary
+model loading. They require the repository's pinned Zig 0.16.0 toolchain to
+generate and compile a model-specific module. Parameters and field values remain
+runtime inputs. An application that has already linked the generated module
+does not need Zig installed merely to execute it. The prototype supports only
+the phi4 tree-level real value fixture and rejects unsupported capabilities
+before emitting source.
 
 `zig build bench` measures the production `ReleaseSafe` mode by default,
 calibrates each timing to repeated minimum-duration samples, verifies every
