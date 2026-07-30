@@ -1055,3 +1055,217 @@ test "an empty or out of range scan is rejected" {
         expandScan(std.testing.allocator, 2, 5, 0, 1, 3),
     );
 }
+
+// A two-scalar model, so that a stride or index computation of
+// `coordinates * coordinates` (or `index * coordinates`) can diverge from a
+// stray `/` in place of `*`: with one coordinate, as `test/integration`'s
+// golden phi4 coverage uses throughout, `* 1` and `/ 1` coincide and the
+// bug is invisible. This is colocated with `Rows`, `writeTsv`, and
+// `writeTable` rather than left to `test/integration/cli_examples.zig`
+// because the two live in different test binaries: a source change here is
+// noticed by the wider suite, but the mutation campaign's per-mutant test
+// selection tries this file's own colocated tests first and stops there if
+// they already catch it.
+const two_scalar_model =
+    \\{"schema":"phaser.qft-model/0.1","spacetime_dimension":4,
+    \\"conventions":{"metric":"mostly_plus",
+    \\"scalar_representation":"real_components","fermions":"two_component_weyl"},
+    \\"parameters":{
+    \\"a":{"domain":"real","mass_dimension":1},
+    \\"b":{"domain":"real","mass_dimension":1},
+    \\"c":{"domain":"real","mass_dimension":1},
+    \\"d":{"domain":"real","mass_dimension":1},
+    \\"l1":{"domain":"real","mass_dimension":0},
+    \\"l2":{"domain":"real","mass_dimension":0},
+    \\"l3":{"domain":"real","mass_dimension":0},
+    \\"lh":{"domain":"real","mass_dimension":0},
+    \\"ls":{"domain":"real","mass_dimension":0},
+    \\"m_h2":{"domain":"real","mass_dimension":2},
+    \\"m_hs2":{"domain":"real","mass_dimension":2},
+    \\"m_s2":{"domain":"real","mass_dimension":2},
+    \\"omega":{"domain":"real","mass_dimension":4},
+    \\"t_h":{"domain":"real","mass_dimension":3},
+    \\"t_s":{"domain":"real","mass_dimension":3}},
+    \\"fields":{"real_scalars":[{"id":"h","latex":"h"},{"id":"s","latex":"s"}],
+    \\"weyl_fermions":[],"gauge_vectors":[]},
+    \\"tensors":{
+    \\"vacuum_energy":{"value":"omega"},
+    \\"scalar_tadpole":{"components":[
+    \\{"indices":["h"],"value":"t_h"},{"indices":["s"],"value":"t_s"}]},
+    \\"scalar_mass_squared":{"components":[
+    \\{"indices":["h","h"],"value":"m_h2"},
+    \\{"indices":["h","s"],"value":"m_hs2"},
+    \\{"indices":["s","s"],"value":"m_s2"}]},
+    \\"scalar_cubic":{"components":[
+    \\{"indices":["h","h","h"],"value":"a"},
+    \\{"indices":["h","h","s"],"value":"b"},
+    \\{"indices":["h","s","s"],"value":"c"},
+    \\{"indices":["s","s","s"],"value":"d"}]},
+    \\"scalar_quartic":{"components":[
+    \\{"indices":["h","h","h","h"],"value":"lh"},
+    \\{"indices":["h","h","h","s"],"value":"l3"},
+    \\{"indices":["h","h","s","s"],"value":"l2"},
+    \\{"indices":["h","s","s","s"],"value":"l1"},
+    \\{"indices":["s","s","s","s"],"value":"ls"}]}}}
+;
+
+const two_scalar_request =
+    \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+    \\"background":{"mode":"full_scalar_space"},
+    \\"environment":{"kind":"vacuum"},"orders":{"loop":{"through":0}}}
+;
+
+const two_scalar_point =
+    \\{"schema":"phaser.parameter-point/0.1","units":{"mass":"GeV"},
+    \\"renormalization":{"scheme":"MSbar","reference_scale":125.0},
+    \\"values":{
+    \\"a":25.0,"b":-5.0,"c":2.5,"d":10.0,
+    \\"l1":0.05,"l2":0.1,"l3":-0.02,"lh":0.26,"ls":0.3,
+    \\"m_h2":-7812.5,"m_hs2":500.0,"m_s2":2500.0,
+    \\"omega":0,"t_h":0,"t_s":0}}
+;
+
+// Hand-derived tree-level Hessian, read off the model and point above:
+//
+//   V = (m_h2 h^2 + 2 m_hs2 h s + m_s2 s^2) / 2
+//     + a h^3/6 + b h^2 s/2 + c h s^2/2 + d s^3/6
+//     + lh h^4/24 + l3 h^3 s/6 + l2 h^2 s^2/4 + l1 h s^3/6 + ls s^4/24
+//
+// so d2V/dh2 = m_h2 + a h + b s + lh/2 h^2 + l3 h s + l2/2 s^2, and the other
+// two components follow the same way with (h, s) and the matching
+// coefficient pairs swapped.
+// Deliberately different orders of magnitude between the two points (one
+// digit against three, and a sign) rather than a mere swap: the table
+// renderer's width-computation pass reuses `index * coordinates` on its own
+// copy of the point loop, distinct from the value-writing pass's copy. A
+// wrong index there stays invisible to any check of the printed values
+// themselves if every point happens to need the same column width; it only
+// shows up as a row whose columns were padded for the wrong point.
+const two_scalar_hessian_points = [_]Scalar{ 1, 2, 100, -200 };
+// h, s, dhdh, dhds, dsds. The point's own columns are checked alongside the
+// Hessian: the point-extraction loop is a separate piece of code from
+// `Rows.hessian` (and is itself duplicated between the table renderer's
+// width-computation and value-writing passes), so a wrong index there would
+// leave the Hessian columns alone and only substitute a different row's `h`
+// and `s`.
+const two_scalar_expected_rows = [2][5]Scalar{
+    .{ 1, 2, -7797.21, 500.29, 2523.25 },
+    .{ 100, -200, -612.5, -1600, 6250 },
+};
+
+fn expectRowAt(row: []const u8, expected: [5]Scalar) !void {
+    // Columns: h, s, value, dV/dh, dV/ds, d2V/dhdh, d2V/dhds, d2V/dsdh,
+    // d2V/dsds, status.
+    var fields = std.mem.tokenizeAny(u8, row, "\t ");
+    const h = try std.fmt.parseFloat(Scalar, fields.next() orelse return error.MissingColumn);
+    const s = try std.fmt.parseFloat(Scalar, fields.next() orelse return error.MissingColumn);
+    inline for (0..3) |_| _ = fields.next() orelse return error.MissingColumn;
+    const dhdh = try std.fmt.parseFloat(Scalar, fields.next() orelse return error.MissingColumn);
+    const dhds = try std.fmt.parseFloat(Scalar, fields.next() orelse return error.MissingColumn);
+    const dsdh = try std.fmt.parseFloat(Scalar, fields.next() orelse return error.MissingColumn);
+    const dsds = try std.fmt.parseFloat(Scalar, fields.next() orelse return error.MissingColumn);
+    try std.testing.expectApproxEqAbs(expected[0], h, 1e-6);
+    try std.testing.expectApproxEqAbs(expected[1], s, 1e-6);
+    try std.testing.expectApproxEqAbs(expected[2], dhdh, 1e-6);
+    try std.testing.expectApproxEqAbs(expected[3], dhds, 1e-6);
+    try std.testing.expectApproxEqAbs(expected[3], dsdh, 1e-6);
+    try std.testing.expectApproxEqAbs(expected[4], dsds, 1e-6);
+}
+
+fn dataRows(text: []const u8) std.mem.SplitIterator(u8, .scalar) {
+    return std.mem.splitScalar(u8, text, '\n');
+}
+
+fn nextDataRow(lines: *std.mem.SplitIterator(u8, .scalar)) ?[]const u8 {
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+        var fields = std.mem.tokenizeAny(u8, line, "\t ");
+        const first = fields.next() orelse continue;
+        // The header row and, for the table, its dashed separator, are not
+        // numeric; only a data row starts with a parseable coordinate.
+        _ = std.fmt.parseFloat(Scalar, first) catch continue;
+        return line;
+    }
+    return null;
+}
+
+test "two-coordinate hessian values match a hand-derived formula (tsv)" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer errors.deinit();
+    try evaluate(
+        std.testing.allocator,
+        two_scalar_model,
+        two_scalar_request,
+        two_scalar_point,
+        .{
+            .outputs = .hessian,
+            .format = .tsv,
+            .points = &two_scalar_hessian_points,
+            .point_count = 2,
+        },
+        &out.writer,
+        &errors.writer,
+    );
+    try std.testing.expectEqualStrings("", errors.written());
+
+    var lines = dataRows(out.written());
+    for (two_scalar_expected_rows) |expected| {
+        const row = nextDataRow(&lines) orelse return error.MissingRow;
+        try expectRowAt(row, expected);
+    }
+    try std.testing.expectEqual(@as(?[]const u8, null), nextDataRow(&lines));
+}
+
+test "two-coordinate hessian values match a hand-derived formula (table)" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var errors: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer errors.deinit();
+    try evaluate(
+        std.testing.allocator,
+        two_scalar_model,
+        two_scalar_request,
+        two_scalar_point,
+        .{
+            .outputs = .hessian,
+            .format = .table,
+            .points = &two_scalar_hessian_points,
+            .point_count = 2,
+        },
+        &out.writer,
+        &errors.writer,
+    );
+    try std.testing.expectEqualStrings("", errors.written());
+    const text = out.written();
+
+    // A fixed-width table pads every column to the widest value across
+    // every row, so every rendered line -- header, separator, and each data
+    // row -- must come out to the same length. A width computed from the
+    // wrong row (as a stray `coordinates / coordinates` collapsing to the
+    // first row's data would produce) under-pads a later row instead,
+    // without touching the values themselves, which a value-only comparison
+    // cannot see but this invariant catches.
+    var width_lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
+    var rendered_lines: usize = 0;
+    var expected_len: ?usize = null;
+    while (width_lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+        if (expected_len) |len| {
+            try std.testing.expectEqual(len, line.len);
+        } else {
+            expected_len = line.len;
+        }
+        rendered_lines += 1;
+    }
+    // Header, separator, and two data rows.
+    try std.testing.expectEqual(@as(usize, 4), rendered_lines);
+
+    var lines = dataRows(text);
+    for (two_scalar_expected_rows) |expected| {
+        const row = nextDataRow(&lines) orelse return error.MissingRow;
+        try expectRowAt(row, expected);
+    }
+    try std.testing.expectEqual(@as(?[]const u8, null), nextDataRow(&lines));
+}

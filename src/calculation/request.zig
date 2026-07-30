@@ -821,6 +821,156 @@ test "json token count past the request's own limit is rejected" {
     try expectDiagnostic(source, .capacity_exceeded);
 }
 
+test "a source at exactly the byte limit is not rejected for its size" {
+    // The two tests above only exercise the limit from past it, which cannot
+    // distinguish `>` from `>=` at the boundary. A source of exactly the
+    // configured length must still reach ordinary parsing.
+    var limits = CalculationLimits{};
+    limits.request_bytes = full_space_request.len;
+    var result = try parseRequest(testContext(), .{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = full_space_request,
+    }, .{ .limits = limits });
+    switch (result) {
+        .request => |request| {
+            var owned = request;
+            owned.deinit();
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+    }
+
+    limits.request_bytes = full_space_request.len - 1;
+    result = try parseRequest(testContext(), .{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = full_space_request,
+    }, .{ .limits = limits });
+    switch (result) {
+        .request => |request| {
+            var owned = request;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            defer owned.deinit();
+            try std.testing.expectEqual(
+                foundation.Code.capacity_exceeded,
+                owned.items[0].code,
+            );
+        },
+    }
+}
+
+test "a background coordinate count at exactly the limit is not rejected" {
+    var limits = CalculationLimits{};
+    limits.background_coordinates = 1;
+    const source =
+        \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+        \\"background":{"mode":"component_slice","coordinates":[
+        \\{"id":"a","scalar":"h"}]},
+        \\"environment":{"kind":"vacuum"},"orders":{"loop":{"through":0}}}
+    ;
+    var result = try parseRequest(testContext(), .{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = source,
+    }, .{ .limits = limits });
+    switch (result) {
+        .request => |request| {
+            var owned = request;
+            owned.deinit();
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+    }
+
+    const two_coordinates =
+        \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
+        \\"background":{"mode":"component_slice","coordinates":[
+        \\{"id":"a","scalar":"h"},{"id":"b","scalar":"s"}]},
+        \\"environment":{"kind":"vacuum"},"orders":{"loop":{"through":0}}}
+    ;
+    result = try parseRequest(testContext(), .{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = two_coordinates,
+    }, .{ .limits = limits });
+    switch (result) {
+        .request => |request| {
+            var owned = request;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            defer owned.deinit();
+            try std.testing.expectEqual(
+                foundation.Code.capacity_exceeded,
+                owned.items[0].code,
+            );
+        },
+    }
+}
+
+test "the json token count at exactly a configured limit does not read as exceeded" {
+    // `end_of_document` is itself counted, so a two-element flat array is
+    // exactly five tokens: array_begin, two numbers, array_end,
+    // end_of_document. A limit of five must let the scan finish and reach
+    // ordinary schema validation instead of reporting capacity first.
+    var limits = CalculationLimits{};
+    limits.request_json_tokens = 5;
+    const result = try parseRequest(testContext(), .{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = "[0,0]",
+    }, .{ .limits = limits });
+    switch (result) {
+        .request => |request| {
+            var owned = request;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            defer owned.deinit();
+            try std.testing.expectEqual(
+                foundation.Code.invalid_property_type,
+                owned.items[0].code,
+            );
+        },
+    }
+}
+
+test "json nesting at exactly a configured limit does not read as exceeded" {
+    // An empty array reaches depth 1 and back to 0, so a nesting limit of 1
+    // must let the scan finish rather than reject the depth itself.
+    var limits = CalculationLimits{};
+    limits.request_json_nesting = 1;
+    const result = try parseRequest(testContext(), .{
+        .source_id = try foundation.SourceId.fromUsize(0),
+        .bytes = "[]",
+    }, .{ .limits = limits });
+    switch (result) {
+        .request => |request| {
+            var owned = request;
+            owned.deinit();
+            return error.TestUnexpectedResult;
+        },
+        .diagnostics => |diagnostics| {
+            var owned = diagnostics;
+            defer owned.deinit();
+            try std.testing.expectEqual(
+                foundation.Code.invalid_property_type,
+                owned.items[0].code,
+            );
+        },
+    }
+}
+
 test "identifier validation accepts underscore-led names and rejects invalid bytes" {
     try std.testing.expect(!validIdentifier(""));
     try std.testing.expect(validIdentifier("_"));
