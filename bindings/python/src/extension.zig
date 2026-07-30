@@ -276,6 +276,8 @@ const KernelOptions = extern struct {
     struct_size: u32,
     abi_version: u32,
     capability: i32,
+    selection_kind: i32,
+    selection_value: u32,
     reserved: u32,
 };
 
@@ -453,6 +455,10 @@ extern fn phaser_binding_coordinate_count(
 extern fn phaser_binding_result_type(
     binding: ?*const PhaserBinding,
     out_result_type: ?*i32,
+) callconv(.c) Status;
+extern fn phaser_binding_capability(
+    binding: ?*const PhaserBinding,
+    out_capability: ?*i32,
 ) callconv(.c) Status;
 
 extern fn phaser_evaluate(
@@ -1024,15 +1030,22 @@ fn artifactDerive(_: ?*py.PyObject, arguments: ?*py.PyObject) callconv(.c) ?*py.
 }
 
 fn kernelCompile(_: ?*py.PyObject, arguments: ?*py.PyObject) callconv(.c) ?*py.PyObject {
-    const given = takeArgs(arguments, 3, "kernel_compile") orelse return null;
+    const given = takeArgs(arguments, 5, "kernel_compile") orelse return null;
     const context = ContextHandle.unwrap(given[0]) orelse return null;
     const artifact = ArtifactHandle.unwrap(given[1]) orelse return null;
     const capability = takeEnumerator(given[2], "capability") orelse return null;
+    const selection_kind = takeEnumerator(given[3], "selection kind") orelse return null;
+    const selection_value = takeEnumerator(given[4], "selection value") orelse return null;
+    if (selection_value < 0) {
+        return raiseValue("selection value must not be negative");
+    }
 
     const options = KernelOptions{
         .struct_size = @sizeOf(KernelOptions),
         .abi_version = 0,
         .capability = capability,
+        .selection_kind = selection_kind,
+        .selection_value = @intCast(selection_value),
         .reserved = 0,
     };
     var kernel: ?*PhaserKernel = null;
@@ -1200,15 +1213,18 @@ fn bindingInfo(_: ?*py.PyObject, arguments: ?*py.PyObject) callconv(.c) ?*py.PyO
 
     var coordinates: usize = 0;
     var result_type: i32 = 0;
+    var capability: i32 = 0;
     if (phaser_binding_coordinate_count(binding, &coordinates) != .ok or
-        phaser_binding_result_type(binding, &result_type) != .ok)
+        phaser_binding_result_type(binding, &result_type) != .ok or
+        phaser_binding_capability(binding, &capability) != .ok)
     {
         return raiseStatus(.internal, "binding");
     }
 
     const info = py.PyDict_New() orelse return null;
     const filled = setCount(info, "coordinate_count", coordinates) and
-        setOwned(info, "result_type", py.PyLong_FromSsize_t(result_type));
+        setOwned(info, "result_type", py.PyLong_FromSsize_t(result_type)) and
+        setOwned(info, "capability", py.PyLong_FromSsize_t(capability));
     if (!filled) {
         py.Py_DecRef(info);
         return null;
@@ -1270,20 +1286,15 @@ fn evaluate(_: ?*py.PyObject, arguments: ?*py.PyObject) callconv(.c) ?*py.PyObje
 
 /// Returns false with a Python exception set; the caller owns `outputs`.
 fn evaluateInto(outputs: ?*py.PyObject, arguments: ?*py.PyObject) bool {
-    const given = takeArgs(arguments, 3, "evaluate") orelse return false;
+    const given = takeArgs(arguments, 2, "evaluate") orelse return false;
     const binding = BindingHandle.unwrap(given[0]) orelse return false;
-    // The kernel is passed alongside the binding because its capability
-    // decides the exact output lengths the ABI requires, and the ABI has no
-    // query for a binding's capability. Reading it from the kernel keeps that
-    // a fact rather than something the Python layer asserts.
-    const kernel = KernelHandle.unwrap(given[1]) orelse return false;
 
     var coordinates: usize = 0;
     var result_type: i32 = 0;
     var capability: i32 = 0;
     if (phaser_binding_coordinate_count(binding, &coordinates) != .ok or
         phaser_binding_result_type(binding, &result_type) != .ok or
-        phaser_kernel_capability(kernel, &capability) != .ok)
+        phaser_binding_capability(binding, &capability) != .ok)
     {
         _ = raiseStatus(.internal, "binding");
         return false;
@@ -1295,7 +1306,7 @@ fn evaluateInto(outputs: ?*py.PyObject, arguments: ?*py.PyObject) bool {
 
     var view: py.Py_buffer = undefined;
     if (py.PyObject_GetBuffer(
-        given[2],
+        given[1],
         &view,
         py.PyBUF_C_CONTIGUOUS | py.PyBUF_FORMAT,
     ) != 0) return false;
@@ -1544,7 +1555,7 @@ var methods = [_]py.PyMethodDef{
         .ml_name = "binding_info",
         .ml_meth = bindingInfo,
         .ml_flags = py.METH_VARARGS,
-        .ml_doc = "Return a binding's coordinate count and result type.",
+        .ml_doc = "Return a binding's coordinate count, result type, and capability.",
     },
     .{
         .ml_name = "evaluate",

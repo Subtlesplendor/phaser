@@ -60,6 +60,15 @@ CAPABILITIES = {
     "value_gradient_hessian": 2,
 }
 EXPORT_TARGETS = {"phaser": 0, "latex": 1}
+SELECTION_KINDS = {"total": 0, "loop_order": 1, "role": 2}
+ROLES = {
+    "vacuum_energy": 0,
+    "scalar_tadpole": 1,
+    "scalar_mass_squared": 2,
+    "scalar_cubic": 3,
+    "scalar_quartic": 4,
+    "scalar_one_loop": 5,
+}
 RESULT_TYPES = {0: "real64", 1: "complex64"}
 POINT_STATUSES = {
     0: "ok",
@@ -145,6 +154,30 @@ def _code(table, name, what):
     except KeyError:
         options = ", ".join(sorted(table))
         raise ValueError(f"unknown {what} {name!r}; expected one of {options}") from None
+
+
+def _selection(selection):
+    """Maps a selection to the (kind, value) pair the ABI takes.
+
+    ``"total"`` alone, or a pair naming a loop order or a role. A payload
+    alongside ``"total"`` is refused rather than ignored, matching the ABI.
+    """
+    if selection == "total" or selection == ("total",):
+        return SELECTION_KINDS["total"], 0
+    if not isinstance(selection, (tuple, list)) or len(selection) != 2:
+        raise ValueError(
+            "selection must be 'total' or a (kind, value) pair naming a loop "
+            "order or a role"
+        )
+    name, value = selection
+    kind = _code(SELECTION_KINDS, name, "selection kind")
+    if name == "total":
+        raise ValueError("'total' takes no selection value")
+    if name == "loop_order":
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError("a loop order must be a non-negative integer")
+        return kind, value
+    return kind, _code(ROLES, value, "role")
 
 
 def _same_context(first, second, what):
@@ -257,9 +290,16 @@ class Artifact:
         """The compact plain-text notation, for terminals and logs."""
         return self.export("phaser")
 
-    def compile(self, capability="value_gradient_hessian"):
-        """Lowers the symbolic graph to a numerical kernel."""
-        return Kernel(self, capability)
+    def compile(self, capability="value_gradient_hessian", selection="total"):
+        """Lowers the symbolic graph to a numerical kernel.
+
+        `selection` chooses what the kernel evaluates: ``"total"`` for the
+        complete truncation, ``("loop_order", n)`` for one loop order, or
+        ``("role", name)`` for one contribution. Selecting a part asks the core
+        for it directly rather than reconstructing it by subtracting two
+        totals, which is a cancellation wherever the parts are close.
+        """
+        return Kernel(self, capability, selection)
 
     def _repr_latex_(self):
         """Rich display in a notebook frontend.
@@ -290,13 +330,17 @@ class Artifact:
 class Kernel:
     """A compiled numerical program for one artifact."""
 
-    def __init__(self, artifact, capability="value_gradient_hessian"):
+    def __init__(self, artifact, capability="value_gradient_hessian", selection="total"):
         self.artifact = artifact
         self.context = artifact.context
+        self.selection = selection
+        kind, value = _selection(selection)
         self._capsule = _phaser.kernel_compile(
             self.context._capsule,
             artifact._capsule,
             _code(CAPABILITIES, capability, "capability"),
+            kind,
+            value,
         )
         info = _phaser.kernel_info(self._capsule)
         self.capability = _named(
@@ -350,6 +394,9 @@ class Binding:
         info = _phaser.binding_info(self._capsule)
         self.coordinate_count = info["coordinate_count"]
         self.result_type = _named(RESULT_TYPES, info["result_type"], "result type")
+        self.capability = _named(
+            _CAPABILITY_NAMES, info["capability"], "capability"
+        )
 
     def evaluate(self, backgrounds):
         """Evaluates a batch of background points.
@@ -361,10 +408,7 @@ class Binding:
         of per-point sequences, is copied into one.
         """
         prepared = _as_double_buffer(backgrounds)
-        return Evaluation(
-            self,
-            _phaser.evaluate(self._capsule, self.kernel._capsule, prepared),
-        )
+        return Evaluation(self, _phaser.evaluate(self._capsule, prepared))
 
     def evaluate_at(self, *coordinates):
         """Evaluates one background point and returns its results directly.

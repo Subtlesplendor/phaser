@@ -167,6 +167,8 @@ const KernelOptions = extern struct {
     struct_size: u32,
     abi_version: u32,
     capability: i32,
+    selection_kind: i32,
+    selection_value: u32,
     reserved: u32,
 };
 
@@ -174,9 +176,35 @@ test "kernel options have the layout the header publishes" {
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(KernelOptions, "struct_size"));
     try std.testing.expectEqual(@as(usize, 4), @offsetOf(KernelOptions, "abi_version"));
     try std.testing.expectEqual(@as(usize, 8), @offsetOf(KernelOptions, "capability"));
-    try std.testing.expectEqual(@as(usize, 12), @offsetOf(KernelOptions, "reserved"));
-    try std.testing.expectEqual(@as(usize, 16), @sizeOf(KernelOptions));
+    try std.testing.expectEqual(
+        @as(usize, 12),
+        @offsetOf(KernelOptions, "selection_kind"),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 16),
+        @offsetOf(KernelOptions, "selection_value"),
+    );
+    try std.testing.expectEqual(@as(usize, 20), @offsetOf(KernelOptions, "reserved"));
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(KernelOptions));
     try std.testing.expectEqual(@as(usize, 4), @alignOf(KernelOptions));
+}
+
+test "selection and role values are the ones the header publishes" {
+    // As with the result types below: the numbers are transcribed from the
+    // header, and the Zig enums are what they are compared against.
+    const phaser = @import("phaser");
+    const SelectionKind = phaser.abi.status.SelectionKind;
+    try std.testing.expectEqual(@as(i32, 0), @intFromEnum(SelectionKind.total));
+    try std.testing.expectEqual(@as(i32, 1), @intFromEnum(SelectionKind.loop_order));
+    try std.testing.expectEqual(@as(i32, 2), @intFromEnum(SelectionKind.role));
+
+    const Role = phaser.abi.status.Role;
+    try std.testing.expectEqual(@as(i32, 0), @intFromEnum(Role.vacuum_energy));
+    try std.testing.expectEqual(@as(i32, 1), @intFromEnum(Role.scalar_tadpole));
+    try std.testing.expectEqual(@as(i32, 2), @intFromEnum(Role.scalar_mass_squared));
+    try std.testing.expectEqual(@as(i32, 3), @intFromEnum(Role.scalar_cubic));
+    try std.testing.expectEqual(@as(i32, 4), @intFromEnum(Role.scalar_quartic));
+    try std.testing.expectEqual(@as(i32, 5), @intFromEnum(Role.scalar_one_loop));
 }
 
 test "result type and capability values are the ones the header publishes" {

@@ -550,39 +550,24 @@ The underlying plotted data must also be covered by machine-readable tests.
 
 #### How the three curves are obtained
 
-ABI version 0 has no contribution-selection operation. The command-line client
-has `--selection`, which is what produced the committed `scan_tree.tsv`,
-`scan_one_loop.tsv`, and `scan_total.tsv`; a client reaching the core through
-the C ABI cannot ask the same question, and the Python binding therefore cannot
-either.
+Each of the three is asked for directly. `phaser_kernel_options` carries a
+selection, so a kernel compiles for the complete truncation, for one loop order,
+or for one contribution role, and the notebook plots three kernels' results
+rather than two plus a subtraction.
 
-The notebook obtains its three curves this way instead:
+`bindings/python/test/test_extension.py` and
+`test/differential/abi_agreement.zig` compare all three against the committed
+`scan_tree.tsv`, `scan_one_loop.tsv`, and `scan_total.tsv` bitwise. Those files
+are the command-line client's `--selection` output, so the ABI and the CLI are
+being asked the same question and are required to return the same bits.
 
-- **tree** — a separate loop-order-zero request, evaluated directly;
-- **total** — the loop-order-one request, evaluated directly; and
-- **one-loop contribution** — the difference of the two.
-
-The first two are exact. `bindings/python/test/test_extension.py` compares them
-against the committed scans bitwise, and additionally asserts that the
-loop-order-zero request agrees bitwise with `--selection=loop:0` applied to the
-loop-order-one artifact — a three-contribution artifact and a four-contribution
-one with the loop term selected away produce the same numbers. That agreement is
-what makes the decomposition mean what it claims.
-
-The third is not compared against `scan_one_loop.tsv`, and the reason is
-recorded rather than worked around. The difference and the client's directly
-summed loop-order-one contribution are two accumulation orders for a quantity
-that is far below the largest term summed to reach it: a cancellation regime, at
-a measured worst relative separation of about `1.3e-11` across the committed
-grid. [Numerical Comparison](NUMERICAL_COMPARISON.md) declares no policy for
-that pair, and §3 of that document is explicit that an undeclared bound is a gap
-to close rather than a value to guess. So no tolerance is asserted here.
-
-The exit criterion is still met: every array the notebook plots is either
-compared bitwise against a committed scan, or is an exactly reproducible
-function of two arrays that are. What is not established is agreement between
-the reconstruction and the client's directly summed contribution, which would
-need either a declared policy or a selection operation in the ABI.
+This was not the original design. Version 0 first shipped without a selection,
+and the notebook obtained its loop contribution by subtracting the tree from the
+total. That reconstruction agreed with the client only to about `1.3e-11` — a
+cancellation, with no policy in [Numerical Comparison](NUMERICAL_COMPARISON.md)
+covering the pair, and §3 of that document forbids inventing one. Adding the
+selection replaced an unverifiable curve with a bitwise-verified one, which is
+why it was added rather than a tolerance being declared.
 
 ### Exit criteria
 
@@ -648,12 +633,12 @@ in continuous integration on all three platforms.
 
 | Criterion | Evidence |
 |---|---|
-| Python results agree with the direct Zig, C, and CLI results | `bindings/python/test/test_extension.py` evaluates the committed `examples/phi4` grid through the binding and compares it bitwise against `scan_total.tsv`, `scan_tree.tsv`, and `scan.tsv` — command-line output that `test/integration/cli_examples.zig` compares byte for byte on every platform. The Zig side of the same chain is Phase A's first row, which compares the C ABI and the Zig core against the same files. `test_ctypes_abi.py` additionally compares the extension's values, gradients, Hessians, and statuses against the C ABI reached through `ctypes`. Every comparison is bitwise; the scan crosses the sign change, so both branches are covered. One curve is outside this, qualified below |
+| Python results agree with the direct Zig, C, and CLI results | `bindings/python/test/test_extension.py` evaluates the committed `examples/phi4` grid through the binding and compares it bitwise against `scan_total.tsv`, `scan_tree.tsv`, `scan_one_loop.tsv`, and `scan.tsv` — command-line output that `test/integration/cli_examples.zig` compares byte for byte on every platform. Selecting a loop order is what makes the third of those comparable at all. The Zig side of the same chain is Phase A's first row, which compares the C ABI and the Zig core against the same files. `test_ctypes_abi.py` additionally compares the extension's values, gradients, Hessians, and statuses against the C ABI reached through `ctypes`, for the total and for a selected loop order. Every comparison is bitwise; the scan crosses the sign change, so both branches are covered |
 | Python scalar and buffer-based batch calls agree | `test_a_scalar_call_agrees_with_the_same_point_in_a_batch` compares each point evaluated alone against the same point inside a four-point batch; `test_the_grouping_of_a_batch_does_not_change_its_results` splits one batch in two and requires the halves to reproduce it exactly; `test_every_accepted_input_form_gives_the_same_answer` runs the same points as a list, a tuple, a nested sequence, an `array.array('d')`, a `memoryview`, and a cast `memoryview`. All exact. What this does and does not establish is qualified below |
 | The `ctypes` client agrees with the extension, built from the header | `bindings/python/test/test_ctypes_abi.py` re-declares every signature, the `phaser_complex_outputs` layout, and the `phaser_diagnostic` layout by hand, from the header read as documentation, and sets `argtypes` and `restype` on each function so a mismatch fails rather than returning a wrong answer. It loads the shared library rather than importing the extension. A run that cannot find the library raises instead of skipping — which is what caught the Windows DLL-path defect in the binding's fifth continuous-integration round, where a skip would have reported agreement nobody checked |
 | The notebook runs from a fresh kernel using public APIs only | `tools/ci/run_notebook.py` executes `docs/notebooks/scalar_effective_potential.ipynb` through `nbclient` with `allow_errors=False`, from a kernel started for the run, in the pull-request tier. "Public APIs only" is checked rather than asserted: `tools/ci/check_notebook_outputs.py` fails on any reference to `_phaser`, `._capsule`, or `phaser._`, and was failed deliberately to confirm it fires. The platform limit is qualified below |
 | Equations and plots provide an effective human inspection path | The notebook renders both artifacts through `_repr_latex_` over the MathJax-compatible exporter, plots the tree, the one-loop contribution, and the total over the background interval, plots the imaginary part for two parameter points, and states in section 9 what a reader should expect to see. This criterion is a judgement rather than a machine check, and is qualified below |
-| The notebook's plotted arrays are asserted in machine tests | `TestGoldenAgreement` in `bindings/python/test/test_extension.py` asserts the tree and the total bitwise against committed command-line output, on exactly the grid the notebook plots. The one-loop curve is their difference, an exactly reproducible function of two bitwise-asserted arrays. `tools/ci/check_notebook_outputs.py` keeps the notebook's outputs out of version control, so no plotted number is ever committed without being recomputed |
+| The notebook's plotted arrays are asserted in machine tests | `TestGoldenAgreement` in `bindings/python/test/test_extension.py` asserts all three plotted curves — tree, one-loop contribution, and total — bitwise against committed command-line output, on exactly the grid the notebook plots. `tools/ci/check_notebook_outputs.py` keeps the notebook's outputs out of version control, so no plotted number is ever committed without being recomputed, and fails on any use of a private interface |
 
 Common-gate items: the specifications this phase implements were reviewed in
 [Decision 0015](../decisions/0015-phase-b-python-dependencies.md) and in
@@ -665,20 +650,16 @@ below repeats.
 
 #### Qualifications on Phase B's evidence
 
-Four rows above are narrower than they read. Each is recorded here rather than
+Three rows above are narrower than they read. Each is recorded here rather than
 left for a reader to discover by checking what the tests actually do.
 
-- **One plotted curve is not compared against the client.** The notebook's
-  one-loop curve is the total minus the tree, because ABI version 0 has no
-  contribution-selection operation. The tree and the total are each bitwise
-  against committed command-line output, so the curve is an exact function of
-  verified arrays — but it is never compared against `scan_one_loop.tsv`, the
-  client's directly summed loop contribution. The two are different accumulation
-  orders for a quantity far below the largest term summed to reach it, measured
-  at a worst relative separation of about `1.3e-11` across the committed grid.
-  [Numerical Comparison](NUMERICAL_COMPARISON.md) declares no policy for that
-  pair and §3 forbids guessing one. Closing this needs either a declared policy
-  or a selection operation in the ABI.
+A fourth has since been closed rather than qualified. The notebook's one-loop
+curve was the total minus the tree, because version 0 had no
+contribution-selection operation, and that reconstruction was never compared
+against the client's directly summed `scan_one_loop.tsv` — the two are different
+accumulation orders in a cancellation regime, and no declared policy covers the
+pair. `phaser_kernel_options` now carries a selection, so all three plotted
+curves are asked for directly and all three are compared bitwise.
 
 - **Scalar and batch are one code path, not two.** `evaluate_at` builds a
   one-point buffer and calls the same extension entry point `evaluate` does, so

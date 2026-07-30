@@ -13,7 +13,6 @@
 # Adding a line is an ABI addition. Removing or renaming one is an ABI break,
 # permitted while version 0 is experimental but never silent: see
 # docs/decisions/0014-public-header-and-toolchain-baseline.md.
-
 phaser_abi_experimental
 phaser_abi_version
 phaser_artifact_contribution_count
@@ -23,6 +22,7 @@ phaser_artifact_destroy
 phaser_artifact_export
 phaser_artifact_loop_order
 phaser_artifact_result_type
+phaser_binding_capability
 phaser_binding_coordinate_count
 phaser_binding_create
 phaser_binding_destroy

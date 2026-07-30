@@ -79,8 +79,22 @@ const KernelOptions = extern struct {
     struct_size: u32,
     abi_version: u32,
     capability: i32,
+    selection_kind: i32,
+    selection_value: u32,
     reserved: u32,
 };
+
+/// A default options struct, so a test names only the field it is exercising.
+fn kernelOptions() KernelOptions {
+    return .{
+        .struct_size = @sizeOf(KernelOptions),
+        .abi_version = 0,
+        .capability = 2,
+        .selection_kind = 0,
+        .selection_value = 0,
+        .reserved = 0,
+    };
+}
 
 extern fn phaser_request_parse(
     context: ?*PhaserContext,
@@ -1026,12 +1040,8 @@ test "a narrower kernel capability is honored" {
     var chain = try derive(one_loop_request);
     defer chain.deinit();
 
-    var options = KernelOptions{
-        .struct_size = @sizeOf(KernelOptions),
-        .abi_version = 0,
-        .capability = 0, // value only
-        .reserved = 0,
-    };
+    var options = kernelOptions();
+    options.capability = 0; // value only
     var kernel: ?*PhaserKernel = null;
     try std.testing.expectEqual(
         Status.ok,
@@ -1047,16 +1057,135 @@ test "a narrower kernel capability is honored" {
     try std.testing.expectEqual(@as(i32, 0), capability);
 }
 
+test "a loop-order selection compiles the part rather than the total" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    // The tree part of a one-loop artifact is real; the total is not. That is
+    // the observable difference between selecting a part and taking the whole,
+    // and it needs no numerical comparison to see.
+    var options = kernelOptions();
+    options.selection_kind = 1; // loop order
+    options.selection_value = 0;
+
+    var tree: ?*PhaserKernel = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_compile(chain.context, chain.artifact, &options, &tree),
+    );
+    defer phaser_kernel_destroy(tree);
+
+    var result_type: i32 = -1;
+    try std.testing.expectEqual(Status.ok, phaser_kernel_result_type(tree, &result_type));
+    try std.testing.expectEqual(@as(i32, 0), result_type); // real64
+
+    options.selection_value = 1;
+    var loop: ?*PhaserKernel = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_compile(chain.context, chain.artifact, &options, &loop),
+    );
+    defer phaser_kernel_destroy(loop);
+
+    try std.testing.expectEqual(Status.ok, phaser_kernel_result_type(loop, &result_type));
+    try std.testing.expectEqual(@as(i32, 1), result_type); // complex64
+}
+
+test "a role selection compiles one contribution" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    var options = kernelOptions();
+    options.selection_kind = 2; // role
+    options.selection_value = 4; // scalar_quartic
+
+    var kernel: ?*PhaserKernel = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_compile(chain.context, chain.artifact, &options, &kernel),
+    );
+    defer phaser_kernel_destroy(kernel);
+
+    var result_type: i32 = -1;
+    try std.testing.expectEqual(Status.ok, phaser_kernel_result_type(kernel, &result_type));
+    try std.testing.expectEqual(@as(i32, 0), result_type);
+}
+
+test "a selection the artifact does not carry is unsupported, not invalid" {
+    var chain = try derive(tree_request);
+    defer chain.deinit();
+
+    // A well-formed request for a loop order this tree-level artifact never
+    // derived. The call was answerable in principle, so it is not an argument
+    // error.
+    var options = kernelOptions();
+    options.selection_kind = 1;
+    options.selection_value = 1;
+
+    var kernel: ?*PhaserKernel = null;
+    try std.testing.expectEqual(
+        Status.unsupported,
+        phaser_kernel_compile(chain.context, chain.artifact, &options, &kernel),
+    );
+    try std.testing.expectEqual(@as(?*PhaserKernel, null), kernel);
+}
+
+test "a malformed selection is rejected rather than resolved to the total" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    const cases = [_]struct { kind: i32, value: u32 }{
+        .{ .kind = 7, .value = 0 }, // no such kind
+        .{ .kind = -1, .value = 0 }, // nor this one
+        .{ .kind = 0, .value = 3 }, // a payload alongside `total`
+        .{ .kind = 2, .value = 99 }, // no such role
+    };
+    for (cases) |case| {
+        var options = kernelOptions();
+        options.selection_kind = case.kind;
+        options.selection_value = case.value;
+
+        var kernel: ?*PhaserKernel = null;
+        try std.testing.expectEqual(
+            Status.invalid_argument,
+            phaser_kernel_compile(chain.context, chain.artifact, &options, &kernel),
+        );
+        try std.testing.expectEqual(@as(?*PhaserKernel, null), kernel);
+    }
+}
+
+test "an options struct predating the selection fields still compiles the total" {
+    var chain = try derive(one_loop_request);
+    defer chain.deinit();
+
+    // What a caller compiled against the previous header passes: the prologue
+    // plus capability and its padding, and nothing after. The extensible-struct
+    // contract says the implementation reads only that far, so the selection
+    // must default rather than be read from memory the caller never set.
+    const previous_size: u32 = 16;
+    var options = kernelOptions();
+    options.struct_size = previous_size;
+    options.selection_kind = 99; // beyond struct_size; must not be read
+    options.selection_value = 99;
+
+    var kernel: ?*PhaserKernel = null;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_compile(chain.context, chain.artifact, &options, &kernel),
+    );
+    defer phaser_kernel_destroy(kernel);
+
+    var result_type: i32 = -1;
+    try std.testing.expectEqual(Status.ok, phaser_kernel_result_type(kernel, &result_type));
+    try std.testing.expectEqual(@as(i32, 1), result_type); // the complex total
+}
+
 test "an unrecognized kernel capability is rejected" {
     var chain = try derive(one_loop_request);
     defer chain.deinit();
 
-    var options = KernelOptions{
-        .struct_size = @sizeOf(KernelOptions),
-        .abi_version = 0,
-        .capability = 9,
-        .reserved = 0,
-    };
+    var options = kernelOptions();
+    options.capability = 9;
     var kernel: ?*PhaserKernel = null;
     try std.testing.expectEqual(
         Status.invalid_argument,
@@ -1187,6 +1316,10 @@ extern fn phaser_binding_result_type(
     binding: ?*const PhaserBinding,
     out_result_type: ?*i32,
 ) callconv(.c) Status;
+extern fn phaser_binding_capability(
+    binding: ?*const PhaserBinding,
+    out_capability: ?*i32,
+) callconv(.c) Status;
 
 extern fn phaser_evaluate(
     binding: ?*const PhaserBinding,
@@ -1315,6 +1448,43 @@ test "a parameter point parses and reports its reference scale" {
         phaser_point_reference_scale(point, &scale),
     );
     try std.testing.expectEqual(@as(f64, 125.0), scale);
+}
+
+test "a binding reports the capability its own program carries" {
+    // A consumer holding only a binding sizes its output buffers from this.
+    // It must come from the binding rather than from whichever kernel the
+    // caller believes it used, so it is compared against the kernel here and
+    // exercised for a narrowed capability as well as the default.
+    var bound = try bind(one_loop_request);
+    defer bound.deinit();
+
+    var from_kernel: i32 = -1;
+    var from_binding: i32 = -2;
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_kernel_capability(bound.kernel, &from_kernel),
+    );
+    try std.testing.expectEqual(
+        Status.ok,
+        phaser_binding_capability(bound.binding, &from_binding),
+    );
+    try std.testing.expectEqual(from_kernel, from_binding);
+    try std.testing.expectEqual(@as(i32, 2), from_binding);
+}
+
+test "binding capability rejects nulls at both parameters" {
+    var bound = try bind(one_loop_request);
+    defer bound.deinit();
+
+    var capability: i32 = -1;
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_binding_capability(null, &capability),
+    );
+    try std.testing.expectEqual(
+        Status.invalid_argument,
+        phaser_binding_capability(bound.binding, null),
+    );
 }
 
 test "binding rejects a point that does not cover the model" {
