@@ -12,12 +12,15 @@ const value = @import("../value/root.zig");
 const program_module = @import("program.zig");
 const lower_module = @import("lower.zig");
 const interpret_module = @import("interpret.zig");
+const optimized_plan_module = @import("optimized_plan.zig");
+const optimized_interpret_module = @import("optimized_interpret.zig");
 
 pub const Scalar = program_module.Scalar;
 pub const Complex64 = program_module.Complex64;
 pub const ResultType = program_module.ResultType;
 pub const Capability = program_module.Capability;
 pub const Status = program_module.Status;
+pub const Backend = program_module.Backend;
 pub const WorkspaceLayout = program_module.WorkspaceLayout;
 pub const CallError = interpret_module.CallError;
 pub const OutputBuffers = interpret_module.OutputBuffers;
@@ -48,6 +51,7 @@ pub const Selection = union(enum) {
 pub const Configuration = struct {
     capability: Capability = .value_gradient_hessian,
     selection: Selection = .total,
+    backend: Backend = .reference_interpreter,
     lowering: lower_module.LowerOptions = .{},
 };
 
@@ -56,6 +60,7 @@ const compile_tw = error_injection.module(enum {
     coordinate_channels,
     lower_program,
     validate_program,
+    optimized_plan,
     publish,
 }, error{OutOfMemory});
 
@@ -85,9 +90,12 @@ pub const Kernel = struct {
     /// The renormalization-scale channel, present exactly when the selected
     /// contributions depend on it.
     scale: ?Channel,
+    backend_kind: Backend,
+    optimized_plan: ?optimized_plan_module.ExecutionPlan,
 
     pub fn deinit(self: *Kernel) void {
         const allocator = self.arena.child_allocator;
+        if (self.optimized_plan) |*plan| plan.deinit();
         self.program.deinit();
         self.arena.deinit();
         allocator.destroy(self.arena);
@@ -106,8 +114,22 @@ pub const Kernel = struct {
         return self.parameters.len;
     }
 
+    pub fn backend(self: *const Kernel) Backend {
+        return self.backend_kind;
+    }
+
+    pub fn preferredBlockWidth(self: *const Kernel) usize {
+        return switch (self.backend_kind) {
+            .reference_interpreter => 1,
+            .optimized_interpreter => optimized_plan_module.block_width,
+        };
+    }
+
     pub fn workspaceLayout(self: *const Kernel, point_count: usize) WorkspaceLayout {
-        return self.program.workspaceLayout(point_count);
+        return switch (self.backend_kind) {
+            .reference_interpreter => self.program.workspaceLayout(point_count),
+            .optimized_interpreter => self.optimized_plan.?.workspaceLayout(point_count),
+        };
     }
 
     /// The element type of this kernel's outputs.
@@ -128,13 +150,22 @@ pub const Kernel = struct {
         workspace: []u8,
         outputs: OutputBuffers,
     ) CallError!void {
-        return interpret_module.evaluate(
-            &self.program,
-            inputs,
-            point_count,
-            workspace,
-            outputs,
-        );
+        return switch (self.backend_kind) {
+            .reference_interpreter => interpret_module.evaluate(
+                &self.program,
+                inputs,
+                point_count,
+                workspace,
+                outputs,
+            ),
+            .optimized_interpreter => optimized_interpret_module.evaluate(
+                &self.optimized_plan.?,
+                inputs,
+                point_count,
+                workspace,
+                outputs,
+            ),
+        };
     }
 
     /// Evaluates a batch of independent background points into `Complex64`
@@ -146,13 +177,22 @@ pub const Kernel = struct {
         workspace: []u8,
         outputs: ComplexOutputBuffers,
     ) CallError!void {
-        return interpret_module.evaluateComplex(
-            &self.program,
-            inputs,
-            point_count,
-            workspace,
-            outputs,
-        );
+        return switch (self.backend_kind) {
+            .reference_interpreter => interpret_module.evaluateComplex(
+                &self.program,
+                inputs,
+                point_count,
+                workspace,
+                outputs,
+            ),
+            .optimized_interpreter => optimized_interpret_module.evaluateComplex(
+                &self.optimized_plan.?,
+                inputs,
+                point_count,
+                workspace,
+                outputs,
+            ),
+        };
     }
 };
 
@@ -251,6 +291,14 @@ pub fn compile(
     try compile_tw.check(.validate_program);
     try program.validate(allocator, configuration.lowering.exponent_limit);
 
+    try compile_tw.check(.optimized_plan);
+    var optimized_plan: ?optimized_plan_module.ExecutionPlan =
+        if (configuration.backend == .optimized_interpreter)
+            try optimized_plan_module.compile(allocator, &program)
+        else
+            null;
+    errdefer if (optimized_plan) |*plan| plan.deinit();
+
     // A scale channel exists exactly when the lowered program reads one, so a
     // selection whose contributions carry no scale dependence declares none.
     const scale: ?Channel = if (program.scale_count == 0) null else .{
@@ -271,6 +319,8 @@ pub fn compile(
         .parameters = parameters,
         .coordinates = coordinates,
         .scale = scale,
+        .backend_kind = configuration.backend,
+        .optimized_plan = optimized_plan,
     };
 }
 
@@ -343,4 +393,64 @@ test "tripwires exercise every kernel compilation rollback boundary" {
         );
         try compile_tw.end(.reset);
     }
+}
+
+test "optimized backend is explicit and executes scalar plus blocked remainders" {
+    var artifact = try testArtifact(std.testing.allocator);
+    defer artifact.deinit();
+    var reference_kernel = try compile(std.testing.allocator, &artifact, .{
+        .capability = .value,
+        .backend = .reference_interpreter,
+    });
+    defer reference_kernel.deinit();
+    var optimized_kernel = try compile(std.testing.allocator, &artifact, .{
+        .capability = .value,
+        .backend = .optimized_interpreter,
+    });
+    defer optimized_kernel.deinit();
+
+    try std.testing.expectEqual(Backend.reference_interpreter, reference_kernel.backend());
+    try std.testing.expectEqual(Backend.optimized_interpreter, optimized_kernel.backend());
+    try std.testing.expect(optimized_kernel.preferredBlockWidth() > 1);
+
+    const point_count = optimized_plan_module.block_width + 1;
+    var backgrounds: [point_count]Scalar = undefined;
+    for (&backgrounds, 0..) |*background, index| {
+        background.* = @as(Scalar, @floatFromInt(index)) - 2;
+    }
+    const parameters = [_]Scalar{0.25};
+    var reference_values: [point_count]Scalar = undefined;
+    var optimized_values: [point_count]Scalar = undefined;
+    var reference_statuses: [point_count]Status = undefined;
+    var optimized_statuses: [point_count]Status = undefined;
+
+    const reference_layout = reference_kernel.workspaceLayout(point_count);
+    const reference_workspace = try std.testing.allocator.alignedAlloc(
+        u8,
+        .of(Scalar),
+        reference_layout.bytes,
+    );
+    defer std.testing.allocator.free(reference_workspace);
+    const optimized_layout = optimized_kernel.workspaceLayout(point_count);
+    const optimized_workspace = try std.testing.allocator.alignedAlloc(
+        u8,
+        .of(@Vector(2, Scalar)),
+        optimized_layout.bytes,
+    );
+    defer std.testing.allocator.free(optimized_workspace);
+
+    try reference_kernel.evaluate(
+        .{ .parameters = &parameters, .backgrounds = &backgrounds },
+        point_count,
+        reference_workspace,
+        .{ .values = &reference_values, .statuses = &reference_statuses },
+    );
+    try optimized_kernel.evaluate(
+        .{ .parameters = &parameters, .backgrounds = &backgrounds },
+        point_count,
+        optimized_workspace,
+        .{ .values = &optimized_values, .statuses = &optimized_statuses },
+    );
+    try std.testing.expectEqualSlices(Scalar, &reference_values, &optimized_values);
+    try std.testing.expectEqualSlices(Status, &reference_statuses, &optimized_statuses);
 }

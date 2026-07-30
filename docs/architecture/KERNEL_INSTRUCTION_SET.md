@@ -371,6 +371,19 @@ an API change, and
 [Potential Kernel §13.2](POTENTIAL_KERNEL.md) forbids inferring workspace from
 public input and output shapes.
 
+The optimized interpreter returns a backend-specific layout containing a
+slot-major bounded block frame, a scalar remainder/structured-operation frame,
+and shared numerical scratch. Its immutable execution plan predecodes every
+temporary to a scalar-frame offset and records the preferred block width.
+Parameter binding stores only parameter-stage regions live into the background
+stage or final publication and broadcasts those regions into each block.
+
+On ARM64 and baseline x86-64, the current block contains four points and
+arithmetic is issued as two portable two-lane `f64` vectors. SIMD is across
+points only: accumulation and integer-power order inside a lane remain exactly
+those of section 5. A partial final block executes through the predecoded scalar
+leaf rather than changing the public point count or padding caller buffers.
+
 Execution MUST allocate no memory. Insufficient size, insufficient alignment,
 unrepresentable point-count-dependent shapes, and forbidden aliasing between
 workspace, inputs, and outputs are call-level errors detected before any slot
@@ -406,6 +419,12 @@ singularity is not converted into a generated infinity and reported as
 A batch retains independent status per point. A failed point MUST NOT corrupt
 another point's output or workspace, and MUST NOT be replaced by
 \(+\infty\), a real part, an absolute value, or any other penalty value.
+
+The optimized blocked interpreter carries this status as one lane state.
+Fallible arithmetic and structured numerical operations update only the
+affected lane; inactive lanes are not published and successful lanes continue
+in original point order. Infallible arithmetic spans do not re-test a common
+point status after every instruction.
 
 Publication is point-atomic. Instructions may accumulate candidate outputs in
 workspace, but a point's declared output buffers are written only after every

@@ -448,19 +448,27 @@ Not defects, but measured behavior a later milestone should know about.
 Measured on Apple M4, Zig 0.16.0, ReleaseSafe, seven samples of at least 50 ms
 each; see `zig build bench` for the full table and its variance.
 
-- Varied large-batch tree values cost roughly 34 ns per point for phi4 and
-  140 ns for the two-coordinate multi-scalar model, against 0.8 ns and 4.5 ns
-  for the direct C expressions. Binding removes repeated parameter work, but
-  the reference interpreter remains dispatch-dominated.
-- One-loop values cost roughly 69 ns, 260 ns, and 470 ns per point for 1x1,
-  2x2, and dense 3x3 fluctuation matrices. Their independent C baselines cost
-  roughly 3.8 ns, 15 ns, and 290 ns. The first two leave substantial
-  interpreter overhead visible; by 3x3, deterministic Jacobi work dominates
-  both paths and narrows the gap.
+- Varied large-batch tree values cost roughly 33 ns per point for phi4 and
+  137 ns for the two-coordinate multi-scalar model in the reference
+  interpreter, against 12 ns and 42 ns in the explicitly selected optimized
+  interpreter and 0.7 ns and 4.2 ns for direct C expressions. The optimized
+  backend's blocked predecoded execution materially reduces, but does not
+  eliminate, interpreter overhead.
+- One-loop values cost roughly 44 ns, 244 ns, and 459 ns per point for 1x1,
+  2x2, and dense 3x3 fluctuation matrices in the reference interpreter. The
+  optimized interpreter costs roughly 29 ns, 146 ns, and 435 ns; their
+  independent C baselines cost roughly 3.8 ns, 15 ns, and 271 ns. Arithmetic
+  SIMD matters at 1x1 and 2x2; by 3x3, deterministic Jacobi work dominates and
+  narrows the gain.
 - Fusing the gradient and Hessian onto the value costs about 2.6x at 1x1,
   2.4x at 2x2, and 1.5x at 3x3. The eigensystem is computed once and reused, so
   the marginal derivative ratio falls as diagonalization becomes more
   expensive.
+- Caller-owned deterministic chunks scale the optimized tree batches to about
+  1.8 ns per point for phi4 and 5.4 ns for the multi-scalar model at 12 workers
+  on this host. Doubling to 24 workers provides no further gain, so
+  oversubscription remains a caller-visible policy choice rather than a hidden
+  Phaser behavior.
 
 ## 8. Milestone 4: experimental public client surfaces
 

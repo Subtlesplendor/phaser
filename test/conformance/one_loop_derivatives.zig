@@ -96,7 +96,7 @@ const Harness = struct {
     request: calculation.Request,
     artifact: calculation.Artifact,
     kernel: kernel_module.Kernel,
-    workspace: []align(@alignOf(Scalar)) u8,
+    workspace: []align(@alignOf(@Vector(2, Scalar))) u8,
     coordinates: usize,
 
     fn init(
@@ -104,6 +104,22 @@ const Harness = struct {
         request_source: []const u8,
         capability: kernel_module.Capability,
         point_count: usize,
+    ) !Harness {
+        return initBackend(
+            model_source,
+            request_source,
+            capability,
+            point_count,
+            .reference_interpreter,
+        );
+    }
+
+    fn initBackend(
+        model_source: []const u8,
+        request_source: []const u8,
+        capability: kernel_module.Capability,
+        point_count: usize,
+        backend: kernel_module.Backend,
     ) !Harness {
         var model = try loadModel(model_source);
         errdefer model.deinit();
@@ -114,13 +130,14 @@ const Harness = struct {
         var kernel = try kernel_module.compile(test_allocator.allocator, &artifact, .{
             .capability = capability,
             .selection = .{ .role = .scalar_one_loop },
+            .backend = backend,
         });
         errdefer kernel.deinit();
 
         const layout = kernel.workspaceLayout(point_count);
         const workspace = try test_allocator.allocator.alignedAlloc(
             u8,
-            .of(Scalar),
+            .of(@Vector(2, Scalar)),
             layout.bytes,
         );
         return .{
@@ -411,6 +428,20 @@ fn sliceHarness(capability: kernel_module.Capability, points: usize) !Harness {
         one_loop_slice,
         capability,
         points,
+    );
+}
+
+fn sliceHarnessBackend(
+    capability: kernel_module.Capability,
+    points: usize,
+    backend: kernel_module.Backend,
+) !Harness {
+    return Harness.initBackend(
+        oracle_fixture.three_scalar_model,
+        one_loop_slice,
+        capability,
+        points,
+        backend,
     );
 }
 
@@ -782,6 +813,61 @@ test "batch derivative evaluation agrees with scalar evaluation point by point" 
         try std.testing.expectEqual(one_gradient[0], gradients[index]);
         try std.testing.expectEqual(one_hessian[0], hessians[index]);
     }
+}
+
+test "optimized blocked fused derivatives are bitwise identical to reference" {
+    const backgrounds = [_]Scalar{ -2, -0.5, 0.5, 1, 3 };
+    var reference_harness = try sliceHarnessBackend(
+        .value_gradient_hessian,
+        backgrounds.len,
+        .reference_interpreter,
+    );
+    defer reference_harness.deinit();
+    var optimized_harness = try sliceHarnessBackend(
+        .value_gradient_hessian,
+        backgrounds.len,
+        .optimized_interpreter,
+    );
+    defer optimized_harness.deinit();
+
+    var reference_buffer: [6]Scalar = undefined;
+    const reference_parameters = reference_harness.parameters(
+        &reference_buffer,
+        &coupling_names,
+        &positive_dense,
+    );
+    var optimized_buffer: [6]Scalar = undefined;
+    const optimized_parameters = optimized_harness.parameters(
+        &optimized_buffer,
+        &coupling_names,
+        &positive_dense,
+    );
+    var reference_values: [backgrounds.len]Complex64 = undefined;
+    var reference_gradients: [backgrounds.len]Complex64 = undefined;
+    var reference_hessians: [backgrounds.len]Complex64 = undefined;
+    var reference_statuses: [backgrounds.len]Status = undefined;
+    var optimized_values: [backgrounds.len]Complex64 = undefined;
+    var optimized_gradients: [backgrounds.len]Complex64 = undefined;
+    var optimized_hessians: [backgrounds.len]Complex64 = undefined;
+    var optimized_statuses: [backgrounds.len]Status = undefined;
+
+    try reference_harness.evaluate(reference_parameters, 3, &backgrounds, .{
+        .values = &reference_values,
+        .gradients = &reference_gradients,
+        .hessians = &reference_hessians,
+        .statuses = &reference_statuses,
+    });
+    try optimized_harness.evaluate(optimized_parameters, 3, &backgrounds, .{
+        .values = &optimized_values,
+        .gradients = &optimized_gradients,
+        .hessians = &optimized_hessians,
+        .statuses = &optimized_statuses,
+    });
+
+    try std.testing.expectEqualSlices(Status, &reference_statuses, &optimized_statuses);
+    try std.testing.expectEqualSlices(Complex64, &reference_values, &optimized_values);
+    try std.testing.expectEqualSlices(Complex64, &reference_gradients, &optimized_gradients);
+    try std.testing.expectEqualSlices(Complex64, &reference_hessians, &optimized_hessians);
 }
 
 test "derivative evaluation allocates nothing and fits the queried workspace" {

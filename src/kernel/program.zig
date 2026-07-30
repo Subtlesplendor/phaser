@@ -319,6 +319,13 @@ pub const WorkspaceLayout = struct {
     alignment: usize,
 };
 
+/// Executable backend identity. Selection is explicit and a requested backend
+/// is never silently replaced by the other.
+pub const Backend = enum {
+    reference_interpreter,
+    optimized_interpreter,
+};
+
 pub const Program = struct {
     arena: *std.heap.ArenaAllocator,
     instructions: []const Instruction,

@@ -191,6 +191,27 @@ Violating these ownership rules is a caller concurrency error. Debug or audit
 builds SHOULD detect common misuse where doing so is bounded and race-free, but
 the core cannot generally diagnose an arbitrary external data race.
 
+Phaser exposes a deterministic range-partition helper for this pattern. Given a
+point count, caller-selected worker count, and worker index, it returns one
+contiguous half-open range. The ranges are disjoint, cover the input in order,
+and differ in length by at most one. The helper creates no workers and allocates
+nothing.
+
+The same language-neutral pattern applies to Zig, C, and Python frontends:
+
+1. construct one immutable kernel and binding;
+2. choose the worker count in the caller;
+3. assign each worker one returned point range;
+4. allocate or retain one workspace per worker;
+5. pass matching disjoint input, output, and status slices; and
+6. join workers before rebinding or releasing shared objects.
+
+`examples/parallel_scan.zig` is the bounded executable example. A C caller may
+use its own threading runtime around the same ABI evaluation calls. A Python
+frontend may schedule disjoint calls through its runtime only after releasing
+the interpreter lock around core evaluation; Phaser does not create a
+Python-specific pool.
+
 ## 10. Future internal parallelism
 
 Internal parallel execution is a future explicit backend capability. It MUST NOT

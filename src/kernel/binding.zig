@@ -15,6 +15,8 @@ const model_module = @import("../model/root.zig");
 const error_injection = @import("../testing/error_injection.zig");
 const program_module = @import("program.zig");
 const interpret_module = @import("interpret.zig");
+const optimized_plan_module = @import("optimized_plan.zig");
+const optimized_interpret_module = @import("optimized_interpret.zig");
 const potential_module = @import("potential.zig");
 
 const Scalar = program_module.Scalar;
@@ -49,16 +51,19 @@ pub const Binding = struct {
     /// returned from `compile`. The requirement is that the kernel's storage
     /// outlive the binding, not that its address stay fixed.
     program: program_module.Program,
+    backend: program_module.Backend,
+    /// Borrowed immutable plan storage owned by the kernel. As with `program`,
+    /// the kernel's allocation must outlive the binding, but its struct may move.
+    optimized_plan: ?optimized_plan_module.ExecutionPlan,
     coordinate_count: usize,
     /// Packed parameter channel values, in kernel channel order.
     parameters: []const Scalar,
     /// Packed renormalization-scale channel values. Empty when the kernel
     /// declares no scale channel.
     scales: []const Scalar,
-    /// The complete temporary frame after the parameter stage has run, as
-    /// bytes. Copied into workspace at the start of each evaluation, so a
-    /// staged run resumes from exactly the state an unstaged one would have
-    /// reached.
+    /// Parameter-stage state needed by later instructions, as bytes. The
+    /// reference backend stores the complete frame; the optimized backend
+    /// stores only live regions selected by its immutable execution plan.
     prologue: []align(@alignOf(Scalar)) const u8,
     /// Status produced while constructing `prologue`. It applies to every
     /// background point evaluated from this binding.
@@ -77,7 +82,10 @@ pub const Binding = struct {
         self: *const Binding,
         point_count: usize,
     ) program_module.WorkspaceLayout {
-        return self.program.workspaceLayout(point_count);
+        return switch (self.backend) {
+            .reference_interpreter => self.program.workspaceLayout(point_count),
+            .optimized_interpreter => self.optimized_plan.?.workspaceLayout(point_count),
+        };
     }
 
     pub fn coordinateCount(self: *const Binding) usize {
@@ -86,6 +94,10 @@ pub const Binding = struct {
 
     pub fn resultType(self: *const Binding) program_module.ResultType {
         return self.program.result_type;
+    }
+
+    pub fn backendKind(self: *const Binding) program_module.Backend {
+        return self.backend;
     }
 
     /// Evaluates background points against this bound parameter context.
@@ -100,15 +112,26 @@ pub const Binding = struct {
         workspace: []u8,
         outputs: interpret_module.OutputBuffers,
     ) interpret_module.CallError!void {
-        return interpret_module.evaluateStaged(
-            &self.program,
-            self.prologue,
-            self.prologue_status,
-            backgrounds,
-            point_count,
-            workspace,
-            outputs,
-        );
+        return switch (self.backend) {
+            .reference_interpreter => interpret_module.evaluateStaged(
+                &self.program,
+                self.prologue,
+                self.prologue_status,
+                backgrounds,
+                point_count,
+                workspace,
+                outputs,
+            ),
+            .optimized_interpreter => optimized_interpret_module.evaluateStaged(
+                &self.optimized_plan.?,
+                self.prologue,
+                self.prologue_status,
+                backgrounds,
+                point_count,
+                workspace,
+                outputs,
+            ),
+        };
     }
 
     /// The `Complex64` counterpart of `evaluate`.
@@ -119,15 +142,26 @@ pub const Binding = struct {
         workspace: []u8,
         outputs: interpret_module.ComplexOutputBuffers,
     ) interpret_module.CallError!void {
-        return interpret_module.evaluateStagedComplex(
-            &self.program,
-            self.prologue,
-            self.prologue_status,
-            backgrounds,
-            point_count,
-            workspace,
-            outputs,
-        );
+        return switch (self.backend) {
+            .reference_interpreter => interpret_module.evaluateStagedComplex(
+                &self.program,
+                self.prologue,
+                self.prologue_status,
+                backgrounds,
+                point_count,
+                workspace,
+                outputs,
+            ),
+            .optimized_interpreter => optimized_interpret_module.evaluateStagedComplex(
+                &self.optimized_plan.?,
+                self.prologue,
+                self.prologue_status,
+                backgrounds,
+                point_count,
+                workspace,
+                outputs,
+            ),
+        };
     }
 };
 
@@ -175,30 +209,56 @@ pub fn bind(
     }
 
     try bind_tw.check(.prologue_storage);
-    // The snapshot is the complete typed frame, so staged and unstaged
-    // execution resume from identical bytes and agree bitwise.
+    // The reference backend snapshots the complete typed frame. The optimized
+    // backend stores only parameter-stage regions live into point execution or
+    // final publication.
+    const prologue_bytes = switch (kernel.backend()) {
+        .reference_interpreter => kernel.program.frame_bytes,
+        .optimized_interpreter => kernel.optimized_plan.?.prologueBytes(),
+    };
     const prologue = try arena.allocator().alignedAlloc(
         u8,
         .of(Scalar),
-        kernel.program.frame_bytes,
+        prologue_bytes,
     );
     @memset(prologue, 0);
-    const scratch = try arena.allocator().alignedAlloc(
-        u8,
-        .of(Scalar),
-        kernel.program.scratch_bytes,
-    );
-    const prologue_status = interpret_module.runParameterStage(
-        &kernel.program,
-        .{ .parameters = parameters, .scales = scales, .backgrounds = &.{} },
-        prologue,
-        scratch,
-    );
+    const prologue_status = switch (kernel.backend()) {
+        .reference_interpreter => blk: {
+            const scratch = try arena.allocator().alignedAlloc(
+                u8,
+                .of(Scalar),
+                kernel.program.scratch_bytes,
+            );
+            break :blk interpret_module.runParameterStage(
+                &kernel.program,
+                .{ .parameters = parameters, .scales = scales, .backgrounds = &.{} },
+                prologue,
+                scratch,
+            );
+        },
+        .optimized_interpreter => blk: {
+            const plan = &kernel.optimized_plan.?;
+            const temporary = try allocator.alignedAlloc(
+                u8,
+                .of(@Vector(2, Scalar)),
+                plan.workspace_bytes,
+            );
+            defer allocator.free(temporary);
+            break :blk optimized_interpret_module.runParameterStage(
+                plan,
+                .{ .parameters = parameters, .scales = scales, .backgrounds = &.{} },
+                temporary,
+                prologue,
+            );
+        },
+    };
 
     try bind_tw.check(.publish);
     return .{
         .arena = arena,
         .program = kernel.program,
+        .backend = kernel.backend(),
+        .optimized_plan = kernel.optimized_plan,
         .coordinate_count = kernel.coordinateCount(),
         .parameters = parameters,
         .scales = scales,
@@ -259,6 +319,8 @@ test "tripwires exercise every parameter binding rollback boundary" {
         .parameters = &channels,
         .coordinates = &.{},
         .scale = null,
+        .backend_kind = .reference_interpreter,
+        .optimized_plan = null,
     };
     var source_model: model_module.Model = undefined;
     source_model.parameters = &source_parameters;

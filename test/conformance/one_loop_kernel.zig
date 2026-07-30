@@ -92,7 +92,7 @@ const Harness = struct {
     request: calculation.Request,
     artifact: calculation.Artifact,
     kernel: kernel_module.Kernel,
-    workspace: []align(@alignOf(Scalar)) u8,
+    workspace: []align(@alignOf(@Vector(2, Scalar))) u8,
 
     const slice_request =
         \\{"schema":"phaser.calculation/0.1","kind":"effective_potential",
@@ -103,6 +103,13 @@ const Harness = struct {
     ;
 
     fn init(selection: kernel_module.Selection) !Harness {
+        return initBackend(selection, .reference_interpreter);
+    }
+
+    fn initBackend(
+        selection: kernel_module.Selection,
+        backend: kernel_module.Backend,
+    ) !Harness {
         var model = try loadModel(oracle_fixture.three_scalar_model);
         errdefer model.deinit();
         var request = try parseRequest(slice_request);
@@ -112,13 +119,14 @@ const Harness = struct {
         var kernel = try kernel_module.compile(test_allocator.allocator, &artifact, .{
             .capability = .value,
             .selection = selection,
+            .backend = backend,
         });
         errdefer kernel.deinit();
 
         const layout = kernel.workspaceLayout(1);
         const workspace = try test_allocator.allocator.alignedAlloc(
             u8,
-            .of(Scalar),
+            .of(@Vector(2, Scalar)),
             layout.bytes,
         );
         return .{
@@ -385,6 +393,42 @@ test "batch evaluation agrees with scalar evaluation point by point" {
         try std.testing.expectEqual(single[0].re, batch[index].re);
         try std.testing.expectEqual(single[0].im, batch[index].im);
     }
+}
+
+test "optimized blocked one-loop execution is bitwise identical to reference" {
+    var reference_harness = try Harness.initBackend(
+        .{ .role = .scalar_one_loop },
+        .reference_interpreter,
+    );
+    defer reference_harness.deinit();
+    var optimized_harness = try Harness.initBackend(
+        .{ .role = .scalar_one_loop },
+        .optimized_interpreter,
+    );
+    defer optimized_harness.deinit();
+
+    const backgrounds = [_]Scalar{ -2, -0.5, 0, 1, 3 };
+    var reference_values: [backgrounds.len]Complex64 = undefined;
+    var optimized_values: [backgrounds.len]Complex64 = undefined;
+    var reference_statuses: [backgrounds.len]Status = undefined;
+    var optimized_statuses: [backgrounds.len]Status = undefined;
+    try reference_harness.evaluateAt(
+        positive_dense,
+        3,
+        &backgrounds,
+        &reference_values,
+        &reference_statuses,
+    );
+    try optimized_harness.evaluateAt(
+        positive_dense,
+        3,
+        &backgrounds,
+        &optimized_values,
+        &optimized_statuses,
+    );
+
+    try std.testing.expectEqualSlices(Status, &reference_statuses, &optimized_statuses);
+    try std.testing.expectEqualSlices(Complex64, &reference_values, &optimized_values);
 }
 
 test "repeated evaluation of one kernel is bitwise reproducible" {
