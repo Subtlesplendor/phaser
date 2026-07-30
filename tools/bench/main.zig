@@ -15,6 +15,7 @@ const std = @import("std");
 const phaser = @import("phaser");
 const bench_options = @import("bench_options");
 const example_data = @import("example_data");
+const generated_aot = @import("generated_aot");
 const oracle_fixture = @import("scalar_oracle_fixture");
 const numerical_comparison = @import("numerical_comparison");
 
@@ -612,6 +613,34 @@ const DirectBatchRun = struct {
     }
 };
 
+const AotRun = struct {
+    bound: *const generated_aot.Bound,
+    backgrounds: []const Scalar,
+    point_count: usize,
+    values: []Scalar,
+    statuses: []generated_aot.Status,
+
+    fn unitCount(self: *const AotRun) usize {
+        return self.point_count;
+    }
+
+    fn execute(self: *const AotRun, repetitions: usize) !void {
+        var workspace: [0]u8 = .{};
+        for (0..repetitions) |_| {
+            try generated_aot.evaluateBatch(
+                self.bound,
+                self.backgrounds,
+                self.point_count,
+                &workspace,
+                self.values,
+                self.statuses,
+            );
+        }
+        std.mem.doNotOptimizeAway(self.values);
+        std.mem.doNotOptimizeAway(self.statuses);
+    }
+};
+
 const DirectLoopRun = struct {
     baseline: DirectLoopBaseline,
     parameters: []const Scalar,
@@ -757,6 +786,56 @@ const DirectDependentRun = struct {
             );
         }
         std.mem.doNotOptimizeAway(self.background);
+        std.mem.doNotOptimizeAway(self.sink);
+    }
+};
+
+const AotDependentRun = struct {
+    bound: *const generated_aot.Bound,
+    background: []Scalar,
+    values: []Scalar,
+    statuses: []generated_aot.Status,
+    base: Scalar,
+    span: Scalar,
+
+    fn unitCount(_: *const AotDependentRun) usize {
+        return 1;
+    }
+
+    fn execute(self: *AotDependentRun, repetitions: usize) !void {
+        var workspace: [0]u8 = .{};
+        for (0..repetitions) |_| {
+            try generated_aot.evaluateScalar(
+                self.bound,
+                self.background,
+                &workspace,
+                self.values,
+                self.statuses,
+            );
+            if (self.statuses[0] != .ok) return error.DependentEvaluationFailed;
+            self.background[0] = phaser_bench_dependency_carrier(
+                self.values[0],
+                self.base,
+                self.span,
+            );
+        }
+        std.mem.doNotOptimizeAway(self.background);
+        std.mem.doNotOptimizeAway(self.values);
+    }
+};
+
+const AotBindRun = struct {
+    parameters: []const Scalar,
+    sink: generated_aot.Bound,
+
+    fn unitCount(_: *const AotBindRun) usize {
+        return 1;
+    }
+
+    fn execute(self: *AotBindRun, repetitions: usize) !void {
+        for (0..repetitions) |_| {
+            self.sink = try generated_aot.bind(self.parameters);
+        }
         std.mem.doNotOptimizeAway(self.sink);
     }
 };
@@ -947,6 +1026,20 @@ pub fn main(init: std.process.Init) !void {
     const out = &file_writer.interface;
 
     try writePreamble(out);
+    if (bench_options.aot_only) {
+        try reportModel(
+            init.gpa,
+            init.io,
+            out,
+            "phi4",
+            example_data.phi4_model,
+            example_data.phi4_request,
+            example_data.phi4_point,
+            phi4_direct,
+        );
+        try out.flush();
+        return;
+    }
     try reportGraphSizes(init.gpa, out);
     try reportModel(
         init.gpa,
@@ -1007,7 +1100,7 @@ fn writePreamble(out: *std.Io.Writer) !void {
         \\# scalar_throughput means independent reciprocal throughput.
         \\# dependent_scalar_latency carries each result into the next input.
         \\# Nanoseconds are primary; any cycle values are user-supplied derivatives.
-        \\# backend aot_prototype unsupported: not implemented
+        \\# backend aot_prototype is generated only for phi4 tree-level value.
         \\#
         \\# Timings are informational. They are not a merge gate and a hosted
         \\# runner is too noisy for small differences to be meaningful.
@@ -1214,6 +1307,14 @@ fn reportModel(
     );
     defer optimized_fused_binding.deinit();
     try direct.verifyChannels(&value_kernel);
+    const has_aot = std.mem.eql(u8, name, "phi4");
+    const aot_bound: ?generated_aot.Bound = if (has_aot) blk: {
+        try generated_aot.validateIdentity(
+            value_kernel.model_fingerprint,
+            value_kernel.request_fingerprint,
+        );
+        break :blk try generated_aot.bind(value_binding.parameters);
+    } else null;
 
     const coordinates = value_kernel.coordinateCount();
     try reportProgram(out, "value", &value_kernel.program);
@@ -1274,6 +1375,8 @@ fn reportModel(
     defer allocator.free(optimized_fused_values);
     const direct_values = try allocator.alloc(Scalar, largest);
     defer allocator.free(direct_values);
+    const aot_values = try allocator.alloc(Scalar, largest);
+    defer allocator.free(aot_values);
     const gradients = try allocator.alloc(Scalar, largest * coordinates);
     defer allocator.free(gradients);
     const optimized_gradients = try allocator.alloc(Scalar, largest * coordinates);
@@ -1296,6 +1399,8 @@ fn reportModel(
     defer allocator.free(optimized_statuses);
     const optimized_fused_statuses = try allocator.alloc(kernel_module.Status, largest);
     defer allocator.free(optimized_fused_statuses);
+    const aot_statuses = try allocator.alloc(generated_aot.Status, largest);
+    defer allocator.free(aot_statuses);
 
     try value_binding.evaluate(points, largest, workspace, .{
         .values = values,
@@ -1323,6 +1428,17 @@ fn reportModel(
         largest,
         direct_values.ptr,
     );
+    if (aot_bound) |*bound| {
+        var no_workspace: [0]u8 = .{};
+        try generated_aot.evaluateBatch(
+            bound,
+            points,
+            largest,
+            &no_workspace,
+            aot_values,
+            aot_statuses,
+        );
+    }
     for (0..largest) |index| {
         if (statuses[index] != .ok or fused_statuses[index] != .ok) {
             return error.StatusVerificationFailed;
@@ -1349,6 +1465,13 @@ fn reportModel(
         }
         if (values[index] != fused_values[index]) {
             return error.FusedValueVerificationFailed;
+        }
+        if (aot_bound != null and
+            (@intFromEnum(aot_statuses[index]) != @intFromEnum(statuses[index]) or
+                @as(u64, @bitCast(aot_values[index])) !=
+                    @as(u64, @bitCast(values[index]))))
+        {
+            return error.AotVerificationFailed;
         }
         const background = points.ptr + index * coordinates;
         const direct_value = direct.kind.evaluate(
@@ -1438,6 +1561,28 @@ fn reportModel(
         .buffer_bytes = realBufferBytes(1, coordinates, .value, 0),
         .binding_reused = true,
     }, try measure(io, &optimized_scalar_value));
+    if (aot_bound) |*bound| {
+        var aot_scalar = AotRun{
+            .bound = bound,
+            .backgrounds = points[0..coordinates],
+            .point_count = 1,
+            .values = aot_values[0..1],
+            .statuses = aot_statuses[0..1],
+        };
+        try reportRuntimeMeasurement(out, .{
+            .model = name,
+            .point_set = "varied_scan",
+            .contribution = "total",
+            .capability = "value",
+            .backend = "aot_prototype",
+            .shape = "scalar_throughput",
+            .points = 1,
+            .workspace_bytes = 0,
+            .workspace_alignment = 1,
+            .buffer_bytes = realBufferBytes(1, coordinates, .value, 0),
+            .binding_reused = true,
+        }, try measure(io, &aot_scalar));
+    }
 
     var scalar_fused = StagedRun{
         .binding = &fused_binding,
@@ -1516,6 +1661,11 @@ fn reportModel(
         points[0..coordinates],
     );
     defer allocator.free(dependent_direct_background);
+    const dependent_aot_background = try allocator.dupe(
+        Scalar,
+        points[0..coordinates],
+    );
+    defer allocator.free(dependent_aot_background);
     const carrier_base: Scalar = 10;
     const carrier_span: Scalar = 90;
     var carrier = CarrierRun{
@@ -1571,6 +1721,29 @@ fn reportModel(
         .buffer_bytes = realBufferBytes(1, coordinates, .value, 0),
         .binding_reused = true,
     }, try measure(io, &optimized_dependent));
+    if (aot_bound) |*bound| {
+        var aot_dependent = AotDependentRun{
+            .bound = bound,
+            .background = dependent_aot_background,
+            .values = aot_values[0..1],
+            .statuses = aot_statuses[0..1],
+            .base = carrier_base,
+            .span = carrier_span,
+        };
+        try reportRuntimeMeasurement(out, .{
+            .model = name,
+            .point_set = "carrier_scan",
+            .contribution = "total",
+            .capability = "value",
+            .backend = "aot_prototype",
+            .shape = "dependent_scalar_latency",
+            .points = 1,
+            .workspace_bytes = 0,
+            .workspace_alignment = 1,
+            .buffer_bytes = realBufferBytes(1, coordinates, .value, 0),
+            .binding_reused = true,
+        }, try measure(io, &aot_dependent));
+    }
 
     var direct_dependent = DirectDependentRun{
         .baseline = direct,
@@ -1674,6 +1847,28 @@ fn reportModel(
             .buffer_bytes = realBufferBytes(size, coordinates, .value, 0),
             .binding_reused = true,
         }, try measure(io, &optimized_staged));
+        if (aot_bound) |*bound| {
+            var aot_batch = AotRun{
+                .bound = bound,
+                .backgrounds = points[0 .. size * coordinates],
+                .point_count = size,
+                .values = aot_values[0..size],
+                .statuses = aot_statuses[0..size],
+            };
+            try reportRuntimeMeasurement(out, .{
+                .model = name,
+                .point_set = "varied_scan",
+                .contribution = "total",
+                .capability = "value",
+                .backend = "aot_prototype",
+                .shape = "batch_throughput",
+                .points = size,
+                .workspace_bytes = 0,
+                .workspace_alignment = 1,
+                .buffer_bytes = realBufferBytes(size, coordinates, .value, 0),
+                .binding_reused = true,
+            }, try measure(io, &aot_batch));
+        }
 
         var unstaged = UnstagedRun{
             .kernel = &value_kernel,
@@ -1859,6 +2054,17 @@ fn reportModel(
         "binding",
         try measure(io, &binding),
     );
+    if (aot_bound) |bound| {
+        var aot_binding = AotBindRun{
+            .parameters = value_binding.parameters,
+            .sink = bound,
+        };
+        try reportControlMeasurement(
+            out,
+            "aot_binding",
+            try measure(io, &aot_binding),
+        );
+    }
 
     try out.writeAll(
         "\nleaf\tshape\tmedian ns/unit\tmin ns/unit\tmax ns/unit\trepetitions\tunits/repetition\n",

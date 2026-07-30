@@ -144,6 +144,13 @@ jobs:
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseSafe'
 
+      - name: Generate and test the narrow AOT prototype
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zig/zig" build test-aot-prototype
+          "$RUNNER_TEMP/zig/zig" build test-aot-prototype -Doptimize=ReleaseFast
+
       - name: Compare differential implementations
         if: github.event_name == 'pull_request'
         shell: bash
@@ -188,6 +195,10 @@ jobs:
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig" build test -Doptimize=ReleaseSafe'
 
+      - name: Generate and test the narrow AOT prototype
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig" build test-aot-prototype'
+
       - name: Test the Python binding
         shell: bash
         run: |
@@ -228,6 +239,10 @@ jobs:
       - name: Test full suite in ReleaseSafe
         shell: bash
         run: '"$RUNNER_TEMP/zig/zig.exe" build test -Doptimize=ReleaseSafe'
+
+      - name: Generate and test the narrow AOT prototype
+        shell: bash
+        run: '"$RUNNER_TEMP/zig/zig.exe" build test-aot-prototype'
 
       - name: Install to a prefix for the ABI checks
         shell: bash

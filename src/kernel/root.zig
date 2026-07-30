@@ -5,6 +5,10 @@ pub const lowering = @import("lower.zig");
 pub const interpreter = @import("interpret.zig");
 pub const optimized_plan = @import("optimized_plan.zig");
 pub const optimized_interpreter = @import("optimized_interpret.zig");
+/// Build-tool-only representation used by the explicit AOT prototype.
+pub const aot_plan = @import("aot_plan.zig");
+/// Deterministic source emitter for the explicit AOT prototype.
+pub const aot_generate = @import("aot_generate.zig");
 pub const chunking = @import("chunking.zig");
 pub const potential = @import("potential.zig");
 pub const bindings = @import("binding.zig");
@@ -65,6 +69,8 @@ test {
     _ = interpreter;
     _ = optimized_plan;
     _ = optimized_interpreter;
+    _ = aot_plan;
+    _ = aot_generate;
     _ = chunking;
     _ = potential;
     _ = bindings;

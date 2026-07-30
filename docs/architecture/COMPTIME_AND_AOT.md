@@ -1,6 +1,6 @@
 # Zig `comptime` and Model-Specific AOT Compilation
 
-Status: initial specification
+Status: implemented for the narrow tree-value prototype; broader AOT remains deferred
 
 This document specifies how Phaser uses Zig `comptime` in its ordinary build and
 how a future model-specific ahead-of-time backend may turn runtime-derived
@@ -23,8 +23,9 @@ This specification covers:
 - AOT identity, metadata, and differential validation; and
 - build-time performance testing.
 
-It does not define the first AOT instruction selection, generated source layout,
-loading mechanism, command-line syntax, or artifact package format.
+The first prototype fixes one instruction subset, generated source layout, and
+repository build workflow. A general loading mechanism, public command-line
+surface, and artifact package format remain deferred.
 
 ## 2. Governing distinction
 
@@ -323,7 +324,27 @@ The generator SHOULD consume a validated calculation artifact or lowered kernel
 plan. It SHOULD NOT emit a program that reparses original source JSON at Zig
 compile time.
 
-The precise input IR for the generator remains deferred.
+The first prototype consumes a bounded, arena-owned AOT plan compiled from a
+validated `kernel.Program`. Temporary-slot reuse is resolved into immutable
+instruction-definition identifiers before emission. The accepted subset is:
+
+- tree-level, real `f64`, value-only kernels;
+- three runtime parameter channels and one runtime background channel;
+- no renormalization-scale channel;
+- constant, parameter, and background loads;
+- negation, ordered variadic addition and multiplication; and
+- the instruction set's normative binary integer-power sequence.
+
+Every other capability, type, shape, or opcode is rejected before source
+emission. This is an experimental subset exercised by the committed phi4
+fixture, not a promise that every three-parameter model is an AOT-supported
+public surface.
+
+The deterministic module uses numeric definition identifiers, exact `f64`
+bit-pattern literals, escaped names only in metadata, an immutable bound
+parameter value, a checked public call boundary, a scalar remainder, and a
+four-point vector leaf. Arithmetic order within each independent lane is
+identical to the validated program.
 
 ## 10. AOT-known and dynamic data
 
@@ -399,8 +420,9 @@ AOT cache compatibility follows
 
 ## 13. Loading and distribution
 
-The method by which an AOT kernel is linked or loaded is deferred. Possibilities
-include:
+The prototype is compiled and linked statically into its dedicated differential
+test and benchmark executables. It creates no dynamic loading or plugin ABI.
+Broader delivery remains deferred. Possibilities include:
 
 - linking it into a generated application;
 - producing a model-specific static or shared library; or
@@ -410,7 +432,9 @@ This specification does not create a public plugin ABI. A loading mechanism must
 not expose internal Zig layouts as a stable cross-version contract.
 
 The ordinary interpreted path remains available without requiring the user to
-install a Zig compiler at runtime.
+install a Zig compiler at runtime. A user generating or compiling this
+prototype needs the repository's pinned Zig toolchain; executing an already
+linked application does not.
 
 ## 14. Security and resource limits
 
@@ -423,8 +447,10 @@ and derivation boundaries before code generation.
 Generated identifiers, paths, literals, and data MUST be emitted through
 structured code-generation routines rather than raw source interpolation.
 
-Process isolation, sandboxing, compilation timeouts, and generated-output limits
-are deferred until AOT is implemented.
+The prototype bounds instruction count, aggregate operand count, metadata-name
+bytes, and generated-source bytes. It generates only into build-owned paths.
+Process isolation, compilation timeouts, and a user-controlled output/package
+surface remain deferred.
 
 ## 15. Validation and differential testing
 
@@ -441,14 +467,14 @@ Required ordinary-build tests include:
 - ABI layout assertions agree with independent C and C++ tests; and
 - compile-time helpers agree with runtime execution.
 
-When AOT exists, required tests additionally include:
+The prototype tests:
 
 - deterministic generation from identical input IR;
 - generated source builds with the pinned toolchain;
 - AOT and safe-interpreter agreement;
 - scalar and batch agreement;
-- value, gradient, and Hessian agreement where supported;
-- parameter, scale, temperature, gauge, and background binding;
+- value agreement for its declared value-only subset;
+- runtime parameter and background binding;
 - status and failure equivalence;
 - workspace-boundary checks;
 - reproducibility checks;
@@ -457,11 +483,9 @@ When AOT exists, required tests additionally include:
 Structured fuzzing SHOULD target the AOT generator input IR. Arbitrary fuzz
 inputs MUST NOT be interpolated directly into source or shell commands.
 
-## 16. Adoption threshold
+## 16. Adoption threshold and prototype outcome
 
-The initial implementation does not require a model-specific AOT backend.
-
-AOT work begins only after:
+The prototype began after:
 
 - the safe interpreter is complete for the target calculation;
 - numerical semantics and workspace behavior are stable;
@@ -470,8 +494,14 @@ AOT work begins only after:
 - the expected speedup justifies compiler and packaging complexity; and
 - differential reference tests are available.
 
-`comptime` remains valuable for correctness metadata even if AOT is never
-implemented.
+Decision 0018 records that the phi4 prototype clears its runtime threshold by a
+wide margin and should be retained as an explicit experimental workflow. It
+does not justify making AOT part of ordinary loading or broadening the supported
+scientific subset yet. The next work is to harden packaging and native-platform
+evidence, then evaluate one larger tree-value model through a separately
+reviewed subset extension.
+
+`comptime` remains valuable for correctness metadata independent of AOT.
 
 ## 17. Deferred decisions
 
@@ -480,14 +510,14 @@ This specification deliberately leaves open:
 - exact finite generic axes and supported instantiations;
 - compile-time and binary-size regression thresholds;
 - topology-catalog representation;
-- generated-code IR boundary;
-- generated Zig source organization;
-- AOT build command and packaging format;
+- general generated-code IR beyond the prototype subset;
+- general generated Zig source organization;
+- public AOT command and packaging format;
 - static, shared, or application-linked delivery;
 - loading and compatibility mechanism;
 - compiler-process isolation and limits;
 - AOT cache storage; and
-- the first benchmark-driven model subset for AOT.
+- the second benchmark-driven model subset for AOT.
 
 ## 18. References
 

@@ -139,6 +139,69 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    // The AOT generator is always a host tool, even when its emitted module is
+    // subsequently cross-compiled. Ordinary library and CLI builds do not
+    // depend on it; only the explicit prototype steps below enter this path.
+    const aot_host_phaser_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    const aot_host_example_data_module = b.createModule(.{
+        .root_source_file = b.path("examples/data.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    const aot_tool_module = b.createModule(.{
+        .root_source_file = b.path("tools/aot-prototype/main.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+        .imports = &.{
+            .{ .name = "phaser", .module = aot_host_phaser_module },
+            .{ .name = "example_data", .module = aot_host_example_data_module },
+        },
+    });
+    const aot_tool = b.addExecutable(.{
+        .name = "phaser-aot-prototype",
+        .root_module = aot_tool_module,
+    });
+    const run_aot_generator = b.addRunArtifact(aot_tool);
+    run_aot_generator.addArg("emit");
+    const generated_aot_source =
+        run_aot_generator.addOutputFileArg("phi4_tree_value.zig");
+
+    const install_aot_source = b.addInstallFile(
+        generated_aot_source,
+        "aot/phi4_tree_value.zig",
+    );
+    const aot_inspect_module = b.createModule(.{
+        .root_source_file = b.path("tools/aot-prototype/inspect.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+        .imports = &.{
+            .{ .name = "generated_aot", .module = b.createModule(.{
+                .root_source_file = generated_aot_source,
+                .target = target,
+                .optimize = .ReleaseSafe,
+            }) },
+        },
+    });
+    const aot_inspect_object = b.addObject(.{
+        .name = "phi4_tree_value",
+        .root_module = aot_inspect_module,
+    });
+    const install_aot_object = b.addInstallFile(
+        aot_inspect_object.getEmittedBin(),
+        b.fmt("aot/{s}", .{aot_inspect_object.out_filename}),
+    );
+    const emit_aot_step = b.step(
+        "emit-aot-prototype",
+        "Emit the model-specific phi4 tree-value Zig module",
+    );
+    emit_aot_step.dependOn(&install_aot_source.step);
+    emit_aot_step.dependOn(&install_aot_object.step);
+
     const scalar_oracle_fixture_module = b.createModule(.{
         .root_source_file = b.path(
             "test/fixtures/reference/scalar_one_loop/data.zig",
@@ -396,6 +459,38 @@ pub fn build(b: *std.Build) void {
     );
     test_differential_step.dependOn(&run_differential_tests.step);
 
+    const generated_aot_module = b.createModule(.{
+        .root_source_file = generated_aot_source,
+        .target = target,
+        .optimize = .ReleaseSafe,
+    });
+    const aot_differential_module = b.createModule(.{
+        .root_source_file = b.path("test/differential/aot_phi4.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+        .imports = &.{
+            .{ .name = "phaser", .module = phaser_module },
+            .{ .name = "example_data", .module = example_data_module },
+            .{ .name = "generated_aot", .module = generated_aot_module },
+        },
+    });
+    const aot_differential_tests = b.addTest(.{
+        .root_module = aot_differential_module,
+    });
+    const run_aot_differential_tests = b.addRunArtifact(aot_differential_tests);
+    const test_aot_step = b.step(
+        "test-aot-prototype",
+        "Generate and differentially test the phi4 tree-value AOT module",
+    );
+    test_aot_step.dependOn(&run_aot_differential_tests.step);
+    const check_aot_golden = b.addRunArtifact(aot_tool);
+    check_aot_golden.addArg("check");
+    check_aot_golden.addFileArg(generated_aot_source);
+    check_aot_golden.addFileArg(
+        b.path("test/fixtures/aot/phi4_tree_value.zig.golden"),
+    );
+    test_aot_step.dependOn(&check_aot_golden.step);
+
     const fuzz_module = b.createModule(.{
         .root_source_file = b.path("test/fuzz.zig"),
         .target = target,
@@ -507,6 +602,7 @@ pub fn build(b: *std.Build) void {
     const bench_options = b.addOptions();
     bench_options.addOption(bool, "extended", bench_extended);
     bench_options.addOption(f64, "cycles_per_ns", bench_cycles_per_ns);
+    bench_options.addOption(bool, "aot_only", false);
 
     const bench_phaser_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -534,6 +630,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phaser", .module = bench_phaser_module },
             .{ .name = "bench_options", .module = bench_options.createModule() },
             .{ .name = "example_data", .module = bench_example_data_module },
+            .{ .name = "generated_aot", .module = generated_aot_module },
             .{ .name = "numerical_comparison", .module = numerical_comparison_module },
             // The dense three-by-three one-loop workload needs a model with
             // three real scalars. The conformance fixture already carries one
@@ -595,6 +692,50 @@ pub fn build(b: *std.Build) void {
         "Run representative performance measurements (informational)",
     );
     bench_step.dependOn(&run_bench_leaves.step);
+
+    const aot_bench_options = b.addOptions();
+    aot_bench_options.addOption(bool, "extended", bench_extended);
+    aot_bench_options.addOption(f64, "cycles_per_ns", bench_cycles_per_ns);
+    aot_bench_options.addOption(bool, "aot_only", true);
+    const aot_bench_module = b.createModule(.{
+        .root_source_file = b.path("tools/bench/main.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+        .imports = &.{
+            .{ .name = "phaser", .module = bench_phaser_module },
+            .{ .name = "bench_options", .module = aot_bench_options.createModule() },
+            .{ .name = "example_data", .module = bench_example_data_module },
+            .{ .name = "generated_aot", .module = generated_aot_module },
+            .{ .name = "numerical_comparison", .module = numerical_comparison_module },
+            .{
+                .name = "scalar_oracle_fixture",
+                .module = scalar_oracle_fixture_module,
+            },
+        },
+    });
+    const aot_bench = b.addExecutable(.{
+        .name = "phaser-bench-aot-prototype",
+        .root_module = aot_bench_module,
+    });
+    aot_bench.root_module.addCSourceFile(.{
+        .file = b.path("tools/bench/direct.c"),
+        .flags = &.{
+            "-std=c17",
+            "-O3",
+            "-fno-fast-math",
+            "-ffp-contract=off",
+        },
+    });
+    aot_bench_module.link_libc = true;
+    if (target.result.os.tag == .linux) {
+        aot_bench_module.linkSystemLibrary("m", .{ .use_pkg_config = .no });
+    }
+    const run_aot_bench = b.addRunArtifact(aot_bench);
+    const bench_aot_step = b.step(
+        "bench-aot-prototype",
+        "Benchmark the generated phi4 evaluator beside interpreter and C rows",
+    );
+    bench_aot_step.dependOn(&run_aot_bench.step);
 
     // Corpus maintenance reads the local build cache and the committed corpus,
     // so it runs from the source directory and takes its arguments after `--`.
