@@ -176,6 +176,145 @@ test "the default evaluation format aligns exact values for human readers" {
     try std.testing.expect(std.mem.endsWith(u8, out.written(), expected_table));
 }
 
+// Hand-derived tree-level Hessian for `multi_scalar`, whose two coordinates
+// let a stride or index computation of `coordinates * coordinates` diverge
+// from `coordinates / coordinates` (both are 1 for the single-coordinate phi4
+// golden data above). `V(h, s)` is read off `examples/multi_scalar/model.json`
+// and `point.json`, tree level, tadpoles and vacuum energy both zero:
+//
+//   V = (m_h2 h^2 + 2 m_hs2 h s + m_s2 s^2) / 2
+//     + a h^3/6 + b h^2 s/2 + c h s^2/2 + d s^3/6
+//     + lh h^4/24 + l3 h^3 s/6 + l2 h^2 s^2/4 + l1 h s^3/6 + ls s^4/24
+//
+// so d2V/dh2 = m_h2 + a h + b s + lh/2 h^2 + l3 h s + l2/2 s^2, and the other
+// two components follow by the same differentiation with (h, s) and the
+// matching coefficient pairs swapped.
+const multi_scalar_hessian_points = [_]f64{ 10, 20, 20, 10 };
+const multi_scalar_expected_hessians = [2][3]f64{
+    .{ -7633.5, 529, 2800 }, // (h, s) = (10, 20): dhdh, dhds, dsds
+    .{ -7309.5, 443.5, 2695 }, // (h, s) = (20, 10)
+};
+
+test "hessian values for a two-coordinate model match a hand-derived formula (tsv)" {
+    // `Rows.hessian`'s row stride and `writeTsv`'s own component loop are
+    // both `coordinates * coordinates`, exercised only by the single-
+    // coordinate phi4 golden data elsewhere, where `* 1` and `/ 1` coincide.
+    var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
+    defer out.deinit();
+    var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
+    defer errors.deinit();
+    try commands.evaluate(
+        test_allocator.allocator,
+        example_data.multi_scalar_model,
+        example_data.multi_scalar_request,
+        example_data.multi_scalar_point,
+        .{
+            .outputs = .hessian,
+            .format = .tsv,
+            .points = &multi_scalar_hessian_points,
+            .point_count = 2,
+        },
+        &out.writer,
+        &errors.writer,
+    );
+    try std.testing.expectEqualStrings("", errors.written());
+
+    var lines = std.mem.splitScalar(u8, out.written(), '\n');
+    for (multi_scalar_expected_hessians) |expected| {
+        const row = while (lines.next()) |line| {
+            if (line.len == 0 or line[0] == '#') continue;
+            var fields = std.mem.splitScalar(u8, line, '\t');
+            const first = fields.next() orelse continue;
+            // The single header row starts with the coordinate name, not a
+            // parseable number.
+            _ = std.fmt.parseFloat(f64, first) catch continue;
+            break line;
+        } else return error.MissingRow;
+
+        // Columns: h, s, value, dV/dh, dV/ds, d2V/dhdh, d2V/dhds, d2V/dsdh,
+        // d2V/dsds, status.
+        try std.testing.expectApproxEqAbs(expected[0], try parseField(row, 5), 1e-6);
+        try std.testing.expectApproxEqAbs(expected[1], try parseField(row, 6), 1e-6);
+        try std.testing.expectApproxEqAbs(expected[1], try parseField(row, 7), 1e-6);
+        try std.testing.expectApproxEqAbs(expected[2], try parseField(row, 8), 1e-6);
+    }
+}
+
+test "hessian values for a two-coordinate model match a hand-derived formula (table)" {
+    // The table renderer keeps a second, separate copy of both the point
+    // loop and the hessian component loop for its width-computation pass, so
+    // the tsv coverage above does not reach them.
+    var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
+    defer out.deinit();
+    var errors: std.Io.Writer.Allocating = .init(test_allocator.allocator);
+    defer errors.deinit();
+    try commands.evaluate(
+        test_allocator.allocator,
+        example_data.multi_scalar_model,
+        example_data.multi_scalar_request,
+        example_data.multi_scalar_point,
+        .{
+            .outputs = .hessian,
+            .format = .table,
+            .points = &multi_scalar_hessian_points,
+            .point_count = 2,
+        },
+        &out.writer,
+        &errors.writer,
+    );
+    try std.testing.expectEqualStrings("", errors.written());
+    const text = out.written();
+
+    // A fixed-width table pads every column to the widest value across every
+    // row, so every rendered line -- header, separator, and each data row --
+    // must come out to the same length. A width computed from the wrong row
+    // (as a stray `coordinates / coordinates` collapsing to the first row's
+    // narrower magnitude would) under-pads a later row instead, without
+    // touching the values themselves, which is invisible to a value-only
+    // comparison but breaks this invariant.
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
+    var rendered_lines: usize = 0;
+    var expected_len: ?usize = null;
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+        if (expected_len) |len| {
+            try std.testing.expectEqual(len, line.len);
+        } else {
+            expected_len = line.len;
+        }
+        rendered_lines += 1;
+    }
+    // Header, separator, and two data rows.
+    try std.testing.expectEqual(@as(usize, 4), rendered_lines);
+
+    var data_lines = std.mem.splitScalar(u8, text, '\n');
+    for (multi_scalar_expected_hessians) |expected| {
+        const row = while (data_lines.next()) |line| {
+            if (line.len == 0 or line[0] == '#') continue;
+            var candidate = std.mem.tokenizeScalar(u8, line, ' ');
+            const first = candidate.next() orelse continue;
+            // The header ("h") and separator ("---...") rows are not
+            // numeric; only data rows start with a parseable coordinate.
+            _ = std.fmt.parseFloat(f64, first) catch continue;
+            break line;
+        } else return error.MissingRow;
+        var fields = std.mem.tokenizeScalar(u8, row, ' ');
+        _ = fields.next() orelse return error.MissingColumn; // h
+        _ = fields.next() orelse return error.MissingColumn; // s
+        _ = fields.next() orelse return error.MissingColumn; // value
+        _ = fields.next() orelse return error.MissingColumn; // dV/dh
+        _ = fields.next() orelse return error.MissingColumn; // dV/ds
+        const dhdh = try std.fmt.parseFloat(f64, fields.next() orelse return error.MissingColumn);
+        const dhds = try std.fmt.parseFloat(f64, fields.next() orelse return error.MissingColumn);
+        const dsdh = try std.fmt.parseFloat(f64, fields.next() orelse return error.MissingColumn);
+        const dsds = try std.fmt.parseFloat(f64, fields.next() orelse return error.MissingColumn);
+        try std.testing.expectApproxEqAbs(expected[0], dhdh, 1e-6);
+        try std.testing.expectApproxEqAbs(expected[1], dhds, 1e-6);
+        try std.testing.expectApproxEqAbs(expected[1], dsdh, 1e-6);
+        try std.testing.expectApproxEqAbs(expected[2], dsds, 1e-6);
+    }
+}
+
 test "the inspect workflow reproduces its golden output" {
     var out: std.Io.Writer.Allocating = .init(test_allocator.allocator);
     defer out.deinit();

@@ -238,6 +238,23 @@ pub const MutableRational = struct {
     }
 };
 
+test "isPositive is false at zero and only true for a positive numerator" {
+    // A big integer's own `isPositive` reads its sign bit, which zero carries
+    // as positive by convention. `MutableRational.isPositive` must gate that
+    // with its own zero check rather than relying on `eqlZero` alone.
+    var zero = try MutableRational.initInteger(std.testing.allocator, "0");
+    defer zero.deinit();
+    try std.testing.expect(!zero.isPositive());
+
+    var negative = try MutableRational.initInteger(std.testing.allocator, "-5");
+    defer negative.deinit();
+    try std.testing.expect(!negative.isPositive());
+
+    var positive = try MutableRational.initInteger(std.testing.allocator, "5");
+    defer positive.deinit();
+    try std.testing.expect(positive.isPositive());
+}
+
 test "arbitrary precision rationals reduce exactly" {
     const allocator = std.testing.allocator;
     var lhs = try MutableRational.initInteger(
