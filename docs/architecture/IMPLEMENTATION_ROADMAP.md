@@ -461,6 +461,8 @@ each; see `zig build bench` for the full table and its variance.
 
 ## 8. Milestone 4: experimental public client surfaces
 
+Status: implemented
+
 ### Objective
 
 Exercise a useful scientific calculation through the first public client
@@ -617,7 +619,8 @@ independently checkable and close first.
 ### Gate accounting
 
 In the form Milestones 2 and 3 use: one row per exit criterion, naming the
-evidence that closes it. Phase B's rows are added when that phase closes.
+evidence that closes it. Both phases have now closed and both tables are below;
+the milestone gate closes once, over the two of them.
 
 #### Phase A
 
@@ -637,6 +640,66 @@ decisions [0013](../decisions/0013-c-abi-v0-surface.md) and
 [Language and Interoperability §5](LANGUAGE_AND_INTEROPERABILITY.md#5-c-abi);
 supported and unsupported cases are stated there; Debug and ReleaseSafe both run
 in continuous integration on all three platforms.
+
+#### Phase B
+
+| Criterion | Evidence |
+|---|---|
+| Python results agree with the direct Zig, C, and CLI results | `bindings/python/test/test_extension.py` evaluates the committed `examples/phi4` grid through the binding and compares it bitwise against `scan_total.tsv`, `scan_tree.tsv`, and `scan.tsv` — command-line output that `test/integration/cli_examples.zig` compares byte for byte on every platform. The Zig side of the same chain is Phase A's first row, which compares the C ABI and the Zig core against the same files. `test_ctypes_abi.py` additionally compares the extension's values, gradients, Hessians, and statuses against the C ABI reached through `ctypes`. Every comparison is bitwise; the scan crosses the sign change, so both branches are covered. One curve is outside this, qualified below |
+| Python scalar and buffer-based batch calls agree | `test_a_scalar_call_agrees_with_the_same_point_in_a_batch` compares each point evaluated alone against the same point inside a four-point batch; `test_the_grouping_of_a_batch_does_not_change_its_results` splits one batch in two and requires the halves to reproduce it exactly; `test_every_accepted_input_form_gives_the_same_answer` runs the same points as a list, a tuple, a nested sequence, an `array.array('d')`, a `memoryview`, and a cast `memoryview`. All exact. What this does and does not establish is qualified below |
+| The `ctypes` client agrees with the extension, built from the header | `bindings/python/test/test_ctypes_abi.py` re-declares every signature, the `phaser_complex_outputs` layout, and the `phaser_diagnostic` layout by hand, from the header read as documentation, and sets `argtypes` and `restype` on each function so a mismatch fails rather than returning a wrong answer. It loads the shared library rather than importing the extension. A run that cannot find the library raises instead of skipping — which is what caught the Windows DLL-path defect in the binding's fifth continuous-integration round, where a skip would have reported agreement nobody checked |
+| The notebook runs from a fresh kernel using public APIs only | `tools/ci/run_notebook.py` executes `docs/notebooks/scalar_effective_potential.ipynb` through `nbclient` with `allow_errors=False`, from a kernel started for the run, in the pull-request tier. "Public APIs only" is checked rather than asserted: `tools/ci/check_notebook_outputs.py` fails on any reference to `_phaser`, `._capsule`, or `phaser._`, and was failed deliberately to confirm it fires. The platform limit is qualified below |
+| Equations and plots provide an effective human inspection path | The notebook renders both artifacts through `_repr_latex_` over the MathJax-compatible exporter, plots the tree, the one-loop contribution, and the total over the background interval, plots the imaginary part for two parameter points, and states in section 9 what a reader should expect to see. This criterion is a judgement rather than a machine check, and is qualified below |
+| The notebook's plotted arrays are asserted in machine tests | `TestGoldenAgreement` in `bindings/python/test/test_extension.py` asserts the tree and the total bitwise against committed command-line output, on exactly the grid the notebook plots. The one-loop curve is their difference, an exactly reproducible function of two bitwise-asserted arrays. `tools/ci/check_notebook_outputs.py` keeps the notebook's outputs out of version control, so no plotted number is ever committed without being recomputed |
+
+Common-gate items: the specifications this phase implements were reviewed in
+[Decision 0015](../decisions/0015-phase-b-python-dependencies.md) and in
+[Language and Interoperability §8](LANGUAGE_AND_INTEROPERABILITY.md#8-python);
+supported and unsupported cases are stated there. The binding's own suites run
+in Debug and ReleaseSafe on all three platforms; the notebook tier runs in
+ReleaseSafe on Linux x86-64, which decision 0015 records and the qualification
+below repeats.
+
+#### Qualifications on Phase B's evidence
+
+Four rows above are narrower than they read. Each is recorded here rather than
+left for a reader to discover by checking what the tests actually do.
+
+- **One plotted curve is not compared against the client.** The notebook's
+  one-loop curve is the total minus the tree, because ABI version 0 has no
+  contribution-selection operation. The tree and the total are each bitwise
+  against committed command-line output, so the curve is an exact function of
+  verified arrays — but it is never compared against `scan_one_loop.tsv`, the
+  client's directly summed loop contribution. The two are different accumulation
+  orders for a quantity far below the largest term summed to reach it, measured
+  at a worst relative separation of about `1.3e-11` across the committed grid.
+  [Numerical Comparison](NUMERICAL_COMPARISON.md) declares no policy for that
+  pair and §3 forbids guessing one. Closing this needs either a declared policy
+  or a selection operation in the ABI.
+
+- **Scalar and batch are one code path, not two.** `evaluate_at` builds a
+  one-point buffer and calls the same extension entry point `evaluate` does, so
+  the tests cannot detect a defect that afflicts both. What they do establish is
+  the property worth having: a point's result does not depend on which batch it
+  sits in, on where in that batch it sits, or on which of six accepted input
+  forms carried it. A genuinely independent scalar path is not implemented and
+  is not planned; the criterion is met in the sense that the two published ways
+  of asking agree.
+
+- **The notebook is executed on one platform.** Linux x86-64, by decision 0015,
+  because every number it plots is already asserted on three platforms by tests
+  that import none of the notebook packages. A Python-level portability defect
+  not already covered by those tests would not be caught. This is a deliberate
+  scope choice with a stated cost, not an oversight.
+
+- **"An effective human inspection path" is not a machine check.** Nothing
+  asserts that a plot is legible or that an equation is informative, and no test
+  in this repository could. What is verifiable is that the path exists and runs:
+  the equations render, the figures are produced, and the notebook executes from
+  a fresh kernel on every pull request. Section 9 of the notebook states its
+  expected features specifically enough to be falsified, and writing it caught
+  two incorrect claims about the figures — which is the closest thing to
+  evidence this criterion admits.
 
 ### Requirements satisfied only trivially
 
